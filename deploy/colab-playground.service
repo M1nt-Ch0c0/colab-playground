@@ -1,0 +1,22 @@
+[Unit]
+Description=Colab Studio (Image & Video playground)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=studio
+Group=studio
+WorkingDirectory=/opt/colab-playground
+Environment=PYTHONUNBUFFERED=1
+Environment=QP_ROOT=/opt/colab-playground
+Environment=QP_HOST=127.0.0.1
+Environment=QP_PORT=8787
+ExecStart=/opt/colab-playground/.venv/bin/python3 /opt/colab-playground/app.py
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

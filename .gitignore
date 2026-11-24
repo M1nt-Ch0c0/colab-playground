@@ -1,0 +1,27 @@
+# Secrets & credentials (never commit)
+secret.env
+*.env
+!secret.env.example
+colab_token.json
+colab_sessions.json
+colab_sessions.json.lock
+hf_token.txt
+proxy_custom.txt
+
+# Runtime data & generated media
+out/
+data/
+reference.bin
+last_frame.bin
+refs.json
+
+# Python / OS / IDE
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""Comprehensive unit & integration tests for Colab Studio v2.1 backend."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import struct
+import sys
+import tempfile
+import threading
+import time
+import zlib
+from pathlib import Path
+
+SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SRC_DIR))
+
+
+def make_png(w: int, h: int, color=(40, 120, 200)) -> bytes:
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    row = b"\x00" + bytes(color) * w
+    raw = zlib.compress(row * h)
+    # Pad PNG to >1024 bytes via tEXt chunk so jobs.py size check passes
+    pad = b"comment\x00" + (b"x" * 1100)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"tEXt", pad) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+
+def test_tqdm_and_redaction() -> None:
+    import colab_backend as cb
+
+    samples = [
+        (" 40%|████      | 14/35 [00:08<00:12, 1.65it/s]", "", 40, "14/35"),
+        ("100%|██████████| 35/35 [00:22<00:00,  1.56it/s]", "", 100, "35/35"),
+        ("Fetching 12 files:  50%|█████     | 6/12 [00:03<00:03,  1.92it/s]", "Fetching 12 files", 50, "6/12"),
+        ("\x1b[32mLoading checkpoint shards:\x1b[0m 100%|██████████| 3/3 [00:04<00:00, 1.34s/it]", "Loading checkpoint shards", 100, "3/3"),
+        ("diffusion_pytorch_model.safetensors:  42%|####      | 1.23G/2.95G [00:15<00:21, 80.1MB/s]", "diffusion_pytorch_model.safetensors", 42, "1.23G/2.95G"),
+        ("  0%|          | 0/35 [00:00<?, ?it/s]", "", 0, "0/35"),
+    ]
+    for line, exp_label, exp_pct, exp_detail in samples:
+        parsed = cb.parse_tqdm_line(line)
+        assert parsed is not None, f"Failed to parse: {line!r}"
+        assert parsed["pct"] == exp_pct, (line, parsed)
+        assert parsed["label"] == exp_label, (line, parsed)
+        assert parsed["detail"] == exp_detail, (line, parsed)
+
+    assert cb.parse_tqdm_line("normal log line without bar") is None
+    fake_hf = "hf_" + "a" * 24
+    assert cb.redact_secrets(f"Authorization: Bearer {fake_hf}") == "Authorization: Bearer hf_***"
+    print("OK test_tqdm_and_redaction")
+
+
+def test_non_blocking_colab_status() -> None:
+    import colab_backend as cb
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-cb-"))
+    try:
+        logs: list[str] = []
+        backend = cb.ColabBackend(tmp, logs.append)
+        # No credentials -> immediate unauthed report
+        rep0 = backend.status_report(blocking=False)
+        assert rep0["authed"] is False and rep0["refreshing"] is False
+
+        # Fake credentials file so has_credentials() is True
+        backend.token_path.write_text("{}", encoding="utf-8")
+        fetch_calls = {"n": 0}
+
+        def slow_fetch():
+            fetch_calls["n"] += 1
+            time.sleep(0.25)
+            rep = {
+                "authed": True, "ok": True, "email": "u@example.com", "error": "",
+                "checked_at": int(time.time()), "balance": 88.5, "rate_per_hour": 0.0,
+                "assignments_count": 0, "sessions": [], "any_running": False,
+                "hf_token_set": False, "refreshing": False,
+            }
+            with backend._status_lock:
+                backend._status_cache = rep
+                backend._status_at = time.time()
+            return rep
+
+        backend._fetch_status_sync = slow_fetch  # type: ignore[method-assign]
+
+        t0 = time.time()
+        r1 = backend.status_report(blocking=False)
+        r2 = backend.status_report(blocking=False)
+        elapsed = time.time() - t0
+        assert elapsed < 0.1, f"Non-blocking call stalled for {elapsed:.3f}s"
+        assert r1["refreshing"] is True and r2["refreshing"] is True
+        time.sleep(0.35)
+        assert fetch_calls["n"] == 1, f"Expected coalesced 1 fetch, got {fetch_calls['n']}"
+        r3 = backend.status_report(blocking=False)
+        assert r3["balance"] == 88.5 and r3["refreshing"] is False
+        print("OK test_non_blocking_colab_status")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_store_features() -> None:
+    from store import Store
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-store-"))
+    try:
+        logs: list[str] = []
+        st = Store(tmp / "out", logs.append)
+        img_src = tmp / "in.png"
+        img_src.write_bytes(make_png(640, 960))
+        vid_src = tmp / "in.mp4"
+        vid_src.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048)
+
+        # Save legacy-style image (no width/height in meta) -> probed automatically
+        r1 = st.save(img_src, "image", {"prompt": "sunset fox"})
+        r2 = st.save(img_src, "image", {"prompt": "neon rain"})
+        r3 = st.save(vid_src, "video", {"prompt": "ocean waves"})
+        assert (r1, r2, r3) == ("001", "002", "003")
+
+        item1 = st.get("001")
+        assert item1 is not None and item1["width"] == 640 and item1["height"] == 960
+        assert (tmp / "out" / "latest.png").exists()
+        assert (tmp / "out" / "latest.mp4").exists()
+
+        # Search by zero-padded ID "002" AND stripped "2"
+        assert [i["id"] for i in st.list(q="002")["rounds"]] == ["002"]
+        assert [i["id"] for i in st.list(q="2")["rounds"]] == ["002"]
+
+        # Star 001 and test cleanup_plan with older_than_days=0 (must match unstarred)
+        assert st.set_star("001", True)
+        time.sleep(0.05)
+        plan_zero = st.cleanup_plan(older_than_days=0, keep_latest=None, kind="image", include_starred=False)
+        assert [i["id"] for i in plan_zero] == ["002"], plan_zero
+
+        # max_mb=0 should target unstarred items while respecting starred
+        plan_mb = st.cleanup_plan(older_than_days=None, keep_latest=None, kind="image", include_starred=False, max_mb=0)
+        assert [i["id"] for i in plan_mb] == ["002"], plan_mb
+
+        # Delete video -> latest.mp4 should disappear; restore -> latest.mp4 returns
+        st.delete(["003"])
+        assert not (tmp / "out" / "latest.mp4").exists()
+        st.restore(["003"])
+        assert (tmp / "out" / "latest.mp4").exists()
+
+        # storage_stats check
+        ss = st.storage_stats()
+        assert ss["rounds"]["count"] == 3 and ss["disk_free_bytes"] > 0
+        print("OK test_store_features")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_queue_persistence_and_recovery() -> None:
+    from jobs import LogBuffer, Studio, normalize_job
+    from store import Store
+
+    # Validation edge cases (including custom HF repo models)
+    j0 = normalize_job({"prompt": "hi", "seed": 0, "idle_minutes": 0})
+    assert j0["seed"] == 0 and j0["idle_minutes"] == 5
+    j_hf = normalize_job({"prompt": "hi", "model": "black-forest-labs/FLUX.1-dev"})
+    assert j_hf["model"] == "black-forest-labs/FLUX.1-dev"
+    try:
+        normalize_job({"prompt": "hi", "model": "bad model name"})
+        raise AssertionError("invalid custom model should fail")
+    except ValueError:
+        pass
+    try:
+        normalize_job({"prompt": "hi", "steps": True})
+        raise AssertionError("bool steps should fail")
+    except ValueError:
+        pass
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-jobs-"))
+    try:
+        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
+        png = make_png(512, 512)
+        (tmp / "reference.bin").write_bytes(png)
+
+        class Sess:
+            accelerator = "A100"
+            machine_shape = "HIGH_RAM"
+
+        class GateColab:
+            def __init__(self, authed: bool = True):
+                self.authed = authed
+                self.gate = threading.Event()
+                self.started = threading.Event()
+                self.uploaded_refs = 0
+
+            def has_credentials(self):
+                return self.authed
+
+            def status_report(self, force=False, blocking=True):
+                return {"authed": self.authed, "ok": True, "sessions": [], "any_running": False}
+
+            def ensure_session(self, **kw):
+                return Sess()
+
+            def upload_file(self, s, local, remote):
+                if remote == "content/reference.bin":
+                    self.uploaded_refs += 1
+
+            def get_hf_token(self, fb=""):
+                return ""
+
+            def execute_code(self, s, code, cancel_check=None, idle_timeout=0, progress_cb=None):
+                self.started.set()
+                self.gate.wait(timeout=3.0)
+
+            def download_file(self, s, remote, local):
+                if remote.endswith("thumb.jpg"):
+                    raise RuntimeError("no thumb")
+                Path(local).write_bytes(png)
+
+            def invalidate_status(self):
+                pass
+
+            def interrupt_active(self):
+                self.gate.set()
+
+            def release_all(self):
+                return []
+
+        log1 = LogBuffer()
+        store1 = Store(tmp / "out", log1)
+        colab1 = GateColab(authed=True)
+        st1 = Studio(tmp, {}, colab1, store1, log1, 600)
+        st1.set_idle_minutes(25)
+        st1.add_recent_model("black-forest-labs/FLUX.1-dev")
+        assert st1.recent_models() == ["black-forest-labs/FLUX.1-dev"]
+
+        jobs = st1.enqueue(normalize_job({"prompt": "persist me", "count": 2, "seed": 7, "has_image": True}))
+        assert colab1.started.wait(timeout=2.0), "Job 1 never started"
+        # Snapshot queue.json right now (job 1 is running, job 2 is queued with ref blob!)
+        qjson = json.loads((tmp / "out" / "queue.json").read_text(encoding="utf-8"))
+        assert qjson["idle_minutes"] == 25
+        assert qjson["current"]["id"] == jobs[0]["id"]
+        assert len(qjson["queue"]) == 1 and qjson["queue"][0]["id"] == jobs[1]["id"]
+        assert (tmp / "out" / "queue_refs" / f"{jobs[1]['id']}_first.bin").exists()
+
+        # Simulate hard crash: copy out/ to a fresh dir and boot a brand new Studio
+        tmp2 = Path(tempfile.mkdtemp(prefix="qp-test-jobs-recover-"))
+        try:
+            shutil.copytree(tmp / "out", tmp2 / "out")
+            (tmp2 / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
+            # Add an orphan ref blob to verify pruning
+            (tmp2 / "out" / "queue_refs" / "j99999999_first.bin").write_bytes(b"orphan")
+
+            log2 = LogBuffer()
+            store2 = Store(tmp2 / "out", log2)
+            colab2 = GateColab(authed=True)
+            colab2.gate.set()  # let recovered job 2 run straight through!
+            st2 = Studio(tmp2, {}, colab2, store2, log2, 600)
+            rec = st2.recover()
+            assert rec["interrupted"] == jobs[0]["id"]
+            assert rec["queued"] == 1
+            assert st2.idle_seconds == 25 * 60
+            assert st2.recent_models() == ["qwen-2.1-bf16", "black-forest-labs/FLUX.1-dev"], st2.recent_models()
+            assert st2.remove_recent_model("black-forest-labs/FLUX.1-dev") == ["qwen-2.1-bf16"]
+            assert not (tmp2 / "out" / "queue_refs" / "j99999999_first.bin").exists()
+
+            # Wait for recovered job 2 to complete
+            deadline = time.time() + 5.0
+            while st2.busy() and time.time() < deadline:
+                time.sleep(0.05)
+            snap2 = st2.snapshot()
+            assert not st2.busy()
+            assert colab2.uploaded_refs == 1, "Recovered job 2 should have uploaded its persisted reference snapshot"
+            statuses = {h["id"]: h["status"] for h in snap2["history"]}
+            assert statuses[jobs[0]["id"]] == "error"
+            assert statuses[jobs[1]["id"]] == "done"
+            assert store2.list()["total"] == 1
+            assert not (tmp2 / "out" / "queue_refs" / f"{jobs[1]['id']}_first.bin").exists()
+            print("OK test_queue_persistence_and_recovery")
+        finally:
+            colab1.gate.set()
+            shutil.rmtree(tmp2, ignore_errors=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_gpu_shape_and_retry_cancel() -> None:
+    import colab_backend as cb
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-gpu-"))
+    try:
+        logs: list[str] = []
+        backend = cb.ColabBackend(tmp, logs.append)
+        seen_shapes: list[tuple[str, object]] = []
+
+        class FakeProxy:
+            token = "tok"
+            url = "https://example.invalid"
+
+            def expires_at(self):
+                return None
+
+        class FakeAssignResp:
+            token = "xsrf"
+
+        class FakePostResp:
+            endpoint = "m-s-test"
+            runtime_proxy_info = FakeProxy()
+
+        class FakeClient:
+            def list_assignments(self):
+                return []
+
+            def _get_assignment(self, nbh, variant, acc, shape):
+                seen_shapes.append((acc.value, shape))
+                return FakeAssignResp()
+
+            def _post_assignment(self, nbh, tok, variant, acc, shape):
+                return FakePostResp()
+
+        backend._client = lambda: FakeClient()  # type: ignore[method-assign]
+
+        for gpu_name, exp_shape in [("H100", None), ("G4", None), ("L4", None), ("A100", cb.Shape.HIGH_RAM)]:
+            seen_shapes.clear()
+            sess = backend.ensure_session(gpu=gpu_name, high_mem=True, session_name="s-" + gpu_name)
+            assert seen_shapes == [(gpu_name, exp_shape)], (gpu_name, seen_shapes)
+            assert sess.accelerator == gpu_name
+
+        # Test cancel during 503 retry backoff
+        class Resp503:
+            status_code = 503
+
+        class Client503(FakeClient):
+            def _post_assignment(self, nbh, tok, variant, acc, shape):
+                raise cb.ColabRequestError("Service Unavailable", request=None, response=Resp503())
+
+        backend._client = lambda: Client503()  # type: ignore[method-assign]
+        cancel_flag = {"v": False}
+
+        def trip():
+            time.sleep(0.25)
+            cancel_flag["v"] = True
+
+        threading.Thread(target=trip, daemon=True).start()
+        t0 = time.time()
+        try:
+            backend.ensure_session(gpu="A100", high_mem=True, session_name="s-cancel", cancel_check=lambda: cancel_flag["v"])
+            raise AssertionError("expected cancel")
+        except RuntimeError as exc:
+            assert "取消" in str(exc), str(exc)
+        assert time.time() - t0 < 2.0, "cancel took too long"
+        assert any("503" in ln for ln in logs), logs
+
+        # Test auto-fallback: A100 returns 503, L4 succeeds immediately, gpu_health records both!
+        class FallbackClient(FakeClient):
+            def _post_assignment(self, nbh, tok, variant, acc, shape):
+                if acc.value == "A100":
+                    raise cb.ColabRequestError("Service Unavailable", request=None, response=Resp503())
+                return FakePostResp()
+
+        backend._client = lambda: FallbackClient()  # type: ignore[method-assign]
+        sess_fb = backend.ensure_session(
+            gpu="A100", high_mem=True, session_name="s-fb", fallback_gpus=["A100", "L4"]
+        )
+        assert sess_fb.accelerator == "L4"
+        gh = backend.gpu_health_snapshot()
+        assert gh["A100"]["status"] == "unavailable" and gh["L4"]["status"] == "ok", gh
+        print("OK test_gpu_shape_and_retry_cancel")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    test_tqdm_and_redaction()
+    test_non_blocking_colab_status()
+    test_gpu_shape_and_retry_cancel()
+    test_store_features()
+    test_queue_persistence_and_recovery()
+    print("ALL BACKEND TESTS PASSED")

@@ -1,0 +1,16 @@
+services:
+  colab-playground:
+    build: .
+    container_name: colab-playground
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - QP_ROOT=/data
+      - QP_HOST=0.0.0.0
+      - QP_PORT=8787
+      - QP_IDLE_SECONDS=600
+      - QP_TRASH_DAYS=7
+    volumes:
+      # Put secret.env inside ./data/secret.env (chmod 600) before starting
+      - ./data:/data
