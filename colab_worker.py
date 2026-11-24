@@ -40,13 +40,15 @@ COMFY_BASE_URL = f"http://127.0.0.1:{COMFY_PORT}"
 MODELS_DIR = Path("/content/models")
 LORAS_DIR = Path("/content/loras")
 
-_CACHE: dict[str, Any] = {
-    "key": None,
-    "pipe": None,
-    "manager": None,
-    "loras": [],
-}
-_COMFY_PROC: subprocess.Popen | None = None
+if "_CACHE" not in globals():
+    _CACHE: dict[str, Any] = {
+        "key": None,
+        "pipe": None,
+        "manager": None,
+        "loras": [],
+    }
+if "_COMFY_PROC" not in globals():
+    _COMFY_PROC: subprocess.Popen | None = None
 
 
 def _sh(cmd: list[str]) -> None:
@@ -69,7 +71,11 @@ def _sh(cmd: list[str]) -> None:
 
 def ensure_env() -> None:
     os.environ["PYTHONUNBUFFERED"] = "1"
-    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+    # High-performance Xet concurrency aggressively hammers HF CAS from shared Colab GCP IPs
+    # and triggers 429 Too Many Requests on 30B+ models like MiniMax-H3.
+    os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
+    os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "8")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     if ENV_MARKER.exists():
         return
@@ -508,14 +514,72 @@ def _save_thumb(img: Any) -> None:
 # ── Video + Audio pipeline (MiniMax-H3 33B) ───────────────────────────
 
 
+def _disable_hf_xet() -> None:
+    """Disable huggingface_hub Xet backend at runtime (works even after import)."""
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
+    try:
+        import huggingface_hub.constants as _hf_const
+
+        _hf_const.HF_HUB_DISABLE_XET = True
+    except Exception:
+        pass
+    try:
+        import huggingface_hub.file_download as _hf_fd
+
+        if hasattr(_hf_fd, "HF_HUB_DISABLE_XET"):
+            _hf_fd.HF_HUB_DISABLE_XET = True
+        if hasattr(_hf_fd, "constants") and hasattr(_hf_fd.constants, "HF_HUB_DISABLE_XET"):
+            _hf_fd.constants.HF_HUB_DISABLE_XET = True
+    except Exception:
+        pass
+    for mod_name in ("huggingface_hub.utils._xet", "huggingface_hub.utils"):
+        try:
+            mod = sys.modules.get(mod_name)
+            fn = getattr(mod, "is_xet_available", None)
+            if fn is not None and hasattr(fn, "cache_clear"):
+                fn.cache_clear()
+        except Exception:
+            pass
+
+
+def _missing_minimax_components(pipe: Any) -> list[str]:
+    """Return core MiniMax-H3 component names that failed to load (remained None).
+
+    diffusers ModularPipeline.load_components() catches per-component ValueError (e.g. HF 429)
+    and continues without raising, leaving the failed component as None.
+    """
+    core = ("text_encoder", "transformer", "vae", "audio_vae", "scheduler", "tokenizer", "processor")
+    comps = getattr(pipe, "components", None)
+    missing: list[str] = []
+    if isinstance(comps, dict):
+        for name in core:
+            if name in comps and comps[name] is None:
+                missing.append(name)
+    else:
+        for name in ("text_encoder", "transformer", "vae", "audio_vae", "scheduler"):
+            if hasattr(pipe, name) and getattr(pipe, name) is None:
+                missing.append(name)
+    return missing
+
+
 def _load_minimax_h3(workflow: str, auto_offload: bool, hf_token: str | None) -> Any:
     import torch
     from diffusers import ComponentsManager, ModularPipeline
 
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+
     cache_id = f"video:minimax-h3:{workflow}:offload={int(auto_offload)}"
     if _CACHE["key"] == cache_id and _CACHE["pipe"] is not None:
-        print(f"命中常驻 MiniMax-H3（workflow={workflow}）", flush=True)
-        return _CACHE["pipe"]
+        cached_missing = _missing_minimax_components(_CACHE["pipe"])
+        if not cached_missing:
+            print(f"命中常驻 MiniMax-H3（workflow={workflow}）", flush=True)
+            return _CACHE["pipe"]
+        print(
+            f"检测到缓存的 MiniMax-H3 缺失组件（{', '.join(cached_missing)}），放弃旧缓存并重新加载…",
+            flush=True,
+        )
 
     _clear_cache()
     t0 = time.time()
@@ -544,6 +608,35 @@ def _load_minimax_h3(workflow: str, auto_offload: bool, hf_token: str | None) ->
             load_kwargs["components_manager"] = manager
         pipe = ModularPipeline.from_pretrained("MiniMaxAI/MiniMax-H3", **load_kwargs)
         pipe.load_components(dtype=torch.bfloat16)
+
+    missing = _missing_minimax_components(pipe)
+    if missing:
+        # Disable Xet CAS CDN (prone to 429 on shared Colab GCP IPs) and retry missing components via standard HTTP
+        _disable_hf_xet()
+        load_sig = inspect.signature(pipe.load_components).parameters
+        for attempt, delay in enumerate((6, 15, 30), start=1):
+            print(
+                f"MiniMax-H3 组件下载不完整（缺失：{', '.join(missing)}），已关闭 Xet 加速，{delay}s 后第 {attempt}/3 次重试补拉…",
+                flush=True,
+            )
+            time.sleep(delay)
+            retry_kwargs: dict[str, Any] = {"dtype": torch.bfloat16}
+            if "names" in load_sig:
+                retry_kwargs["names"] = missing
+            elif "workflow" in load_sig:
+                retry_kwargs["workflow"] = workflow
+            pipe.load_components(**retry_kwargs)
+            missing = _missing_minimax_components(pipe)
+            if not missing:
+                print("MiniMax-H3 缺失组件补拉成功", flush=True)
+                break
+
+    if missing:
+        _clear_cache()
+        raise RuntimeError(
+            f"MiniMax-H3 组件加载失败（缺失：{', '.join(missing)}），"
+            "通常是 Hugging Face 对 Colab 共享 IP 限流 (429) 导致，请稍等 1 分钟后重试"
+        )
 
     if manager is None:
         pipe.to("cuda")
@@ -687,10 +780,20 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
     if workflow in {"fl2va", "ref2va"} and has_first:
         first_img = Image.open(first_path).convert("RGB")
         print(f"加载首帧/参考图：{first_img.size}", flush=True)
-        if workflow == "ref2va" and "reference_images" in input_names:
-            kwargs["reference_images"] = [first_img]
-        elif workflow == "ref2va" and "images" in input_names:
-            kwargs["images"] = [first_img]
+        if workflow == "ref2va":
+            if not input_names or "references" in input_names:
+                try:
+                    from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
+
+                    kwargs["references"] = [MiniMaxH3ImageReference(image=first_img)]
+                except ImportError:
+                    kwargs["references"] = [first_img]
+            elif "reference_images" in input_names:
+                kwargs["reference_images"] = [first_img]
+            elif "images" in input_names:
+                kwargs["images"] = [first_img]
+            else:
+                kwargs["image"] = first_img
         else:
             kwargs["image"] = first_img
         if workflow == "fl2va" and has_last:
@@ -722,24 +825,30 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
     # Extract frames + audio across ModularPipeline return variants
     frames = None
     audio = None
-    sample_rate = 24000
+    sample_rate = 32000
 
     if isinstance(results, dict):
         vids = results.get("videos") or results.get("frames")
         frames = vids[0] if isinstance(vids, (list, tuple)) and len(vids) > 0 else vids
         auds = results.get("audio")
         audio = auds[0] if isinstance(auds, (list, tuple)) and len(auds) > 0 else auds
-        sample_rate = results.get("sampling_rate") or results.get("audio_sample_rate") or 24000
+        sample_rate = results.get("sampling_rate") or results.get("audio_sample_rate") or 32000
     elif isinstance(results, tuple):
         frames = results[0][0] if isinstance(results[0], (list, tuple)) else results[0]
         if len(results) > 1:
             audio = results[1][0] if isinstance(results[1], (list, tuple)) else results[1]
+        if len(results) > 2 and results[2]:
+            sample_rate = results[2]
     else:
         vids = getattr(results, "videos", None) or getattr(results, "frames", None) or getattr(results, "images", None)
         frames = vids[0] if isinstance(vids, (list, tuple)) and len(vids) > 0 else vids
         auds = getattr(results, "audio", None)
         audio = auds[0] if isinstance(auds, (list, tuple)) and len(auds) > 0 else auds
-        sample_rate = getattr(results, "sampling_rate", None) or 24000
+        sample_rate = getattr(results, "sampling_rate", None) or 32000
+
+    # MiniMaxH3AudioDecodeStep returns shape (1, 2, num_samples); squeeze batch dim so encode_video keeps stereo
+    if audio is not None and getattr(audio, "ndim", 0) == 3 and audio.shape[0] == 1:
+        audio = audio[0]
 
     if frames is None:
         raise RuntimeError(f"MiniMax-H3 未返回视频帧（返回类型：{type(results).__name__}）")
