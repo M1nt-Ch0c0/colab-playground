@@ -96,8 +96,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Trigger Dokploy deployment (optional)
         if: steps.check_secrets.outputs.dokploy_ready == 'true'
@@ -114,10 +112,25 @@ jobs:
           if [ -n "${CF_ID}" ] && [ -n "${CF_SECRET}" ]; then
             HDRS+=(-H "CF-Access-Client-Id: ${CF_ID}" -H "CF-Access-Client-Secret: ${CF_SECRET}")
           fi
-          curl -fsSL -X POST "${BASE_URL%/}/api/application.update" \
-            "${HDRS[@]}" \
-            -d "{\"applicationId\":\"${DOKPLOY_APP_ID}\",\"dockerImage\":\"${FULL_IMAGE}\"}"
-          curl -fsSL -X POST "${BASE_URL%/}/api/application.deploy" \
-            "${HDRS[@]}" \
-            -d "{\"applicationId\":\"${DOKPLOY_APP_ID}\"}"
+
+          call_dokploy() {
+            local ep="$1"
+            local body="$2"
+            local out="/tmp/dokploy_resp.txt"
+            local code
+            code=$(curl -sS -o "$out" -w "%{http_code}" -X POST "${BASE_URL%/}/api/${ep}" "${HDRS[@]}" -d "$body")
+            echo "POST /api/${ep} -> HTTP ${code}"
+            if [ "$code" = "302" ] || [ "$code" = "403" ]; then
+              echo "::error::Cloudflare Zero Trust blocked /api/${ep} (HTTP ${code}). Ensure the Service Token policy on ops.m1ntch0c0.com uses Action = 'Service Auth' (not 'Allow')."
+              exit 1
+            fi
+            if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+              head -c 500 "$out" || true
+              echo ""
+              exit 1
+            fi
+          }
+
+          call_dokploy "application.update" "{\"applicationId\":\"${DOKPLOY_APP_ID}\",\"dockerImage\":\"${FULL_IMAGE}\"}"
+          call_dokploy "application.deploy" "{\"applicationId\":\"${DOKPLOY_APP_ID}\"}"
           echo "Deployed ${FULL_IMAGE} via Dokploy."
