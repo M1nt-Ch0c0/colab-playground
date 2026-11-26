@@ -41,24 +41,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check GCP push secret
-        id: check_gcp
+      - name: Check secrets
+        id: check_secrets
+        env:
+          GCP_KEY: ${{ secrets.GCP_AR_SA_KEY }}
+          DOK_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          DOK_APP: ${{ secrets.DOKPLOY_APP_ID }}
         run: |
-          if [ -n "${{ secrets.GCP_AR_SA_KEY }}" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          if [ -n "${GCP_KEY}" ]; then
+            echo "gcp_ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "gcp_ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Secret GCP_AR_SA_KEY is not configured yet; skipping push & deploy."
+          fi
+          if [ -n "${GCP_KEY}" ] && [ -n "${DOK_KEY}" ] && [ -n "${DOK_APP}" ]; then
+            echo "dokploy_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dokploy_ready=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Authenticate to Google Cloud
-        if: steps.check_gcp.outputs.ready == 'true'
+        if: steps.check_secrets.outputs.gcp_ready == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_AR_SA_KEY }}
 
       - name: Configure Docker for Artifact Registry
-        if: steps.check_gcp.outputs.ready == 'true'
+        if: steps.check_secrets.outputs.gcp_ready == 'true'
         run: |
           gcloud auth configure-docker "${AR_REGISTRY}" --quiet
 
@@ -72,11 +81,11 @@ jobs:
           echo "full_image=${IMAGE_REPO}:${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        if: steps.check_gcp.outputs.ready == 'true'
+        if: steps.check_secrets.outputs.gcp_ready == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image to GCP Artifact Registry
-        if: steps.check_gcp.outputs.ready == 'true'
+        if: steps.check_secrets.outputs.gcp_ready == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -91,23 +100,24 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trigger Dokploy deployment (optional)
-        if: steps.check_gcp.outputs.ready == 'true' && secrets.DOKPLOY_API_KEY != '' && secrets.DOKPLOY_APP_ID != ''
+        if: steps.check_secrets.outputs.dokploy_ready == 'true'
         env:
-          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL || 'https://ops.m1ntch0c0.com' }}
+          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
           DOKPLOY_APP_ID: ${{ secrets.DOKPLOY_APP_ID }}
           CF_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           FULL_IMAGE: ${{ steps.meta.outputs.full_image }}
         run: |
+          BASE_URL="${DOKPLOY_URL:-https://ops.m1ntch0c0.com}"
           HDRS=(-H "Content-Type: application/json" -H "x-api-key: ${DOKPLOY_API_KEY}")
           if [ -n "${CF_ID}" ] && [ -n "${CF_SECRET}" ]; then
             HDRS+=(-H "CF-Access-Client-Id: ${CF_ID}" -H "CF-Access-Client-Secret: ${CF_SECRET}")
           fi
-          curl -fsSL -X POST "${DOKPLOY_URL%/}/api/application.update" \
+          curl -fsSL -X POST "${BASE_URL%/}/api/application.update" \
             "${HDRS[@]}" \
             -d "{\"applicationId\":\"${DOKPLOY_APP_ID}\",\"dockerImage\":\"${FULL_IMAGE}\"}"
-          curl -fsSL -X POST "${DOKPLOY_URL%/}/api/application.deploy" \
+          curl -fsSL -X POST "${BASE_URL%/}/api/application.deploy" \
             "${HDRS[@]}" \
             -d "{\"applicationId\":\"${DOKPLOY_APP_ID}\"}"
           echo "Deployed ${FULL_IMAGE} via Dokploy."
