@@ -87,7 +87,7 @@ def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _minor_sexual_request(text: str) -> bool:
-    return false
+    return False
     """True when one request clearly pairs a minor with sexual content."""
     raw = str(text or "")
     if not raw.strip():
