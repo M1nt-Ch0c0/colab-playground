@@ -559,7 +559,7 @@ class StudioV3Tests(unittest.TestCase):
                     os.environ[k] = v
 
 
-    # ── 8. MiniMax-H3 offload_mode resolution & normalization ─────────
+    # ── 8. Universal Model-Agnostic Memory & Offload Planner ──────────
 
     def test_video_offload_mode_and_worker_resolver(self) -> None:
         import colab_worker
@@ -576,12 +576,48 @@ class StudioV3Tests(unittest.TestCase):
         self.assertEqual(j_legacy_off["offload_mode"], "none")
         self.assertFalse(j_legacy_off["auto_offload"])
 
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 80.0), "component")
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 40.0), "group")
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 24.0), "group")
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("group", True, 80.0), "group")
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("component", True, 40.0), "component")
-        self.assertEqual(colab_worker._resolve_minimax_offload_mode("none", False, 80.0), "none")
+        # Case A: ~33GB image model (e.g. Qwen BF16) on 80GB VRAM -> full GPU ('none'), on 40GB -> 'component'
+        img_33g = {"transformer": 22.0, "text_encoder": 10.5, "vae": 0.5}
+        p_img_80 = colab_worker.plan_memory_strategy(img_33g, vram_gb=79.3, ram_gb=167.0)
+        self.assertEqual(p_img_80["mode"], "none")
+        p_img_40 = colab_worker.plan_memory_strategy(img_33g, vram_gb=40.0, ram_gb=83.5)
+        self.assertEqual(p_img_40["mode"], "component")
+
+        # Case B: ~70GB model (e.g. FLUX.2) on 96GB -> 'none', on 80GB -> 'component', on 40GB -> 'group' in CPU RAM
+        flux_70g = {"transformer": 58.0, "text_encoder": 11.5, "vae": 0.5}
+        self.assertEqual(colab_worker.plan_memory_strategy(flux_70g, vram_gb=95.0, ram_gb=167.0)["mode"], "none")
+        self.assertEqual(colab_worker.plan_memory_strategy(flux_70g, vram_gb=79.3, ram_gb=167.0)["mode"], "component")
+        p_flux_40 = colab_worker.plan_memory_strategy(flux_70g, vram_gb=40.0, ram_gb=83.5)
+        self.assertEqual(p_flux_40["mode"], "group")
+        self.assertEqual(p_flux_40["placements"]["transformer"], "group_cpu")
+        self.assertEqual(p_flux_40["placements"]["vae"], "cuda")
+
+        # Case C: ~132GB video model (MiniMax-H3) across 80G / 40G / 24G
+        h3_132g = {"transformer": 66.0, "text_encoder": 64.0, "vae": 1.2, "audio_vae": 0.8}
+        # On 80GB VRAM / 167GB RAM -> fast component offload
+        p_h3_80 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0)
+        self.assertEqual(p_h3_80["mode"], "component")
+        # On 40GB VRAM / 83.5GB RAM -> group offload; one-shot text_encoder evicted to disk, transformer stays in CPU RAM!
+        p_h3_40 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5)
+        self.assertEqual(p_h3_40["mode"], "group")
+        self.assertEqual(p_h3_40["placements"]["text_encoder"], "group_disk")
+        self.assertEqual(p_h3_40["placements"]["transformer"], "group_cpu")
+        self.assertEqual(p_h3_40["placements"]["vae"], "cuda")
+        # On 24GB VRAM / 53GB RAM -> both text_encoder & transformer evicted to disk so host RAM never OOMs
+        p_h3_24 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=24.0, ram_gb=53.0)
+        self.assertEqual(p_h3_24["mode"], "group")
+        self.assertEqual(p_h3_24["placements"]["text_encoder"], "group_disk")
+        self.assertEqual(p_h3_24["placements"]["transformer"], "group_disk")
+
+        # Explicit override is always respected
+        self.assertEqual(
+            colab_worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0, requested_mode="group")["mode"],
+            "group",
+        )
+        self.assertEqual(
+            colab_worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5, requested_mode="none")["mode"],
+            "none",
+        )
 
 
 if __name__ == "__main__":
