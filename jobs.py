@@ -725,11 +725,11 @@ def validate_image_model(raw: Any) -> str:
 # ── public option catalogue (also served by /api/config) ─────────────────
 
 GPUS = [
-    {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "hint": "推荐，性价比最高"},
-    {"id": "H100", "label": "H100 · 80GB", "vram": 80, "hint": "最快，适合 FLUX.2 / 视频"},
-    {"id": "G4", "label": "G4 · RTX PRO 6000 96GB", "vram": 96, "hint": "超大显存"},
-    {"id": "L4", "label": "L4 · 24GB", "vram": 24, "hint": "适合 Q5 量化生图"},
-    {"id": "T4", "label": "T4 · 15GB", "vram": 15, "hint": "仅轻量测试"},
+    {"id": "A100", "label": "A100", "hint": "推荐，生图/视频主力"},
+    {"id": "H100", "label": "H100", "hint": "高算力，适合 FLUX.2 / 视频"},
+    {"id": "G4", "label": "G4 · RTX PRO 6000", "hint": "大显存新卡，适合视频"},
+    {"id": "L4", "label": "L4", "hint": "适合 Q5 量化生图"},
+    {"id": "T4", "label": "T4", "hint": "仅轻量测试"},
 ]
 IMAGE_MODELS = [
     {"id": "qwen-2.1-bf16", "label": "Qwen-Image-2.1 · BF16", "hint": "满血 ~33GB，支持参考图改图"},

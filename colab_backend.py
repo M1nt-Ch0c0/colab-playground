@@ -86,6 +86,23 @@ def parse_tqdm_line(raw: str) -> Optional[dict[str, Any]]:
     return {"label": label, "pct": pct, "detail": detail, "rate": rate}
 
 
+def _short_error_body(exc: Exception, limit: int = 160) -> str:
+    """Extract a concise, secret-redacted text snippet from a ColabRequestError response."""
+    raw = getattr(exc, "response_body", None)
+    if not raw:
+        resp = getattr(exc, "response", None)
+        raw = getattr(resp, "text", None) if resp is not None else None
+    if not raw:
+        return ""
+    s = re.sub(r"<style[^>]*>.*?</style>", " ", str(raw), flags=re.S | re.I)
+    s = re.sub(r"<script[^>]*>.*?</script>", " ", s, flags=re.S | re.I)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    return redact_secrets(s)[:limit]
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -628,11 +645,13 @@ class ColabBackend:
                         ) from exc
                     except ColabRequestError as exc:
                         code = exc.response.status_code if exc.response is not None else None
+                        body_txt = _short_error_body(exc)
+                        body_sfx = f" | 响应: {body_txt}" if body_txt else ""
                         if code in (400, 502, 503, 504) and shape == Shape.HIGH_RAM:
                             if code == 400:
-                                self.log(f"{cand_key} 不接受 shape=hm 参数，改用标准规格重试…")
+                                self.log(f"{cand_key} 不接受 shape=hm 参数{body_sfx}，改用标准规格重试…")
                             else:
-                                self.log(f"{cand_key}（High-RAM）暂无库存（HTTP {code}），自动降级尝试标准内存规格…")
+                                self.log(f"{cand_key}（High-RAM）返回 HTTP {code}{body_sfx}，自动降级尝试标准内存规格…")
                             shape = None
                             try:
                                 res = self._assign_with_retries(
@@ -640,37 +659,39 @@ class ColabBackend:
                                 )
                             except (ColabRequestError, requests.exceptions.ReadTimeout) as exc2:
                                 code2 = exc2.response.status_code if isinstance(exc2, ColabRequestError) and exc2.response is not None else 504
+                                body2 = _short_error_body(exc2)
+                                body2_sfx = f" | 响应: {body2}" if body2 else ""
                                 self._record_gpu_health(cand_key, "unavailable" if code2 in (502, 503, 504) else "error", int(code2 or 0), f"HTTP {code2}")
                                 last_err = exc2
                                 if has_more:
-                                    self.log(f"{cand_key} 标准规格也申请失败（HTTP {code2}），继续下一轮询项…")
+                                    self.log(f"{cand_key} 标准规格返回 HTTP {code2}{body2_sfx}，继续下一轮询项…")
                                     continue
                                 if code2 == 503:
                                     raise RuntimeError(
-                                        f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP 503），请换用其他 GPU、切换出口线路或稍后重试。"
+                                        f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP 503{body2_sfx}），请换用其他 GPU、切换出口线路或稍后重试。"
                                     ) from exc2
-                                raise RuntimeError(f"账号暂不支持或暂无 {cand_key} 配额（HTTP {code2}），请切换其他 GPU。") from exc2
+                                raise RuntimeError(f"账号暂不支持或暂无 {cand_key} 配额（HTTP {code2}{body2_sfx}），请切换其他 GPU。") from exc2
                         elif code in (502, 503, 504):
                             self._record_gpu_health(cand_key, "unavailable", int(code), f"HTTP {code} 无库存/超时")
                             last_err = exc
                             if has_more:
-                                self.log(f"{cand_key} 返回 HTTP {code}（暂无空闲库存），继续下一轮询项…")
+                                self.log(f"{cand_key} 返回 HTTP {code}{body_sfx}，继续下一轮询项…")
                                 continue
                             raise RuntimeError(
-                                f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP {code}），请换用其他 GPU 或稍后重试。"
+                                f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP {code}{body_sfx}），请换用其他 GPU 或稍后重试。"
                             ) from exc
                         elif code == 400:
                             self._record_gpu_health(cand_key, "error", 400, "HTTP 400 不支持")
                             last_err = exc
                             if has_more:
-                                self.log(f"{cand_key} 返回 HTTP 400，继续下一轮询项…")
+                                self.log(f"{cand_key} 返回 HTTP 400{body_sfx}，继续下一轮询项…")
                                 continue
                             raise RuntimeError(
-                                f"Colab 拒绝了 {cand_key} 申请（HTTP 400），可能暂不支持该卡型或参数不兼容，请切换其他 GPU。"
+                                f"Colab 拒绝了 {cand_key} 申请（HTTP 400{body_sfx}），请切换其他 GPU。"
                             ) from exc
                         else:
                             self._record_gpu_health(cand_key, "error", int(code or 0), f"HTTP {code}")
-                            raise RuntimeError(f"Colab 申请运行时失败（HTTP {code}）：{exc}") from exc
+                            raise RuntimeError(f"Colab 申请运行时失败（HTTP {code}{body_sfx}）：{exc}") from exc
                     except requests.exceptions.ReadTimeout as exc:
                         self._record_gpu_health(cand_key, "unavailable", 504, "申请超时")
                         last_err = exc

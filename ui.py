@@ -1340,7 +1340,7 @@ function renderGpuChips(){
     return `<button type="button" class="gpu-item ${on?'on':''} ${ok?'':'dimmed'}" data-gpu="${g.id}" title="${esc(g.hint + '（点击勾选/取消，按序号轮询）')}">
       <span class="g-radio">${on ? (idx + 1) : ''}</span>
       <span class="g-main">
-        <span class="g-top"><span>${esc(g.id)}</span><span class="g-vram">${g.vram}GB</span></span>
+        <span class="g-top"><span>${esc(g.label || g.id)}</span></span>
         <span class="g-sub">${esc(g.hint)}</span>
       </span>
       <span class="gpu-badge ${badgeCls}">${esc(badgeTxt)}</span>
@@ -2450,7 +2450,7 @@ function renderStepConfigHTML(step, idx, steps, run){
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">步数 / CFG</label><div class="row"><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 35}" ${dis}><input type="number" step="0.5" min="1" max="12" data-wfc="${sid}:cfg:float" value="${cfg.cfg ?? 5.0}" ${dis}></div></div>
-        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'A100')===g.id?'selected':''}>${g.id} · ${g.vram}GB</option>`).join('')}</select></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'A100')===g.id?'selected':''}>${esc(g.label || g.id)}</option>`).join('')}</select></div>
       </div>
       <label class="f">提示词模板</label>
       <input type="text" data-wfc="${sid}:prompt_template" value="${esc(cfg.prompt_template || '{{scene.keyframe_prompt}}')}" ${dis}>`;
@@ -2485,7 +2485,7 @@ function renderStepConfigHTML(step, idx, steps, run){
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
-        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${g.id} · ${g.vram}GB</option>`).join('')}</select></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${esc(g.label || g.id)}</option>`).join('')}</select></div>
       </div>
       <div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载</label>
         <select data-wfc="${sid}:offload_mode" ${dis}>
