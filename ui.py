@@ -322,7 +322,12 @@ input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;bac
 .qrow .n{font-weight:700;color:var(--text);width:22px;text-align:center}
 
 /* ── gallery ── */
-.gallery{padding:14px 16px 18px}
+.gallery{padding:14px 16px 16px}
+.gallery-head{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.gallery-head h2{margin:0;font-size:16px}
+.gallery-head .chev{color:var(--dim);transition:transform .2s;flex:none}
+.gallery.open .gallery-head .chev{transform:rotate(90deg)}
+.gallery-body{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .gbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .gbar h2{margin:0 8px 0 0;font-size:16px}
 .gbar .search{position:relative;width:220px}
@@ -678,8 +683,9 @@ _BODY = r"""
       <div class="viewer" id="viewer">
         <div class="empty-stage hide" id="emptyStage">
           <div class="art"><i data-i="sparkles" class="xl"></i></div>
-          <h3>开始你的第一张作品</h3>
-          <div>在左侧写下想法，选好模型，点「开始生成」。<br>作品会保存在下方作品库，可以随时收藏、复用参数或删除。</div>
+          <h3 id="emptyTitle">开始你的第一张作品</h3>
+          <div id="emptyDesc">在左侧写下想法，选好模型，点「开始生成」。<br>作品会保存在下方作品库，可以随时收藏、复用参数或删除。</div>
+          <button type="button" class="btn sm hide" id="emptyOpenGallery" style="margin-top:14px"><i data-i="layers"></i>展开作品库查看历史</button>
         </div>
         <img id="vImg" class="hide" alt="">
         <video id="vVid" class="hide" controls playsinline loop></video>
@@ -714,6 +720,7 @@ _BODY = r"""
           <button class="btn sm" id="aReuse" title="把这次的参数填回左侧"><i data-i="reuse"></i><span class="lbl">复用参数</span></button>
           <a class="btn sm" id="aDown" title="下载 (D)"><i data-i="download"></i><span class="lbl">下载</span></a>
           <button class="btn sm danger" id="aDel" title="删除 (Delete)"><i data-i="trash"></i><span class="lbl">删除</span></button>
+          <button class="btn sm ghost" id="aHide" title="收起当前预览"><i data-i="x"></i><span class="lbl">收起</span></button>
           </div>
         </div>
         <div class="meta-area">
@@ -723,29 +730,37 @@ _BODY = r"""
       </div>
     </section>
 
-    <section class="card gallery">
-      <div class="gbar">
+    <section class="card gallery" id="galleryCard">
+      <div class="gallery-head" id="galleryHead">
+        <i data-i="right" class="chev"></i>
         <h2>作品库</h2>
-        <div class="chips" id="filterChips"></div>
+        <span class="gstat" id="gCollapsedStat"></span>
         <div class="grow"></div>
-        <div class="search"><i data-i="search"></i><input type="search" id="gSearch" placeholder="搜索提示词 / 编号"></div>
-        <button class="btn sm" id="selBtn"><i data-i="select"></i>多选</button>
-        <button class="btn sm" id="cleanBtn"><i data-i="broom"></i>清理旧作品</button>
-        <button class="btn sm" id="trashBtn" style="position:relative"><i data-i="trash"></i>回收站<span class="badge hide" id="trashBadge"></span></button>
+        <button type="button" class="btn sm ghost" id="galleryToggleBtn">展开</button>
       </div>
-      <div class="selbar hide" id="selBar">
-        <b id="selCount">已选 0</b>
-        <button class="btn sm ghost" id="selAll">全选当前</button>
-        <button class="btn sm ghost" id="selNone">清除选择</button>
-        <div class="grow"></div>
-        <button class="btn sm" id="selStar"><i data-i="star"></i>收藏</button>
-        <button class="btn sm" id="selUnstar">取消收藏</button>
-        <button class="btn sm danger" id="selDel"><i data-i="trash"></i>删除所选</button>
-        <button class="btn sm" id="selDone"><i data-i="check"></i>完成</button>
+      <div class="gallery-body hide" id="galleryBody">
+        <div class="gbar">
+          <div class="chips" id="filterChips"></div>
+          <div class="grow"></div>
+          <div class="search"><i data-i="search"></i><input type="search" id="gSearch" placeholder="搜索提示词 / 编号"></div>
+          <button class="btn sm" id="selBtn"><i data-i="select"></i>多选</button>
+          <button class="btn sm" id="cleanBtn"><i data-i="broom"></i>清理旧作品</button>
+          <button class="btn sm" id="trashBtn" style="position:relative"><i data-i="trash"></i>回收站<span class="badge hide" id="trashBadge"></span></button>
+        </div>
+        <div class="selbar hide" id="selBar">
+          <b id="selCount">已选 0</b>
+          <button class="btn sm ghost" id="selAll">全选当前</button>
+          <button class="btn sm ghost" id="selNone">清除选择</button>
+          <div class="grow"></div>
+          <button class="btn sm" id="selStar"><i data-i="star"></i>收藏</button>
+          <button class="btn sm" id="selUnstar">取消收藏</button>
+          <button class="btn sm danger" id="selDel"><i data-i="trash"></i>删除所选</button>
+          <button class="btn sm" id="selDone"><i data-i="check"></i>完成</button>
+        </div>
+        <div class="gstat" id="gStat" style="margin:-4px 0 10px"></div>
+        <div class="grid" id="grid"></div>
+        <div class="more hide" id="moreWrap"><button class="btn sm" id="moreBtn">加载更多</button></div>
       </div>
-      <div class="gstat" id="gStat" style="margin:-4px 0 10px"></div>
-      <div class="grid" id="grid"></div>
-      <div class="more hide" id="moreWrap"><button class="btn sm" id="moreBtn">加载更多</button></div>
     </section>
   </main>
 </div>
@@ -863,7 +878,7 @@ const S = {
   cfg:null, mode:'image', engine:'diffusers', status:null, logSeq:0, logCount:0, galleryRev:-1, gallery:[], stats:{},
   filter:{kind:'', starred:false, q:''}, page:60, viewing:null, followLatest:true,
   selecting:false, selected:new Set(), lastClicked:null, refs:{}, lastLatestId:null, form:{}, unseenLogs:0,
-  comfyPresets:[], proxy:null, customProxyOpen:false,
+  comfyPresets:[], proxy:null, customProxyOpen:false, galleryOpen:false, galleryLoaded:false,
 };
 const LS_KEY = 'colab-studio.v2';
 const IMAGE_SIZES = [['1:1',1024,1024],['2:3',768,1152],['3:2',1152,768],['3:4',896,1152],['4:3',1152,896],['9:16',768,1344],['16:9',1344,768],['2:3 HD',1024,1536],['3:2 HD',1536,1024]];
@@ -1461,15 +1476,26 @@ function toggleLogs(force){
 }
 
 /* ── gallery ── */
+function setGalleryOpen(open){
+  S.galleryOpen = !!open;
+  $('#galleryCard').classList.toggle('open', S.galleryOpen);
+  $('#galleryBody').classList.toggle('hide', !S.galleryOpen);
+  $('#galleryToggleBtn').textContent = S.galleryOpen ? '收起' : '展开';
+  renderGallery();
+}
 async function loadGallery(rev){
   try {
     const r = await api('api/rounds');
+    const firstLoad = !S.galleryLoaded;
+    S.galleryLoaded = true;
     const prevLatest = S.gallery.length ? S.gallery[0].id : null;
     S.gallery = r.rounds; S.stats = r.stats; S.galleryRev = rev ?? r.rev;
     const latest = S.gallery[0];
-    if (latest && prevLatest !== null && latest.id !== prevLatest && +latest.id > +prevLatest && S.followLatest){ S.viewing = latest.id; toast(`新作品 #${latest.id} 已生成`, 'ok'); }
+    if (!firstLoad && latest && latest.id !== prevLatest && (prevLatest === null || +latest.id > +prevLatest) && S.followLatest){
+      S.viewing = latest.id;
+      toast(`新作品 #${latest.id} 已生成`, 'ok');
+    }
     if (S.viewing && !S.gallery.find(x => x.id === S.viewing)) S.viewing = null;
-    if (!S.viewing && latest) S.viewing = latest.id;
     for (const id of [...S.selected]) if (!S.gallery.find(x => x.id === id)) S.selected.delete(id);
     renderGallery(); renderStage(); loadTrashCount();
   } catch(e){ toast('作品库加载失败：' + e.message, 'err'); }
@@ -1483,6 +1509,12 @@ const mediaUrl = (it) => `api/rounds/${it.id}?v=${it.mtime}`;
 const thumbUrl = (it) => it.has_thumb ? `api/rounds/${it.id}/thumb?v=${it.mtime}` : it.kind === 'image' ? mediaUrl(it) : null;
 function renderGallery(){
   const st = S.stats || {};
+  $('#gCollapsedStat').textContent = st.count ? `共 ${st.count} 个作品 · ${fmtBytes(st.bytes || 0)}` : '暂无作品';
+  if (!S.galleryOpen){
+    $('#grid').innerHTML = '';
+    $('#moreWrap').classList.add('hide');
+    return;
+  }
   $('#filterChips').innerHTML = [['', '全部', st.count], ['image', '图片', st.images], ['video', '视频', st.videos], ['star', '★ 收藏', st.starred]].map(([k, l, n]) => {
     const on = k === 'star' ? S.filter.starred : (!S.filter.starred && S.filter.kind === k);
     return `<button class="pchip ${on?'on':''}" data-filter="${k}">${l} <span class="dim">${n ?? 0}</span></button>`;
@@ -1556,7 +1588,17 @@ function renderStage(){
   $('#emptyStage').classList.toggle('hide', !!it || !!(S.status && S.status.current));
   $('#viewInfo').classList.toggle('hide', !it);
   ['#vPrev','#vNext','#vExpand'].forEach(s => $(s).classList.toggle('hide', !it));
-  if (!it){ img.classList.add('hide'); vid.classList.add('hide'); vid.pause(); return; }
+  if (!it){
+    img.classList.add('hide'); img.removeAttribute('src'); img.dataset.src = '';
+    vid.pause(); vid.classList.add('hide'); vid.removeAttribute('src'); vid.dataset.src = '';
+    const hasHistory = S.gallery.length > 0;
+    $('#emptyTitle').textContent = hasHistory ? '历史作品已隐藏' : '开始你的第一张作品';
+    $('#emptyDesc').innerHTML = hasHistory
+      ? '进入页面默认不展示上次生成的作品。<br>新作品生成完成后会自动显示，也可点击下方按钮展开作品库。'
+      : '在左侧写下想法，选好模型，点「开始生成」。<br>作品会保存在下方作品库，可以随时收藏、复用参数或删除。';
+    $('#emptyOpenGallery').classList.toggle('hide', !hasHistory);
+    return;
+  }
   const url = mediaUrl(it);
   if (it.kind === 'video'){
     img.classList.add('hide'); vid.classList.remove('hide');
@@ -2182,7 +2224,10 @@ function bind(){
   $('#aToVideo').onclick = () => S.viewing && toVideo(S.viewing);
   $('#aReuse').onclick = async () => { const it = current(); if (!it) return; try { reuse(await api(`api/rounds/${it.id}/meta`)); } catch(e){ toast(e.message, 'err'); } };
   $('#aDel').onclick = () => S.viewing && deleteRounds([S.viewing]);
+  $('#aHide').onclick = () => { S.viewing = null; renderStage(); renderGallery(); };
   $('#aCopy').onclick = () => { const it = current(); it && navigator.clipboard.writeText(it.prompt).then(() => toast('提示词已复制', 'ok')); };
+  $('#galleryHead').onclick = () => setGalleryOpen(!S.galleryOpen);
+  $('#emptyOpenGallery').onclick = () => { setGalleryOpen(true); $('#galleryCard').scrollIntoView({behavior:'smooth', block:'start'}); };
   $('#queueList').onclick = async e => { const b = e.target.closest('[data-unq]'); if (!b) return; try { await api('api/queue/' + b.dataset.unq, {method:'DELETE'}); refresh(); } catch(err){ toast(err.message, 'err'); } };
   $('#queueClear').onclick = async () => { await post('api/queue/clear'); refresh(); };
 
