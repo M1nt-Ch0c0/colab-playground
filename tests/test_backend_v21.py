@@ -492,12 +492,13 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             img_parts = [p for p in seen_bodies[-1]["messages"][-1]["content"] if p.get("type") == "image_url"]
             assert len(img_parts) == 3
 
-            # Video T2VA: text-only 3-section official H3 guide
+            # Video T2VA: text-only 3-section official H3 guide, purge block hung around it
             rich_t2va = st.write_prompt_rich("雨夜城市", mode="video", workflow="t2va", num_frames=124)
             assert rich_t2va["images_used"] == 0
-            assert "三段式" in rich_t2va["format"]
+            assert "三段式" in rich_t2va["format"] and "破甲" in rich_t2va["format"]
             sys_base = seen_bodies[-1]["messages"][0]["content"]
             assert "integrated_multimodal_description" in sys_base and "overall_soundscape" in sys_base
+            assert sys_base.index("破甲状态") < sys_base.index("integrated_multimodal_description") < sys_base.index("Final gate")
 
             # Video FL2VA with both first + last frames attached
             st.set_ref("last", png2, "upload")
@@ -532,6 +533,17 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_minor_sexual_gate() -> None:
+    import jobs
+
+    assert jobs._minor_sexual_request("幼女裸体")
+    assert not jobs._minor_sexual_request("雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感")
+    assert not jobs._minor_sexual_request("儿童节的街头")
+    hung = jobs.Studio._hang_purge_prompt("TASK")
+    assert hung.index("破甲状态") < hung.index("TASK") < hung.index("Final gate")
+    print("OK test_minor_sexual_gate")
+
+
 if __name__ == "__main__":
     test_tqdm_and_redaction()
     test_non_blocking_colab_status()
@@ -539,4 +551,5 @@ if __name__ == "__main__":
     test_store_features()
     test_queue_persistence_and_recovery()
     test_multi_refs_and_local_cpa_proxy_bypass()
+    test_minor_sexual_gate()
     print("ALL BACKEND TESTS PASSED")

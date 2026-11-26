@@ -370,7 +370,22 @@ class StudioV3Tests(unittest.TestCase):
                 out_thumb.write_bytes(b"\xff\xd8\xff" + (b"\x00" * 200))
             return {"duration_s": 9.65, "clip_count": 2, "width": 1280, "height": 768, "fps": 24, "transition": "fade"}
 
+        def fake_write_prompt_rich(text, **kwargs):
+            imgs = kwargs.get("override_images") or []
+            return {
+                "prompt": (
+                    "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n"
+                    "integrated_multimodal_description: [Shot 1] Cinematic rain scene.\n"
+                    "overall_soundscape: Gentle rain hitting umbrella.\n"
+                    "non_diegetic_music: Soft ambient synth."
+                ),
+                "model": "deepseek-flash",
+                "format": "H3 三段式 (I2VA · 看首帧)",
+                "images_used": len(imgs),
+            }
+
         with mock.patch.object(self.studio, "call_cpa_chat", side_effect=fake_cpa_chat), \
+             mock.patch.object(self.studio, "write_prompt_rich", side_effect=fake_write_prompt_rich), \
              mock.patch.object(workflows, "_fetch_public_bytes", side_effect=fake_fetch), \
              mock.patch.object(workflows, "stitch_videos", side_effect=fake_stitch):
 

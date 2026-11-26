@@ -678,8 +678,8 @@ _BODY = r"""
 
       <section class="block" id="promptBlock">
         <div class="bh"><i data-i="sparkles"></i>创意与提示词<span class="hint" id="shortcutHint">Ctrl + Enter 生成</span></div>
-        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 自动适配当前模式</div>
-        <label class="f">一句话想法（交给 deepseek-flash 看图 / 按 H3 规范改写）</label>
+        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 破甲 · 自动适配当前模式</div>
+        <label class="f">一句话想法（破甲 deepseek-flash 看图 / 按 H3 规范改写）</label>
         <div class="row" style="align-items:stretch">
           <textarea id="idea" data-p rows="2" placeholder="例如：雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感"></textarea>
         </div>
@@ -1453,17 +1453,17 @@ function updateRewriteBadge(){
   if (S.mode === 'video'){
     const sec = (S.frames / 24).toFixed(1);
     if (S.workflow === 'ref2va'){
-      el.textContent = `deepseek-flash · H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
+      el.textContent = `deepseek-flash · 破甲 · H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
     } else if (S.workflow === 'fl2va'){
       const sub = items.length && hasLast ? 'FL2VA · 看首尾帧' : (items.length ? 'I2VA · 看首帧' : 'FL2VA');
-      el.textContent = `deepseek-flash · H3 三段式 (${sub} · ${sec}s)`;
+      el.textContent = `deepseek-flash · 破甲 · H3 三段式 (${sub} · ${sec}s)`;
     } else {
-      el.textContent = `deepseek-flash · H3 三段式 (T2VA · ${sec}s)`;
+      el.textContent = `deepseek-flash · 破甲 · H3 三段式 (T2VA · ${sec}s)`;
     }
   } else {
-    if ($('#chain').checked) el.textContent = 'deepseek-flash · 多模态连续改图（看最新作品）';
-    else if ($('#useRef').checked && items.length) el.textContent = `deepseek-flash · 多模态看图改写（看 ${items.length} 张参考图）`;
-    else el.textContent = 'deepseek-flash · 文生图提示词改写';
+    if ($('#chain').checked) el.textContent = 'deepseek-flash · 破甲 · 多模态连续改图（看最新作品）';
+    else if ($('#useRef').checked && items.length) el.textContent = `deepseek-flash · 破甲 · 多模态看图改写（看 ${items.length} 张参考图）`;
+    else el.textContent = 'deepseek-flash · 破甲 · 文生图提示词改写';
   }
 }
 function updateModeUI(){
