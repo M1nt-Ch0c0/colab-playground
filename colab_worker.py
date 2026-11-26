@@ -122,6 +122,9 @@ def _clear_cache() -> None:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+    offload_root = Path("/content/offload_cache")
+    if offload_root.exists():
+        shutil.rmtree(offload_root, ignore_errors=True)
 
 
 def _normalize_loras(raw_loras: list[dict] | None) -> list[dict]:
@@ -767,19 +770,133 @@ def _missing_minimax_components(pipe: Any) -> list[str]:
     return missing
 
 
-def _load_minimax_h3(workflow: str, auto_offload: bool, hf_token: str | None) -> Any:
+def _sys_ram_gb() -> float:
+    """Return total host system RAM in GiB (Linux /proc/meminfo)."""
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                kb = int(line.split()[1])
+                return kb / (1024.0 * 1024.0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _resolve_minimax_offload_mode(
+    raw_mode: str | None,
+    auto_offload: bool,
+    vram_gb: float,
+) -> str:
+    """Resolve user offload preference into effective mode: component | group | none."""
+    m = str(raw_mode or "").strip().lower()
+    if m not in {"auto", "component", "group", "none"}:
+        m = "auto" if auto_offload else "none"
+    if m == "auto":
+        return "component" if vram_gb >= 76.0 else "group"
+    return m
+
+
+def _filter_kwargs_for(fn: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        sig = inspect.signature(fn)
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            return dict(kwargs)
+        return {k: v for k, v in kwargs.items() if k in sig.parameters}
+    except Exception:
+        return dict(kwargs)
+
+
+def _apply_transformer_group_offload(transformer: Any, sys_ram_gb: float) -> None:
+    import torch
+    from diffusers.hooks import apply_group_offloading
+
+    transformer.requires_grad_(False)
+    use_disk = 0.0 < sys_ram_gb < 78.0
+    disk_dir = Path("/content/offload_cache/h3_transformer")
+    if use_disk:
+        shutil.rmtree(disk_dir, ignore_errors=True)
+        disk_dir.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {
+        "onload_device": torch.device("cuda"),
+        "offload_device": torch.device("cpu"),
+        "offload_type": "block_level",
+        "num_blocks_per_group": 1,
+        "use_stream": True,
+    }
+    if use_disk:
+        kwargs["offload_to_disk_path"] = str(disk_dir)
+    if hasattr(transformer, "enable_group_offload"):
+        transformer.enable_group_offload(**_filter_kwargs_for(transformer.enable_group_offload, kwargs))
+    else:
+        apply_group_offloading(transformer, **_filter_kwargs_for(apply_group_offloading, kwargs))
+    where = f"磁盘+流 ({disk_dir})" if use_disk else "CPU 内存+CUDA Stream"
+    print(f"transformer 已启用逐层 Group Offload（block_level=1，{where}）", flush=True)
+
+
+def _apply_minimax_group_offload(pipe: Any, sys_ram_gb: float) -> None:
+    """Apply lossless BF16 group offloading for 40GB A100 / 24GB L4 GPUs.
+
+    - text_encoder (Qwen3-VL-32B, ~64GB): leaf_level; offloads to local SSD when
+      host RAM < 140GB so A100 High-RAM (83.5GB) never OOMs system RAM.
+    - transformer (33B, ~66GB): block_level=1 + CUDA Stream prefetch in CPU RAM on
+      A100 (83.5GB), or disk offload on L4 (~53GB RAM).
+    - VAEs (vae / audio_vae / vocoder): kept on CUDA for fast decode.
+    """
+    import torch
+    from diffusers.hooks import apply_group_offloading
+
+    te = getattr(pipe, "text_encoder", None)
+    if te is not None:
+        te.requires_grad_(False)
+        te_target = getattr(te, "model", te)
+        te_use_disk = 0.0 < sys_ram_gb < 140.0
+        te_disk = Path("/content/offload_cache/h3_text_encoder")
+        if te_use_disk:
+            shutil.rmtree(te_disk, ignore_errors=True)
+            te_disk.mkdir(parents=True, exist_ok=True)
+        te_kwargs: dict[str, Any] = {
+            "onload_device": torch.device("cuda"),
+            "offload_device": torch.device("cpu"),
+            "offload_type": "leaf_level",
+            "use_stream": True,
+        }
+        if te_use_disk:
+            te_kwargs["offload_to_disk_path"] = str(te_disk)
+        apply_group_offloading(te_target, **_filter_kwargs_for(apply_group_offloading, te_kwargs))
+        # Ensure any outer wrapper parameters outside .model don't linger on wrong device
+        where = f"磁盘 ({te_disk}，仅编码阶段读一次)" if te_use_disk else "CPU 内存+CUDA Stream"
+        print(f"text_encoder 已启用逐层 Group Offload（leaf_level，{where}）", flush=True)
+
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is not None:
+        _apply_transformer_group_offload(transformer, sys_ram_gb)
+
+    for comp_name in ("vae", "audio_vae", "vocoder"):
+        comp = getattr(pipe, comp_name, None)
+        if comp is not None and hasattr(comp, "to"):
+            try:
+                comp.to("cuda")
+            except Exception:
+                pass
+
+
+def _load_minimax_h3(workflow: str, offload_mode: str, hf_token: str | None) -> tuple[Any, str, float]:
     import torch
     from diffusers import ComponentsManager, ModularPipeline
 
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
 
-    cache_id = f"video:minimax-h3:{workflow}:offload={int(auto_offload)}"
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    sys_ram_gb = _sys_ram_gb()
+    eff_mode = _resolve_minimax_offload_mode(offload_mode, True, vram_gb)
+
+    cache_id = f"video:minimax-h3:{workflow}:offload={eff_mode}"
     if _CACHE["key"] == cache_id and _CACHE["pipe"] is not None:
         cached_missing = _missing_minimax_components(_CACHE["pipe"])
         if not cached_missing:
-            print(f"命中常驻 MiniMax-H3（workflow={workflow}）", flush=True)
-            return _CACHE["pipe"]
+            print(f"命中常驻 MiniMax-H3（workflow={workflow}，offload={eff_mode}）", flush=True)
+            return _CACHE["pipe"], eff_mode, sys_ram_gb
         print(
             f"检测到缓存的 MiniMax-H3 缺失组件（{', '.join(cached_missing)}），放弃旧缓存并重新加载…",
             flush=True,
@@ -787,17 +904,17 @@ def _load_minimax_h3(workflow: str, auto_offload: bool, hf_token: str | None) ->
 
     _clear_cache()
     t0 = time.time()
-    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    ram_txt = f"，RAM={sys_ram_gb:.1f} GB" if sys_ram_gb > 0 else ""
     print(
-        f"加载 MiniMaxAI/MiniMax-H3（33B，workflow={workflow}，VRAM={vram_gb:.1f} GB）…",
+        f"加载 MiniMaxAI/MiniMax-H3（33B，workflow={workflow}，VRAM={vram_gb:.1f} GB{ram_txt}，offload={eff_mode}）…",
         flush=True,
     )
 
     manager = None
-    if auto_offload or vram_gb < 76:
+    if eff_mode == "component":
         manager = ComponentsManager()
         manager.enable_auto_cpu_offload(device="cuda")
-        print("已启用 ComponentsManager.enable_auto_cpu_offload(device='cuda')", flush=True)
+        print("已启用组件级 Offload：ComponentsManager.enable_auto_cpu_offload(device='cuda')", flush=True)
 
     # ModularPipeline supports two slightly different calling conventions across dev commits
     try:
@@ -842,14 +959,16 @@ def _load_minimax_h3(workflow: str, auto_offload: bool, hf_token: str | None) ->
             "通常是 Hugging Face 对 Colab 共享 IP 限流 (429) 导致，请稍等 1 分钟后重试"
         )
 
-    if manager is None:
+    if eff_mode == "group":
+        _apply_minimax_group_offload(pipe, sys_ram_gb)
+    elif manager is None:
         pipe.to("cuda")
 
     _CACHE["key"] = cache_id
     _CACHE["pipe"] = pipe
     _CACHE["manager"] = manager
     print(f"MiniMax-H3 加载完成，耗时 {time.time() - t0:.1f}s", flush=True)
-    return pipe
+    return pipe, eff_mode, sys_ram_gb
 
 
 def _save_video_with_audio(
@@ -938,10 +1057,22 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
         workflow = "t2va"
 
     auto_offload = bool(job.get("auto_offload", True))
-    pipe = _load_minimax_h3(workflow, auto_offload, hf_token)
+    req_offload_mode = str(job.get("offload_mode") or ("auto" if auto_offload else "none")).strip().lower()
+    pipe, eff_offload_mode, sys_ram_gb = _load_minimax_h3(workflow, req_offload_mode, hf_token)
 
     loras = _normalize_loras(job.get("loras"))
+    lora_sig_before = _CACHE.get("loras")
+    lora_will_change = [(x["repo_id"], x["weight_name"], x["scale"]) for x in loras] != lora_sig_before
+    if eff_offload_mode == "group" and lora_will_change and getattr(pipe, "transformer", None) is not None:
+        try:
+            from diffusers.hooks import remove_group_offloading
+
+            remove_group_offloading(pipe.transformer, recursive=True)
+        except Exception:
+            pass
     _apply_loras(pipe, loras, hf_token)
+    if eff_offload_mode == "group" and lora_will_change and getattr(pipe, "transformer", None) is not None:
+        _apply_transformer_group_offload(pipe.transformer, sys_ram_gb)
 
     width = int(job.get("width") or 768)
     height = int(job.get("height") or 1280)

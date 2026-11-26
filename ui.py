@@ -735,7 +735,16 @@ _BODY = r"""
           <button class="iconbtn" id="seedRand" title="随机一个固定种子"><i data-i="dice"></i></button>
           <button class="iconbtn" id="seedAuto" title="改回 -1（每次随机）"><i data-i="reuse"></i></button>
         </div>
-        <label class="switch hide" id="offloadWrap"><input type="checkbox" id="autoOffload" data-p checked><span class="tg"></span>自动 CPU Offload <small>显存不足时推荐</small></label>
+        <div id="offloadWrap" class="hide" style="margin-top:8px">
+          <label class="f" style="margin-top:0">显存卸载模式（Offload）<span class="tip-q" title="自动：80G/96G 用组件级卸载（快），40G A100 / 24G L4 自动切逐层 Group Offload（保 BF16 画质并防爆主机内存）">?</span></label>
+          <select id="offloadMode" data-p>
+            <option value="auto">智能自动（推荐 · 按显存自动选组件/逐层）</option>
+            <option value="component">组件级 Offload（H100 / G4 最快）</option>
+            <option value="group">逐层 Group Offload（保画质 · 适配 A100 40G / L4 24G）</option>
+            <option value="none">关闭（全常驻显存）</option>
+          </select>
+          <div class="help" id="offloadHint">A100 40G / L4 24G 请选「智能自动」或「逐层 Group Offload」；切模型或释放算力时自动清理临时磁盘缓存。</div>
+        </div>
       </section>
 
       <details class="block" id="loraBlock">
@@ -1135,7 +1144,8 @@ function applyStudioPreset(pid){
   if (p.mode === 'video'){
     if (p.workflow){ S.workflow = p.workflow; renderWorkflowChips(); }
     if (p.num_frames){ S.frames = p.num_frames; renderFrameChips(); }
-    if (p.auto_offload !== undefined) $('#autoOffload').checked = !!p.auto_offload;
+    const om = p.offload_mode || (p.auto_offload === false ? 'none' : 'auto');
+    if ($('#offloadMode')) $('#offloadMode').value = om;
   } else {
     if (p.engine === 'comfyui' && p.comfy){
       setEngine('comfyui');
@@ -1633,7 +1643,8 @@ function buildPayload(){
     seed: $('#seed').value === '' ? -1 : +$('#seed').value, count:+$('#count').textContent, loras:collectLoras(),
   };
   if (v){
-    p.workflow = S.workflow; p.num_frames = S.frames; p.auto_offload = $('#autoOffload').checked;
+    const om = ($('#offloadMode') && $('#offloadMode').value) || 'auto';
+    p.workflow = S.workflow; p.num_frames = S.frames; p.offload_mode = om; p.auto_offload = om !== 'none';
     p.has_image = S.workflow !== 't2va'; p.has_last_image = S.workflow === 'fl2va' && !!(S.refs.last && S.refs.last.set);
   } else {
     p.engine = S.engine;
@@ -2041,7 +2052,11 @@ function reuse(it){
       $('#imageModel').value = m.model;
     }
   }
-  if (it.kind === 'video'){ if (m.workflow){ S.workflow = m.workflow; renderWorkflowChips(); } if (m.num_frames){ S.frames = m.num_frames; renderFrameChips(); } }
+  if (it.kind === 'video'){
+    if (m.workflow){ S.workflow = m.workflow; renderWorkflowChips(); }
+    if (m.num_frames){ S.frames = m.num_frames; renderFrameChips(); }
+    if ($('#offloadMode')) $('#offloadMode').value = m.offload_mode || (m.auto_offload === false ? 'none' : 'auto');
+  }
   if (m.width) setNum('width', m.width); if (m.height) setNum('height', m.height);
   if (m.steps) setNum('steps', m.steps); if (m.cfg) setNum('cfg', m.cfg);
   if (m.seed !== undefined) $('#seed').value = m.seed;
@@ -2472,6 +2487,14 @@ function renderStepConfigHTML(step, idx, steps, run){
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${g.id} (${g.vram}GB)</option>`).join('')}</select></div>
+      </div>
+      <div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载模式（A100 40G / L4 24G 可选智能自动或逐层 Group Offload）</label>
+        <select data-wfc="${sid}:offload_mode" ${dis}>
+          <option value="auto" ${(cfg.offload_mode||'auto')==='auto'?'selected':''}>智能自动（80G/96G 组件级，40G/24G 自动逐层）</option>
+          <option value="component" ${cfg.offload_mode==='component'?'selected':''}>组件级 Offload（H100 / G4 最快）</option>
+          <option value="group" ${cfg.offload_mode==='group'?'selected':''}>逐层 Group Offload（保画质 · 适配 40G/24G）</option>
+          <option value="none" ${cfg.offload_mode==='none'?'selected':''}>关闭（全常驻显存）</option>
+        </select>
       </div>`;
   }
   if (step.type === 'video_stitch'){

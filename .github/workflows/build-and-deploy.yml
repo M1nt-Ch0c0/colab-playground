@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: "Skip waiting for active GPU / workflow jobs to finish before deploying"
+        required: false
+        type: boolean
+        default: false
 
 env:
   GCP_REGION: asia-east1
@@ -106,6 +112,34 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Wait for idle before Dokploy deploy
+        if: steps.check_secrets.outputs.dokploy_ready == 'true' && inputs.force_deploy != true
+        env:
+          APP_HEALTH_URL: https://draw.m1ntch0c0.com/healthz
+        run: |
+          MAX_WAIT=1200
+          INTERVAL=15
+          ELAPSED=0
+          while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+            BODY=$(curl -sS --max-time 8 "$APP_HEALTH_URL" || true)
+            BUSY=$(python3 -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1])
+    print("true" if d.get("busy") else "false")
+except Exception:
+    print("false")
+' "$BODY")
+            if [ "$BUSY" != "true" ]; then
+              echo "Service is idle (healthz: ${BODY:-n/a}); proceeding with deployment."
+              exit 0
+            fi
+            echo "Active GPU or workflow job detected (${BODY}); waiting ${INTERVAL}s (${ELAPSED}/${MAX_WAIT}s)..."
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+          echo "::error::Timed out waiting ${MAX_WAIT}s for active GPU/workflow job to finish. Re-run later or use workflow_dispatch with force_deploy=true."
+          exit 1
 
       - name: Trigger Dokploy deployment (optional)
         if: steps.check_secrets.outputs.dokploy_ready == 'true'

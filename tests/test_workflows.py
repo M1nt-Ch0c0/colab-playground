@@ -499,12 +499,22 @@ class StudioV3Tests(unittest.TestCase):
                     with urllib.request.urlopen(r, timeout=10) as resp:
                         return resp.status, resp.read(), resp.headers.get("Content-Type", "")
 
-                # /api/config exposes studio_presets, workflow_step_catalog, ffmpeg_available
+                # /healthz exposes busy / queue_len / workflow_running (non-sensitive deploy guard)
+                r_hz = urllib.request.urlopen(base + "/healthz", timeout=10)
+                hz = json.loads(r_hz.read())
+                self.assertEqual(hz["ok"], True)
+                self.assertEqual(hz["version"], "3.1")
+                self.assertEqual(hz["busy"], False)
+                self.assertEqual(hz["queue_len"], 0)
+                self.assertEqual(hz["workflow_running"], False)
+
+                # /api/config exposes studio_presets, workflow_step_catalog, video_offload_modes, ffmpeg_available
                 code, raw, _ = req("GET", "/api/config")
                 self.assertEqual(code, 200)
                 cfg = json.loads(raw)
-                self.assertEqual(cfg["version"], "3.0")
+                self.assertEqual(cfg["version"], "3.1")
                 self.assertIn("studio_presets", cfg)
+                self.assertEqual(len(cfg["video_offload_modes"]), 4)
                 self.assertEqual(len(cfg["workflow_step_catalog"]), 7)
 
                 # /api/presets CRUD
@@ -547,6 +557,31 @@ class StudioV3Tests(unittest.TestCase):
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
+
+
+    # ── 8. MiniMax-H3 offload_mode resolution & normalization ─────────
+
+    def test_video_offload_mode_and_worker_resolver(self) -> None:
+        import colab_worker
+
+        j_auto = jobs.normalize_job({"mode": "video", "prompt": "test"})
+        self.assertEqual(j_auto["offload_mode"], "auto")
+        self.assertTrue(j_auto["auto_offload"])
+
+        j_group = jobs.normalize_job({"mode": "video", "prompt": "test", "offload_mode": "group"})
+        self.assertEqual(j_group["offload_mode"], "group")
+        self.assertTrue(j_group["auto_offload"])
+
+        j_legacy_off = jobs.normalize_job({"mode": "video", "prompt": "test", "auto_offload": False})
+        self.assertEqual(j_legacy_off["offload_mode"], "none")
+        self.assertFalse(j_legacy_off["auto_offload"])
+
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 80.0), "component")
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 40.0), "group")
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("auto", True, 24.0), "group")
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("group", True, 80.0), "group")
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("component", True, 40.0), "component")
+        self.assertEqual(colab_worker._resolve_minimax_offload_mode("none", False, 80.0), "none")
 
 
 if __name__ == "__main__":

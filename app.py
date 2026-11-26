@@ -30,6 +30,7 @@ from jobs import (
     IMAGE_MODELS,
     LIMITS,
     STUDIO_BUILTIN_PRESETS,
+    VIDEO_OFFLOAD_MODES,
     VIDEO_WORKFLOWS,
     LogBuffer,
     Studio,
@@ -41,7 +42,7 @@ from store import TRASH_DAYS, Store
 from ui import LOGIN_HTML, PAGE_HTML
 from workflows import STEP_CATALOG, WorkflowEngine, ffmpeg_available
 
-VERSION = "3.0"
+VERSION = "3.1"
 ROOT = Path(os.environ.get("QP_ROOT", str(Path(__file__).resolve().parent)))
 SECRET_PATH = Path(os.environ.get("QP_SECRET", ROOT / "secret.env"))
 OUT_DIR = ROOT / "out"
@@ -139,6 +140,7 @@ def config_payload() -> dict:
         "image_models": IMAGE_MODELS,
         "recent_models": STUDIO.recent_models(),
         "video_workflows": VIDEO_WORKFLOWS,
+        "video_offload_modes": VIDEO_OFFLOAD_MODES,
         "comfy": {
             "templates": COMFY_TEMPLATES,
             "samplers": COMFY_SAMPLERS,
@@ -338,7 +340,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = self.read_body() if method in {"POST", "DELETE", "PATCH"} else b""
             if path == "/healthz":
-                return self.send_json(200, {"ok": True, "backend": "colab", "version": VERSION})
+                wf_act = WORKFLOWS.active_summary()
+                wf_running = bool(wf_act and wf_act.get("status") == "running")
+                snap = STUDIO.snapshot()
+                busy = STUDIO.busy() or wf_running
+                return self.send_json(200, {
+                    "ok": True,
+                    "backend": "colab",
+                    "version": VERSION,
+                    "busy": busy,
+                    "queue_len": len(snap.get("queue") or []),
+                    "workflow_running": wf_running,
+                })
             if path == "/login":
                 return self.route_login(method, raw)
             if path == "/logout":

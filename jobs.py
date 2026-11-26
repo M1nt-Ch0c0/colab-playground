@@ -741,6 +741,19 @@ VIDEO_WORKFLOWS = [
     {"id": "fl2va", "label": "首帧 / 首尾帧生视频 + 音频", "needs": ["first"]},
     {"id": "ref2va", "label": "参考图生视频 + 音频", "needs": ["first"]},
 ]
+VIDEO_OFFLOAD_MODES = [
+    {"id": "auto", "label": "智能自动（推荐）", "hint": "80G/96G 用组件级卸载；40G/24G 自动切逐层 Group Offload"},
+    {"id": "component", "label": "组件级 Offload（H100 / G4 最快）", "hint": "整块组件在显存与内存间切换"},
+    {"id": "group", "label": "逐层 Group Offload（保画质 · 适配 A100 40G / L4 24G）", "hint": "无损 BF16 按 block 异步流预取，自动防爆主机内存"},
+    {"id": "none", "label": "关闭（全常驻显存）", "hint": "仅超大显存机器可用"},
+]
+
+
+def normalize_video_offload_mode(raw: Any, auto_offload: Any = True) -> str:
+    m = str(raw or "").strip().lower()
+    if m in {"auto", "component", "group", "none"}:
+        return m
+    return "auto" if bool(auto_offload) else "none"
 LIMITS = {
     "size_min": 512, "size_max": 1536, "size_step": 64,
     "steps_min": 2, "steps_max": 60,
@@ -754,7 +767,7 @@ LIMITS = {
 }
 DEFAULTS = {
     "image": {"width": 768, "height": 1152, "steps": 35, "cfg": 5.0, "model": "qwen-2.1-bf16"},
-    "video": {"width": 1280, "height": 768, "steps": 30, "cfg": 5.0, "num_frames": 124, "workflow": "t2va"},
+    "video": {"width": 1280, "height": 768, "steps": 30, "cfg": 5.0, "num_frames": 124, "workflow": "t2va", "offload_mode": "auto"},
     "gpu": "A100",
     "gpu_pool": ["A100"],
     "poll_rounds": 2,
@@ -889,7 +902,9 @@ def normalize_job(body: dict) -> dict:
         except (TypeError, ValueError) as exc:
             raise ValueError("帧数格式不对") from exc
         job["num_frames"] = int(_clamp(frames, LIMITS["frames_min"], LIMITS["frames_max"]))
-        job["auto_offload"] = bool(body.get("auto_offload", True))
+        offload_mode = normalize_video_offload_mode(body.get("offload_mode"), body.get("auto_offload", True))
+        job["offload_mode"] = offload_mode
+        job["auto_offload"] = offload_mode != "none"
         job["has_last_image"] = bool(body.get("has_last_image")) and job["workflow"] == "fl2va"
         if job["workflow"] != "t2va":
             job["has_image"] = True
@@ -1280,7 +1295,9 @@ class Studio:
             except (TypeError, ValueError) as exc:
                 raise ValueError("帧数格式不对") from exc
             entry["num_frames"] = int(_clamp(frames, LIMITS["frames_min"], LIMITS["frames_max"]))
-            entry["auto_offload"] = bool(body.get("auto_offload", True))
+            om = normalize_video_offload_mode(body.get("offload_mode"), body.get("auto_offload", True))
+            entry["offload_mode"] = om
+            entry["auto_offload"] = om != "none"
         else:
             engine = "comfyui" if str(body.get("engine") or "").strip().lower() == "comfyui" else "diffusers"
             entry["engine"] = engine
@@ -2692,7 +2709,7 @@ class Studio:
             meta = {k: p.get(k) for k in (
                 "prompt", "prompt_template", "negative", "idea", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
                 "cfg", "seed", "num_frames", "loras", "has_image", "has_last_image", "chain",
-                "custom_transformer_repo", "custom_transformer_file", "auto_offload",
+                "custom_transformer_repo", "custom_transformer_file", "auto_offload", "offload_mode",
                 "workflow_run_id", "workflow_step_id",
             )}
             if video:

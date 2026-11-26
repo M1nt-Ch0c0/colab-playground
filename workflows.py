@@ -2143,6 +2143,7 @@ class WorkflowEngine:
                 "cfg": cfg.get("cfg") or 5.0,
                 "seed": cfg.get("seed", -1),
                 "auto_offload": bool(cfg.get("auto_offload", True)),
+                "offload_mode": str(cfg.get("offload_mode") or "auto"),
                 "gpu": cfg.get("gpu") or "H100",
                 "gpu_pool": cfg.get("gpu_pool") or [cfg.get("gpu") or "H100"],
                 "poll_rounds": cfg.get("poll_rounds") or 2,
