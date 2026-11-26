@@ -175,11 +175,15 @@ button.chip{cursor:pointer}button.chip:hover{border-color:var(--line2);color:var
 .wf-main{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
 .wf-head{flex:none;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);display:grid;gap:10px}
 .wf-canvas{flex:1;min-height:0;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:0}
-.wf-item{width:100%;text-align:left;padding:9px 11px;border-radius:11px;border:1px solid var(--line);background:var(--card);cursor:pointer;transition:.15s;margin-bottom:6px;display:grid;gap:3px}
+.wf-item{width:100%;min-width:0;overflow:hidden;text-align:left;padding:9px 11px;border-radius:11px;border:1px solid var(--line);background:var(--card);cursor:pointer;transition:.15s;margin-bottom:6px;display:grid;grid-template-columns:minmax(0,1fr);gap:3px}
 .wf-item:hover{border-color:var(--line2);background:var(--card2)}
 .wf-item.on{border-color:var(--pchip-on-bd);background:var(--pchip-on-bg)}
-.wf-item .wt{font-weight:650;font-size:13px;display:flex;align-items:center;gap:6px}
+.wf-item .wt{font-weight:650;font-size:13px;display:flex;align-items:center;gap:6px;min-width:0;width:100%}
+.wf-item .wt-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wf-item .ws{font-size:11.5px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.wf-x{flex:none;width:22px;height:22px;border-radius:6px;border:0;background:transparent;color:var(--dim);cursor:pointer;display:grid;place-items:center;font-size:15px;line-height:1;padding:0}
+.wf-x:hover{background:var(--danger-bg);color:var(--bad)}
+.wf-st{flex:none;white-space:nowrap;font-size:11px;padding:2px 8px;border-radius:99px;font-weight:600;border:1px solid transparent}
 .wf-arrow{display:flex;align-items:center;justify-content:center;height:22px;color:var(--dim);font-size:13px;user-select:none}
 .wf-node{border:1px solid var(--line);border-radius:15px;background:var(--card);overflow:hidden;transition:border-color .15s}
 .wf-node.running{border-color:var(--a2);box-shadow:0 0 0 2px rgba(34,211,238,.2)}
@@ -189,7 +193,6 @@ button.chip{cursor:pointer}button.chip:hover{border-color:var(--line2);color:var
 .wf-nh{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
 .wf-nb{padding:12px 14px;display:grid;gap:10px}
 .wf-type{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--surface2);color:var(--muted);border:1px solid var(--line);font-weight:600}
-.wf-st{font-size:11px;padding:2px 8px;border-radius:99px;font-weight:600;border:1px solid transparent}
 .wf-st.pending{color:var(--dim);background:var(--surface2);border-color:var(--line)}
 .wf-st.running{color:var(--fmt-fg);background:var(--fmt-bg);border-color:var(--fmt-bd)}
 .wf-st.done{color:var(--badge-run-fg);background:var(--badge-run-bg);border-color:var(--badge-run-bd)}
@@ -2234,7 +2237,7 @@ const WF_STATUS_ZH = {
 };
 let wfSaveTimer = null;
 
-async function loadWorkflowData({keepRun=true}={}){
+async function loadWorkflowData({keepRun=true, autoCreate=true}={}){
   try {
     const data = await api('api/workflows');
     S.wfData = data;
@@ -2250,8 +2253,12 @@ async function loadWorkflowData({keepRun=true}={}){
     }
     if (data.runs && data.runs.length){
       await selectWorkflowRun(data.runs[0].id);
-    } else {
+    } else if (autoCreate){
       await createRunFromTemplate('builtin:agent-long-video');
+    } else {
+      S.wfRun = null;
+      renderWorkflowSidebar();
+      renderWorkflowCanvas();
     }
   } catch(e){ toast('加载工作流失败：' + e.message, 'err'); }
 }
@@ -2318,8 +2325,8 @@ function renderWorkflowSidebar(){
   $('#wfTemplateList').innerHTML = allTpls.map(t => `
     <div class="wf-item" data-wftpl="${esc(t.id)}">
       <div class="wt">
-        <span style="flex:1">${esc(t.name)}</span>
-        ${t.builtin ? '<span class="fmt-pill">内置</span>' : `<span class="rm" data-del-wftpl="${esc(t.id)}" title="删除模板" style="cursor:pointer;padding:0 4px">×</span>`}
+        <span class="wt-name" title="${esc(t.name)}">${esc(t.name)}</span>
+        ${t.builtin ? '<span class="fmt-pill" style="flex:none">内置</span>' : `<button type="button" class="wf-x" data-del-wftpl="${esc(t.id)}" title="删除模板">×</button>`}
       </div>
       <div class="ws">${esc(t.description || '')}</div>
       <div class="dim" style="font-size:11px">${(t.steps||[]).length} 个步骤 · 点击新建实例</div>
@@ -2328,9 +2335,9 @@ function renderWorkflowSidebar(){
   $('#wfRunList').innerHTML = runs.length ? runs.map(r => `
     <div class="wf-item ${S.wfRun && S.wfRun.id === r.id ? 'on' : ''}" data-wfrun="${esc(r.id)}">
       <div class="wt">
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.workflow_name || r.id)}</span>
+        <span class="wt-name" title="${esc(r.workflow_name || r.id)}">${esc(r.workflow_name || r.id)}</span>
         <span class="wf-st ${esc(r.status)}">${esc(WF_STATUS_ZH[r.status] || r.status)}</span>
-        <span data-del-wfrun="${esc(r.id)}" title="删除记录" style="cursor:pointer;padding:0 3px;color:var(--dim)">×</span>
+        <button type="button" class="wf-x" data-del-wfrun="${esc(r.id)}" title="删除此运行实例">×</button>
       </div>
       <div class="ws">${esc(r.topic || '（未填主题）')}</div>
       <div class="dim" style="font-size:11px">${r.done_steps}/${r.total_steps} 步${r.final_round_id ? ' · 成片 #' + +r.final_round_id : ''} · ${ago(r.updated_at || r.created_at)}</div>
@@ -2573,7 +2580,20 @@ function renderStepOutputHTML(step, ss, run){
   return '';
 }
 function renderWorkflowCanvas({preserveInputs=false}={}){
-  const run = S.wfRun; if (!run) return;
+  const run = S.wfRun;
+  if (!run){
+    $('#wfName').value = ''; $('#wfName').disabled = true;
+    $('#wfTopic').value = ''; $('#wfTopic').disabled = true;
+    $('#wfStatusPill').textContent = '未选择'; $('#wfStatusPill').className = 'wf-st pending';
+    $('#wfStartBtn').classList.add('hide'); $('#wfResumeBtn').classList.add('hide'); $('#wfCancelBtn').classList.add('hide');
+    $('#wfPauseBanner').classList.add('hide');
+    $('#wfPalette').classList.add('hide');
+    $('#wfLogsBox').classList.add('hide');
+    $('#wfNodes').innerHTML = '<div class="gempty" style="margin:30px 0">当前没有打开的运行实例。<br>点击左侧任意「工作流模板」或「+ 空白流程」即可新建一个实例。</div>';
+    return;
+  }
+  $('#wfPalette').classList.remove('hide');
+  $('#wfLogsBox').classList.remove('hide');
   const running = run.status === 'running';
   const paused = run.status === 'paused';
   if (!preserveInputs || document.activeElement !== $('#wfName')) $('#wfName').value = run.workflow.name || '';
@@ -2838,9 +2858,10 @@ function bind(){
       const rid = del.dataset.delWfrun;
       try {
         await api('api/workflows/runs/' + encodeURIComponent(rid), {method:'DELETE'});
-        if (S.wfRun && S.wfRun.id === rid) S.wfRun = null;
-        await loadWorkflowData({keepRun:false});
-        toast('已删除运行记录', 'ok');
+        const wasCurrent = S.wfRun && S.wfRun.id === rid;
+        if (wasCurrent) S.wfRun = null;
+        await loadWorkflowData({keepRun: !wasCurrent, autoCreate: false});
+        toast('已删除运行实例', 'ok');
       } catch(err){ toast(err.message, 'err'); }
       return;
     }
