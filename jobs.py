@@ -863,11 +863,7 @@ def normalize_job(body: dict) -> dict:
             )
         )
         raw_idle = body.get("idle_minutes")
-        idle_minutes = (
-            int(_clamp(_as_int(raw_idle, DEFAULTS["idle_minutes"]), LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
-            if raw_idle not in (None, "")
-            else None
-        )
+        idle_minutes = normalize_idle_minutes(raw_idle) if raw_idle not in (None, "") else None
     except (TypeError, ValueError) as exc:
         raise ValueError("参数格式不对") from exc
 
@@ -930,6 +926,48 @@ def normalize_job(body: dict) -> dict:
     return job
 
 
+def normalize_idle_minutes(raw: Any) -> int:
+    """0 keeps the runtime forever. Any other value clamps to 5–60 minutes."""
+    minutes = _as_int(raw, DEFAULTS["idle_minutes"])
+    if minutes <= 0:
+        return 0
+    return int(_clamp(minutes, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
+
+
+def normalize_grab(body: dict) -> dict:
+    """Validate a settings grab-card request."""
+    valid_gpus = {g["id"] for g in GPUS}
+    raw_pool = body.get("gpu_pool")
+    gpu_pool: list[str] = []
+    if isinstance(raw_pool, list):
+        for item in raw_pool:
+            gid = str(item or "").upper().strip()
+            if gid not in valid_gpus:
+                raise ValueError(f"不支持的 GPU 类型：{gid}")
+            if gid not in gpu_pool:
+                gpu_pool.append(gid)
+    if not gpu_pool:
+        gpu = str(body.get("gpu") or "").upper().strip()
+        if gpu not in valid_gpus:
+            raise ValueError("请先选择要抢的 GPU")
+        gpu_pool = [gpu]
+    try:
+        poll_rounds = int(
+            _clamp(
+                _as_int(body.get("poll_rounds"), DEFAULTS["poll_rounds"]),
+                LIMITS["poll_rounds_min"],
+                LIMITS["poll_rounds_max"],
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("轮询次数格式不对") from exc
+    return {
+        "gpu_pool": gpu_pool,
+        "poll_rounds": poll_rounds,
+        "poll_all_proxies": bool(body.get("poll_all_proxies")),
+    }
+
+
 class Studio:
     """Owns the job queue (persisted to disk) and the Colab runtime lifecycle."""
 
@@ -956,6 +994,7 @@ class Studio:
         self._history: collections.deque[dict] = collections.deque(maxlen=30)
         self._runner: threading.Thread | None = None
         self._cancel = False
+        self._grabbing = False
         self._job_seq = 0
         self._recent_models: list[str] = []
         self._comfy_presets: list[dict] = []
@@ -1391,7 +1430,9 @@ class Studio:
             self.queue_state_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "version": 1,
-                "idle_minutes": max(LIMITS["idle_minutes_min"], min(LIMITS["idle_minutes_max"], self.idle_seconds // 60)),
+                "idle_minutes": 0 if self.idle_seconds <= 0 else int(
+                    _clamp(self.idle_seconds // 60, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"])
+                ),
                 "job_seq": self._job_seq,
                 "proxy_profile": self._proxy_profile,
                 "recent_models": list(self._recent_models),
@@ -1423,7 +1464,9 @@ class Studio:
                 return {"queued": 0, "interrupted": None}
 
             saved_idle = data.get("idle_minutes")
-            if isinstance(saved_idle, int) and not isinstance(saved_idle, bool):
+            if saved_idle == 0:
+                self.idle_seconds = 0
+            elif isinstance(saved_idle, int) and not isinstance(saved_idle, bool):
                 self.idle_seconds = int(_clamp(saved_idle, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"])) * 60
             saved_seq = data.get("job_seq")
             if isinstance(saved_seq, int) and saved_seq > self._job_seq:
@@ -1541,6 +1584,10 @@ class Studio:
 
             self._save_state_locked()
 
+        if self.idle_seconds <= 0:
+            self.cancel_idle()
+        elif self.active_gpu and not recovered_queued:
+            self.arm_idle()
         if interrupted_id:
             self.log(f"上次服务重启中断了任务 {interrupted_id}，已记入历史")
         if recovered_queued:
@@ -2264,6 +2311,8 @@ class Studio:
     def arm_idle(self) -> None:
         with self._lock:
             self.cancel_idle()
+            if self.idle_seconds <= 0:
+                return
             sec = max(120, self.idle_seconds)
 
             def fire() -> None:
@@ -2280,14 +2329,23 @@ class Studio:
             self.idle_deadline = time.time() + sec
 
     def set_idle_minutes(self, minutes: int) -> int:
-        minutes = int(_clamp(minutes, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
+        minutes = normalize_idle_minutes(minutes)
         with self._lock:
             self.idle_seconds = minutes * 60
-            rearm = self._idle_timer is not None
+            rearm = self._idle_timer is not None or (
+                bool(self.active_gpu)
+                and self._current is None
+                and not self._queue
+                and self.phase not in {"stopping", "generating", "starting"}
+            )
             self._save_state_locked()
-        if rearm:
-            self.arm_idle()
-        self.log(f"空闲自动释放时间已设为 {minutes} 分钟")
+        if minutes <= 0:
+            self.cancel_idle()
+            self.log("已设为永不超期，会一直持有 Colab 运行时，直到手动释放")
+        else:
+            if rearm:
+                self.arm_idle()
+            self.log(f"空闲自动释放时间已设为 {minutes} 分钟")
         return minutes
 
     def _worker_rev(self) -> str:
@@ -2381,6 +2439,8 @@ class Studio:
         first_ref = ref_blobs[0] if ref_blobs else None
         created = []
         with self._lock:
+            if self._grabbing:
+                raise RuntimeError("正在抢卡，请等算力就绪后再提交任务")
             if len(self._queue) + count > QUEUE_MAX:
                 raise RuntimeError(f"队列已满（最多 {QUEUE_MAX} 个任务），请稍后再提交")
             for i in range(count):
@@ -2553,6 +2613,82 @@ class Studio:
         job["stage"] = stage
         job["progress"] = None
 
+    def _proxy_hooks(self, candidates: list[str], poll_rounds: int, poll_all_proxies: bool):
+        configured_px = self.configured_proxy_profiles()
+        if poll_all_proxies and len(configured_px) > 1:
+            return [
+                (lbl, (lambda pid=pid: self.switch_proxy_silent(pid)))
+                for pid, lbl in configured_px
+            ]
+        if configured_px and (poll_rounds > 1 or len(candidates) > 1):
+            return [(configured_px[0][1], None)]
+        return None
+
+    def _acquire_session(self, candidates: list[str], poll_rounds: int, poll_all_proxies: bool):
+        proxy_hooks = self._proxy_hooks(candidates, poll_rounds, poll_all_proxies)
+        try:
+            return self.colab.ensure_session(
+                gpu=candidates[0],
+                high_mem=True,
+                session_name=SESSION_NAME,
+                cancel_check=lambda: self._cancel,
+                fallback_gpus=candidates[1:] or None,
+                poll_rounds=poll_rounds,
+                proxy_hooks=proxy_hooks,
+            )
+        except TypeError:
+            return self.colab.ensure_session(
+                gpu=candidates[0],
+                high_mem=True,
+                session_name=SESSION_NAME,
+                cancel_check=lambda: self._cancel,
+                fallback_gpus=candidates[1:] or None,
+            )
+
+    def grab_card(self, gpu_pool: list[str], poll_rounds: int, poll_all_proxies: bool) -> None:
+        """Assign a Colab runtime from Settings and hold it. Does not run a job."""
+        with self._lock:
+            if self._grabbing or self._current is not None or self._queue or self.phase in {"starting", "generating", "stopping"}:
+                raise RuntimeError("当前有任务或正在申请算力，请稍后再抢卡")
+            self._grabbing = True
+            self._cancel = False
+            self.phase = "starting"
+            self.error = ""
+        threading.Thread(
+            target=self._grab_worker,
+            args=(list(gpu_pool), int(poll_rounds), bool(poll_all_proxies)),
+            daemon=True,
+            name="colab-grab",
+        ).start()
+
+    def _grab_worker(self, pool: list[str], rounds: int, all_proxies: bool) -> None:
+        try:
+            self.log(f"开始抢卡：{'/'.join(pool)}，{rounds} 轮" + ("，全部代理" if all_proxies else ""))
+            session = self._acquire_session(pool, rounds, all_proxies)
+            with self._lock:
+                if self._cancel or self.phase == "stopping":
+                    self.log("抢卡已取消")
+                    return
+                self.active_gpu = f"{session.accelerator} ({session.machine_shape})"
+                self.phase = "ready"
+                self.error = ""
+            self.colab.invalidate_status()
+            if self.idle_seconds <= 0:
+                self.cancel_idle()
+                self.log(f"已持有 {session.accelerator}，设置为永不超期，不会自动释放。")
+            else:
+                self.arm_idle()
+                self.log(f"已持有 {session.accelerator}，空闲 {self.idle_seconds // 60} 分钟后自动释放。")
+        except Exception as exc:
+            with self._lock:
+                aborted = self.phase == "stopping" or self._cancel
+            if not aborted:
+                self.log("抢卡失败：" + str(exc))
+                self.set_phase("error", str(exc)[:400])
+        finally:
+            with self._lock:
+                self._grabbing = False
+
     def _run_job(self, job: dict) -> None:
         p = job["payload"]
         job["status"] = "running"
@@ -2561,9 +2697,9 @@ class Studio:
         tmpdir = Path(tempfile.mkdtemp(prefix="qp-job-"))
         try:
             self.cancel_idle()
-            if p.get("idle_minutes"):
+            if "idle_minutes" in p:
                 with self._lock:
-                    self.idle_seconds = int(p["idle_minutes"]) * 60
+                    self.idle_seconds = max(0, int(p["idle_minutes"])) * 60
                     self._save_state_locked()
             self.set_phase("starting")
             self._stage(job, "provisioning")
@@ -2584,34 +2720,7 @@ class Studio:
                         candidates.append(g)
 
             poll_rounds = int(p.get("poll_rounds") or 1)
-            proxy_hooks = None
-            configured_px = self.configured_proxy_profiles()
-            if p.get("poll_all_proxies") and len(configured_px) > 1:
-                proxy_hooks = [
-                    (lbl, (lambda pid=pid: self.switch_proxy_silent(pid)))
-                    for pid, lbl in configured_px
-                ]
-            elif configured_px and (poll_rounds > 1 or len(candidates) > 1):
-                proxy_hooks = [(configured_px[0][1], None)]
-
-            try:
-                session = self.colab.ensure_session(
-                    gpu=candidates[0],
-                    high_mem=True,
-                    session_name=SESSION_NAME,
-                    cancel_check=lambda: self._cancel,
-                    fallback_gpus=candidates[1:] or None,
-                    poll_rounds=poll_rounds,
-                    proxy_hooks=proxy_hooks,
-                )
-            except TypeError:
-                session = self.colab.ensure_session(
-                    gpu=candidates[0],
-                    high_mem=True,
-                    session_name=SESSION_NAME,
-                    cancel_check=lambda: self._cancel,
-                    fallback_gpus=candidates[1:] or None,
-                )
+            session = self._acquire_session(candidates, poll_rounds, bool(p.get("poll_all_proxies")))
             with self._lock:
                 self._save_state_locked()
             self.active_gpu = f"{session.accelerator} ({session.machine_shape})"
@@ -2726,9 +2835,14 @@ class Studio:
             self._stage(job, "done")
             self.colab.invalidate_status()
             self.set_phase("ready")
+            hold = (
+                "已设为保持持有，不会自动释放。"
+                if self.idle_seconds <= 0
+                else f"空闲 {self.idle_seconds // 60} 分钟后自动释放算力。"
+            )
             self.log(
                 f"第 {int(rid)} 号作品已保存（{out.stat().st_size // 1024} KB，用时 {meta['duration_s']:.0f}s）。"
-                f"模型常驻 Kernel，空闲 {self.idle_seconds // 60} 分钟后自动释放算力。"
+                f"模型常驻 Kernel，{hold}"
             )
         except Exception as exc:
             canceled = self._cancel or "取消" in str(exc)
@@ -2756,7 +2870,7 @@ class Studio:
                 "phase": self.phase,
                 "error": self.error,
                 "active_gpu": self.active_gpu,
-                "idle_minutes": self.idle_seconds // 60,
+                "idle_minutes": 0 if self.idle_seconds <= 0 else self.idle_seconds // 60,
                 "idle_deadline": int(self.idle_deadline) if self.idle_deadline else None,
                 "current": self._job_public(self._current),
                 "queue": [self._job_public(j) for j in self._queue],

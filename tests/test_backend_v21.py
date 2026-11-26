@@ -158,7 +158,7 @@ def test_queue_persistence_and_recovery() -> None:
 
     # Validation edge cases (including custom HF repo models)
     j0 = normalize_job({"prompt": "hi", "seed": 0, "idle_minutes": 0})
-    assert j0["seed"] == 0 and j0["idle_minutes"] == 5
+    assert j0["seed"] == 0 and j0["idle_minutes"] == 0
     j_hf = normalize_job({"prompt": "hi", "model": "black-forest-labs/FLUX.1-dev"})
     assert j_hf["model"] == "black-forest-labs/FLUX.1-dev"
     try:
@@ -533,6 +533,86 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_grab_and_hold_forever() -> None:
+    from jobs import LogBuffer, Studio, normalize_grab, normalize_job
+    from store import Store
+
+    spec = normalize_grab({"gpu_pool": ["h100", "A100"], "poll_rounds": 3, "poll_all_proxies": False})
+    assert spec["gpu_pool"] == ["H100", "A100"] and spec["poll_rounds"] == 3
+    try:
+        normalize_grab({"gpu_pool": ["NOPE"]})
+        raise AssertionError("unknown gpu should fail")
+    except ValueError:
+        pass
+
+    class Sess:
+        accelerator = "A100"
+        machine_shape = "HIGH_RAM"
+
+    class GrabColab:
+        def __init__(self):
+            self.calls = []
+
+        def ensure_session(self, **kw):
+            self.calls.append(kw)
+            return Sess()
+
+        def invalidate_status(self):
+            pass
+
+        def has_credentials(self):
+            return True
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-grab-"))
+    try:
+        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
+        log = LogBuffer()
+        store = Store(tmp / "out", log)
+        colab = GrabColab()
+        st = Studio(tmp, {}, colab, store, log, 600)
+        assert st.set_idle_minutes(0) == 0
+        assert st.idle_seconds == 0 and st._idle_timer is None
+        saved = json.loads((tmp / "out" / "queue.json").read_text(encoding="utf-8"))
+        assert saved["idle_minutes"] == 0
+
+        st._grabbing = True
+        try:
+            st.enqueue(normalize_job({"prompt": "while grabbing"}))
+            raise AssertionError("enqueue should wait for grab")
+        except RuntimeError as exc:
+            assert "抢卡" in str(exc)
+        st._grabbing = False
+
+        st.grab_card(gpu_pool=["H100", "A100"], poll_rounds=3, poll_all_proxies=False)
+        deadline = time.time() + 2.0
+        while st.phase != "ready" and time.time() < deadline:
+            time.sleep(0.02)
+        assert st.phase == "ready", st.phase
+        assert st.active_gpu.startswith("A100")
+        assert st._idle_timer is None
+        assert st._grabbing is False
+        assert colab.calls[0]["gpu"] == "H100"
+        assert colab.calls[0]["fallback_gpus"] == ["A100"]
+        assert colab.calls[0]["poll_rounds"] == 3
+
+        tmp2 = Path(tempfile.mkdtemp(prefix="qp-test-grab-recover-"))
+        try:
+            shutil.copytree(tmp / "out", tmp2 / "out")
+            (tmp2 / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
+            st2 = Studio(tmp2, {}, GrabColab(), Store(tmp2 / "out", LogBuffer()), LogBuffer(), 600)
+            st2.active_gpu = "A100 (HIGH_RAM)"
+            st2.arm_idle()
+            assert st2._idle_timer is not None
+            st2.recover()
+            assert st2.idle_seconds == 0
+            assert st2._idle_timer is None
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
+        print("OK test_grab_and_hold_forever")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_minor_sexual_gate() -> None:
     import jobs
 
@@ -550,6 +630,7 @@ if __name__ == "__main__":
     test_gpu_shape_and_retry_cancel()
     test_store_features()
     test_queue_persistence_and_recovery()
+    test_grab_and_hold_forever()
     test_multi_refs_and_local_cpa_proxy_bypass()
     test_minor_sexual_gate()
     print("ALL BACKEND TESTS PASSED")
