@@ -169,7 +169,8 @@ input[type=text],input[type=number],input[type=password],input[type=search],sele
   width:100%;min-width:0;background:var(--input-bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;outline:none;transition:border-color .15s,box-shadow .15s}
 input:focus,select:focus,textarea:focus{border-color:rgba(124,58,237,.7);box-shadow:0 0 0 3px rgba(124,58,237,.16)}
 textarea{resize:vertical;min-height:64px;line-height:1.55}
-textarea#prompt{min-height:104px}
+textarea#prompt{min-height:140px}
+.rw-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:550;color:var(--pchip-on-fg);background:var(--pchip-on-bg);border:1px solid var(--pchip-on-bd);margin-top:6px}
 select{cursor:pointer}
 select option{background:var(--option-bg);color:var(--text)}
 .counter{font-size:11px;color:var(--dim);text-align:right;margin-top:3px}
@@ -468,56 +469,8 @@ _BODY = r"""
         <button id="mVideo"><i data-i="video"></i>生视频 + 音频</button>
       </div>
 
-      <section class="block">
-        <div class="bh"><i data-i="sparkles"></i>创意与提示词<span class="hint">Ctrl + Enter 生成</span></div>
-        <label class="f">一句话想法（交给 CPA 改写）</label>
-        <div class="row" style="align-items:stretch">
-          <textarea id="idea" data-p rows="2" placeholder="例如：雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感"></textarea>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button class="btn sm" id="rewriteBtn"><i data-i="sparkles"></i>AI 改写为提示词</button>
-          <span class="dim" style="font-size:12px" id="rewriteHint"></span>
-        </div>
-        <label class="f">提示词 Prompt</label>
-        <textarea id="prompt" data-p placeholder="直接写英文 / 中文提示词，或用上面的 AI 改写"></textarea>
-        <div class="counter"><span id="promptCount">0</span> / 2500</div>
-        <details id="negWrap">
-          <summary class="dim" style="cursor:pointer;font-size:12px;margin-top:4px">负面提示词（可选）</summary>
-          <textarea id="negative" data-p rows="2" style="margin-top:6px">blurry, lowres, jpeg artifacts, deformed, bad anatomy, watermark, text, logo, signature</textarea>
-        </details>
-      </section>
-
-      <section class="block" id="refBlock">
-        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴（可多选）</span></div>
-        <div id="multiRefWrap">
-          <div class="ref-grid" id="refGrid"></div>
-          <div class="ref-bar hide" id="refBar">
-            <span id="refCountText"></span>
-            <button type="button" class="btn sm ghost" id="refClearAll" style="height:24px;padding:0 8px;font-size:11px">清空全部</button>
-          </div>
-        </div>
-        <div class="drops hide" id="drops" style="margin-top:10px">
-          <div class="drop" id="dropFirst" data-slot="first">
-            <span class="ttl" id="firstTtl">首帧</span>
-            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">上传首帧图</div><div class="dim">PNG / JPEG / WebP ≤ 12MB</div></div>
-            <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
-          </div>
-          <div class="drop hide" id="dropLast" data-slot="last">
-            <span class="ttl">尾帧</span>
-            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">尾帧（可选）</div></div>
-            <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
-          </div>
-        </div>
-        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
-        <div id="imgRefOpts">
-          <label class="switch"><input type="checkbox" id="useRef" data-p><span class="tg"></span>用参考图改图</label>
-          <label class="switch" title="自动以最新作品为参考图，适合连续修改"><input type="checkbox" id="chain" data-p><span class="tg"></span>接着改（自动用最新作品）</label>
-        </div>
-        <div class="help" id="refHelp"></div>
-      </section>
-
-      <section class="block">
-        <div class="bh"><i data-i="layers"></i>模型与参数</div>
+      <section class="block" id="modeBlock">
+        <div class="bh"><i data-i="layers"></i><span id="modeBlockTitle">引擎与模型</span></div>
         <div id="imageModelWrap">
           <div class="eng-seg" role="tablist" aria-label="生图引擎">
             <button type="button" id="engDiffusers" class="on">Diffusers（整机）</button>
@@ -595,21 +548,73 @@ _BODY = r"""
             </div>
           </div>
         </div>
+
         <div id="workflowWrap" class="hide">
-          <label class="f">MiniMax-H3 工作流</label>
+          <label class="f">MiniMax-H3 工作流（先选模式，下方自动匹配 3 段 / 6 段提示词）</label>
           <div class="chips" id="workflowChips"></div>
         </div>
+        <div id="framesWrap" class="hide">
+          <label class="f">时长（24 fps · 用于 H3 时间轴对齐）</label>
+          <div class="chips" id="frameChips"></div>
+        </div>
+      </section>
 
+      <section class="block" id="refBlock">
+        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴（可多选）</span></div>
+        <div id="multiRefWrap">
+          <div class="ref-grid" id="refGrid"></div>
+          <div class="ref-bar hide" id="refBar">
+            <span id="refCountText"></span>
+            <button type="button" class="btn sm ghost" id="refClearAll" style="height:24px;padding:0 8px;font-size:11px">清空全部</button>
+          </div>
+        </div>
+        <div class="drops hide" id="drops" style="margin-top:10px">
+          <div class="drop" id="dropFirst" data-slot="first">
+            <span class="ttl" id="firstTtl">首帧</span>
+            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">上传首帧图</div><div class="dim">PNG / JPEG / WebP ≤ 12MB</div></div>
+            <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
+          </div>
+          <div class="drop hide" id="dropLast" data-slot="last">
+            <span class="ttl">尾帧</span>
+            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">尾帧（可选）</div></div>
+            <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        <div id="imgRefOpts">
+          <label class="switch"><input type="checkbox" id="useRef" data-p><span class="tg"></span>用参考图改图</label>
+          <label class="switch" title="自动以最新作品为参考图，适合连续修改"><input type="checkbox" id="chain" data-p><span class="tg"></span>接着改（自动用最新作品）</label>
+        </div>
+        <div class="help" id="refHelp"></div>
+      </section>
+
+      <section class="block" id="promptBlock">
+        <div class="bh"><i data-i="sparkles"></i>创意与提示词<span class="hint" id="shortcutHint">Ctrl + Enter 生成</span></div>
+        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 自动适配当前模式</div>
+        <label class="f">一句话想法（交给 deepseek-flash 看图 / 按 H3 规范改写）</label>
+        <div class="row" style="align-items:stretch">
+          <textarea id="idea" data-p rows="2" placeholder="例如：雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感"></textarea>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn sm" id="rewriteBtn"><i data-i="sparkles"></i>AI 改写为提示词</button>
+          <span class="dim" style="font-size:12px" id="rewriteHint"></span>
+        </div>
+        <label class="f">提示词 Prompt</label>
+        <textarea id="prompt" data-p placeholder="直接写英文 / 中文提示词，或点上方「AI 改写」生成标准分段提示词"></textarea>
+        <div class="counter"><span id="promptCount">0</span> / <span id="promptMax">12000</span></div>
+        <details id="negWrap">
+          <summary class="dim" style="cursor:pointer;font-size:12px;margin-top:4px">负面提示词（可选）</summary>
+          <textarea id="negative" data-p rows="2" style="margin-top:6px">blurry, lowres, jpeg artifacts, deformed, bad anatomy, watermark, text, logo, signature</textarea>
+        </details>
+      </section>
+
+      <section class="block">
+        <div class="bh"><i data-i="settings"></i>画幅与采样参数</div>
         <label class="f">画幅</label>
         <div class="chips" id="sizeChips"></div>
         <div class="g2" style="margin-top:8px">
           <div class="row"><span class="dim" style="font-size:12px;width:16px">W</span><input type="number" id="width" step="64" min="512" max="1536"></div>
           <div class="row"><span class="dim" style="font-size:12px;width:16px">H</span><input type="number" id="height" step="64" min="512" max="1536"></div>
-        </div>
-
-        <div id="framesWrap" class="hide">
-          <label class="f">时长（24 fps）</label>
-          <div class="chips" id="frameChips"></div>
         </div>
 
         <label class="f">采样步数 <span class="dim" id="stepsHint"></span></label>
@@ -1176,13 +1181,35 @@ function setMode(m, {keep=false}={}){
 function isMultiRefMode(){
   return S.mode === 'image' || (S.mode === 'video' && S.workflow === 'ref2va');
 }
+function updateRewriteBadge(){
+  const el = $('#rewriteModeBadge'); if (!el) return;
+  const items = Array.isArray(S.refs.items) ? S.refs.items : [];
+  const hasLast = !!(S.refs.last && S.refs.last.set);
+  if (S.mode === 'video'){
+    const sec = (S.frames / 24).toFixed(1);
+    if (S.workflow === 'ref2va'){
+      el.textContent = `deepseek-flash · H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
+    } else if (S.workflow === 'fl2va'){
+      const sub = items.length && hasLast ? 'FL2VA · 看首尾帧' : (items.length ? 'I2VA · 看首帧' : 'FL2VA');
+      el.textContent = `deepseek-flash · H3 三段式 (${sub} · ${sec}s)`;
+    } else {
+      el.textContent = `deepseek-flash · H3 三段式 (T2VA · ${sec}s)`;
+    }
+  } else {
+    if ($('#chain').checked) el.textContent = 'deepseek-flash · 多模态连续改图（看最新作品）';
+    else if ($('#useRef').checked && items.length) el.textContent = `deepseek-flash · 多模态看图改写（看 ${items.length} 张参考图）`;
+    else el.textContent = 'deepseek-flash · 文生图提示词改写';
+  }
+}
 function updateModeUI(){
   const v = S.mode === 'video';
+  $('#modeBlockTitle').textContent = v ? '视频模式与时长' : '生图引擎与模型';
   $('#imageModelWrap').classList.toggle('hide', v);
   $('#workflowWrap').classList.toggle('hide', !v);
   $('#framesWrap').classList.toggle('hide', !v);
   $('#offloadWrap').classList.toggle('hide', !v);
   $('#imgRefOpts').classList.toggle('hide', v);
+  $('#negWrap').classList.toggle('hide', v);
   const wf = S.workflow;
   const multi = isMultiRefMode();
   $('#refBlock').classList.toggle('hide', v && wf === 't2va');
@@ -1196,12 +1223,13 @@ function updateModeUI(){
   $('#firstTtl').classList.toggle('hide', !(v && wf === 'fl2va'));
   const maxR = (S.refs && S.refs.max) || (S.cfg && S.cfg.limits && S.cfg.limits.refs_max) || 6;
   $('#refHelp').textContent = v
-    ? (wf === 'fl2va' ? '首帧必填，尾帧可选。' : `最多可传 ${maxR} 张参考图，MiniMax-H3 ref2va 会同时参考所有图片。`)
-    : `最多可传 ${maxR} 张参考图（Qwen-2.1 / FLUX.2 / ComfyUI 均支持多图融合与编辑）。`;
+    ? (wf === 'fl2va' ? '首帧必填，尾帧可选；AI 改写会自动查看首尾帧。' : `最多可传 ${maxR} 张参考图，AI 改写会自动看图生成 6 段式 Ref2VA 提示词。`)
+    : `最多可传 ${maxR} 张参考图；勾选「用参考图改图」后 AI 改写会自动看图。`;
   renderModelOptions();
   $('#goText').textContent = v ? '生成视频' : '开始生成';
   $('#stepsHint').textContent = v ? '（Turbo LoRA 可设 4–8；写实 LoRA 建议 18 步）' : (S.engine === 'comfyui' ? '（精细 28–35 步 / Turbo LoRA 8 步）' : '');
   renderSizeChips();
+  updateRewriteBadge();
   updateGoState();
 }
 
@@ -1240,6 +1268,7 @@ function renderRefs(refs){
   $('#refGrid').innerHTML = cards.join('');
   $('#refBar').classList.toggle('hide', items.length === 0);
   $('#refCountText').textContent = `已选 ${items.length} / ${maxR} 张参考图`;
+  updateRewriteBadge();
 }
 async function uploadRef(slot, file, {append=false, silent=false}={}){
   if (!file) return false;
@@ -1298,15 +1327,27 @@ async function rewrite(){
   const idea = $('#idea').value.trim();
   if (!idea) { toast('先写一句想法', 'err'); $('#idea').focus(); return; }
   const b = $('#rewriteBtn'); b.disabled = true; b.innerHTML = '<span class="sp"></span>改写中…';
+  $('#rewriteHint').textContent = 'deepseek-flash 正在生成…';
   try {
     const items = Array.isArray(S.refs.items) ? S.refs.items : [];
-    const editing = S.mode==='image' && ($('#useRef').checked || $('#chain').checked);
-    const ref_count = S.mode==='image' ? (editing ? ($('#chain').checked ? 1 : items.length) : 0) : (S.workflow==='ref2va' ? items.length : 0);
-    const r = await post('api/prompt', {text: idea, mode: S.mode, editing, ref_count});
+    const chain = S.mode === 'image' && $('#chain').checked;
+    const editing = S.mode === 'image' && ($('#useRef').checked || chain);
+    const has_last_image = S.mode === 'video' && S.workflow === 'fl2va' && !!(S.refs.last && S.refs.last.set);
+    const ref_count = S.mode === 'image' ? (editing ? (chain ? 1 : items.length) : 0) : (S.workflow === 't2va' ? 0 : items.length);
+    const r = await post('api/prompt', {
+      text: idea,
+      mode: S.mode,
+      workflow: S.workflow,
+      num_frames: S.frames,
+      editing,
+      chain,
+      has_last_image,
+      ref_count,
+    });
     $('#prompt').value = r.prompt; updateCount(); saveSoon();
-    $('#rewriteHint').textContent = '✓ 已写入下方提示词';
-    setTimeout(() => $('#rewriteHint').textContent = '', 3000);
-  } catch(e){ toast('改写失败：' + e.message, 'err'); }
+    $('#rewriteHint').textContent = `✓ ${r.format || '已写入下方提示词'}`;
+    setTimeout(() => $('#rewriteHint').textContent = '', 5000);
+  } catch(e){ $('#rewriteHint').textContent = ''; toast('改写失败：' + e.message, 'err'); }
   b.disabled = false; b.innerHTML = I('sparkles') + 'AI 改写为提示词';
 }
 function updateCount(){ $('#promptCount').textContent = $('#prompt').value.length; }
@@ -2042,8 +2083,8 @@ function bind(){
   };
   document.addEventListener('input', e => { if (e.target.closest('.panel')) saveSoon(); });
   document.addEventListener('change', e => { if (e.target.closest('.panel')) saveSoon(); });
-  $('#useRef').addEventListener('change', () => { if ($('#useRef').checked) $('#chain').checked = false; });
-  $('#chain').addEventListener('change', () => { if ($('#chain').checked) $('#useRef').checked = false; });
+  $('#useRef').addEventListener('change', () => { if ($('#useRef').checked) $('#chain').checked = false; updateRewriteBadge(); });
+  $('#chain').addEventListener('change', () => { if ($('#chain').checked) $('#useRef').checked = false; updateRewriteBadge(); });
   [['steps','stepsR'],['cfg','cfgR']].forEach(([n, r]) => {
     $('#'+r).addEventListener('input', () => $('#'+n).value = $('#'+r).value);
     $('#'+n).addEventListener('input', () => $('#'+r).value = $('#'+n).value);
@@ -2130,7 +2171,7 @@ function bind(){
     b.disabled = false; b.textContent = '测出口';
   };
   $('#workflowChips').onclick = e => { const b = e.target.closest('[data-wf]'); if (!b) return; S.workflow = b.dataset.wf; renderWorkflowChips(); updateModeUI(); renderStage(); saveSoon(); };
-  $('#frameChips').onclick = e => { const b = e.target.closest('[data-fr]'); if (!b) return; S.frames = +b.dataset.fr; renderFrameChips(); saveSoon(); };
+  $('#frameChips').onclick = e => { const b = e.target.closest('[data-fr]'); if (!b) return; S.frames = +b.dataset.fr; renderFrameChips(); updateRewriteBadge(); saveSoon(); };
   $('#seedRand').onclick = () => { $('#seed').value = Math.floor(Math.random() * 2147483646); saveSoon(); };
   $('#seedAuto').onclick = () => { $('#seed').value = -1; saveSoon(); };
   $('#cntMinus').onclick = () => { $('#count').textContent = Math.max(1, +$('#count').textContent - 1); saveSoon(); };
@@ -2274,9 +2315,10 @@ async function init(){
   hydrateIcons();
   const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   $('.go .kbd').textContent = mac ? '⌘↵' : 'Ctrl↵';
-  $('.bh .hint').textContent = (mac ? '⌘' : 'Ctrl') + ' + Enter 生成';
+  const sh = $('#shortcutHint'); if (sh) sh.textContent = (mac ? '⌘' : 'Ctrl') + ' + Enter 生成';
   loadForm();
   try { S.cfg = await api('api/config'); } catch(e){ toast('加载配置失败：' + e.message, 'err'); return; }
+  if (S.cfg && S.cfg.limits && S.cfg.limits.prompt_max) $('#promptMax').textContent = S.cfg.limits.prompt_max;
   const c = S.form.common || {};
   const validGpus = new Set((S.cfg.gpus || []).map(g => g.id));
   const savedPool = Array.isArray(c.gpu_pool) ? c.gpu_pool.filter(x => validGpus.has(x)) : [];

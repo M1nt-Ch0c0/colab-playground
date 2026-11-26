@@ -12,6 +12,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py jobs.py store.py ui.py colab_backend.py colab_worker.py ./
+COPY h3_skills ./h3_skills
 
 RUN useradd -m -u 1000 studio \
     && mkdir -p /data/out \

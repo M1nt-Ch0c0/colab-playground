@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import collections
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -544,7 +546,7 @@ LIMITS = {
     "count_max": 4, "loras_max": 4, "lora_scale_max": 2.5, "refs_max": 6,
     "idle_minutes_min": 5, "idle_minutes_max": 60,
     "poll_rounds_min": 1, "poll_rounds_max": 10,
-    "prompt_max": 2500, "negative_max": 1200, "upload_max_mb": 12,
+    "prompt_max": 12000, "negative_max": 1200, "upload_max_mb": 12,
     "queue_max": QUEUE_MAX,
 }
 DEFAULTS = {
@@ -1502,43 +1504,235 @@ class Studio:
         else:
             self.set_ref("first", data, f"round:{rid}")
 
-    # ── prompt helpers ────────────────────────────────────────────────
+    # ── prompt helpers (MiniMax-H3 official skills + multimodal vision) ──
 
-    def write_prompt(self, text: str, mode: str = "image", editing: bool = False, ref_count: int = 0) -> str:
+    @staticmethod
+    def _load_h3_guide(kind: str) -> str:
+        fname = "ref-en.txt" if kind == "ref" else "base-en.txt"
+        path = Path(__file__).resolve().parent / "h3_skills" / fname
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        if kind == "ref":
+            return (
+                "Write all six MiniMax-H3 full-reference sections in English in this exact order: "
+                "subject_definitions, summary, retention_analysis, detailed_description, "
+                "overall_soundscape, non_diegetic_music. Keep <Picture N> / <Subject N> labels consistent."
+            )
+        return (
+            "Write MiniMax-H3 video prompts in English with three core sections in this exact order: "
+            "integrated_multimodal_description: [Shot 1] ..., overall_soundscape: ..., non_diegetic_music: ..."
+        )
+
+    @staticmethod
+    def _encode_vision_image(raw: bytes, max_side: int = 1024) -> str:
+        try:
+            from PIL import Image
+
+            im = Image.open(io.BytesIO(raw))
+            if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                rgba = im.convert("RGBA")
+                bg.paste(rgba, mask=rgba.split()[-1])
+                im = bg
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            if max(im.size) > max_side:
+                im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception:
+            mime = (
+                "image/png"
+                if raw.startswith(b"\x89PNG")
+                else "image/webp"
+                if raw.startswith(b"RIFF")
+                else "image/jpeg"
+            )
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+
+    @staticmethod
+    def _clean_prompt_output(raw: str) -> str:
+        s = str(raw or "").strip()
+        if s.startswith("```"):
+            lines = s.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+        if len(s) >= 2 and s[0] == '"' and s[-1] == '"' and "\n" not in s:
+            s = s[1:-1].strip()
+        return s
+
+    def _collect_prompt_images(
+        self,
+        mode: str,
+        workflow: str,
+        editing: bool,
+        chain: bool,
+        has_last_image: bool,
+    ) -> list[tuple[str, bytes]]:
+        images: list[tuple[str, bytes]] = []
+        if mode == "video":
+            if workflow == "ref2va":
+                for idx, blob in enumerate(self.ref_blobs()[: LIMITS["refs_max"]], start=1):
+                    images.append((f"<Picture {idx}>", blob))
+            elif workflow == "fl2va":
+                blobs = self.ref_blobs()
+                if blobs:
+                    images.append(("<Picture 1> (First Frame at 0.00s)", blobs[0]))
+                if has_last_image:
+                    lf = self.ref_file("last")
+                    if lf.exists():
+                        images.append(("<Picture 2> (Last Frame at end)", lf.read_bytes()))
+        else:
+            if chain:
+                latest = self.store.latest("image")
+                if latest:
+                    p = self.store.rounds / f"{latest['id']}.png"
+                    if p.exists():
+                        images.append(("图1（最新生成作品）", p.read_bytes()))
+            elif editing:
+                for idx, blob in enumerate(self.ref_blobs()[: LIMITS["refs_max"]], start=1):
+                    images.append((f"图{idx}", blob))
+        return images
+
+    def write_prompt_rich(
+        self,
+        text: str,
+        mode: str = "image",
+        editing: bool = False,
+        ref_count: int = 0,
+        workflow: str = "t2va",
+        num_frames: int = 124,
+        chain: bool = False,
+        has_last_image: bool = False,
+    ) -> dict[str, Any]:
         key = self.secret.get("cpa_api_key") or ""
         if not key:
             raise RuntimeError("这台机器还没配置 CPA 密钥")
         base = (self.secret.get("cpa_base") or "http://127.0.0.1:8317").rstrip("/")
-        model = self.secret.get("cpa_model") or "grok-4.7"
+        model = self.secret.get("cpa_model") or "deepseek-flash"
+        wf = workflow if workflow in {"t2va", "fl2va", "ref2va"} else "t2va"
+        frames = int(_clamp(num_frames or DEFAULTS["video"]["num_frames"], LIMITS["frames_min"], LIMITS["frames_max"]))
+        duration_s = round(frames / 24.0, 2)
+
+        attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image)
+        eff_refs = len(attached) if attached else max(0, int(ref_count or 0))
+
         if mode == "video":
-            system_prompt = (
-                "你是 MiniMax-H3 音视频生成模型的提示词助手。用户会用自然语言描述想要的视频画面与声音，"
-                "你只输出一段可直接用于视频生成的英文或中英结合正面提示词。"
-                "不要解释，不要加标题，不要加引号，不要写负面提示词。"
-                "重点写清镜头运动（推/拉/摇/移/特写）、主体动作连贯变化、光线质感、环境氛围，以及同步环境音效或人物声音。"
-                "严禁生成任何涉及未成年人的不当内容。"
-            )
-            if ref_count > 1:
-                text = f"（这是结合 {ref_count} 张参考图生成视频的指令）" + text
+            if wf == "ref2va":
+                guide = self._load_h3_guide("ref")
+                system_prompt = (
+                    "You are the MiniMax-H3 Full-Reference (Ref2VA) video prompt rewriting specialist. "
+                    "Strictly follow the official MiniMax-H3 Full-Reference Prompt Writing Guide below.\n\n"
+                    f"{guide}\n\n"
+                    "STRICT OUTPUT RULES:\n"
+                    "- Output ONLY the final six-section prompt in English in the exact required order:\n"
+                    "  subject_definitions:\n  summary:\n  retention_analysis:\n  detailed_description:\n  overall_soundscape:\n  non_diegetic_music:\n"
+                    "- Preserve the original language only inside <d>[Language] ...</d> dialogue/lyrics and quoted on-screen text.\n"
+                    "- Inspect every attached <Picture N> carefully and ground subject_definitions and retention_analysis in real visual details from the images.\n"
+                    "- Do NOT output explanations, markdown code fences, commentary, or negative prompts."
+                )
+                pic_note = (
+                    f"Attached reference images: {', '.join(f'<Picture {i}>' for i in range(1, len(attached) + 1))}."
+                    if attached
+                    else f"Number of reference images expected: {eff_refs or 1} (refer to them as <Picture 1>..)."
+                )
+                user_text = (
+                    f"Task: MiniMax-H3 Ref2VA (Full-Reference Video + Audio)\n"
+                    f"Target duration: {duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
+                    f"{pic_note}\n"
+                    f"User request:\n{text}"
+                )
+                fmt_label = f"H3 六段式 (Ref2VA · 看 {len(attached)} 张图)" if attached else "H3 六段式 (Ref2VA)"
+            else:
+                guide = self._load_h3_guide("base")
+                if wf == "fl2va" and len(attached) >= 2:
+                    subtask = "FL2VA"
+                    align_hint = (
+                        f"Use the exact FL2VA first line:\n"
+                        f"How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the {duration_s:.2f}-second mark of the target video.\n"
+                        f"(Replace N with the actual final shot index, usually 1 for smooth interpolation.)"
+                    )
+                    fmt_label = "H3 三段式 (FL2VA · 看首尾帧)"
+                elif wf == "fl2va" and (len(attached) == 1 or eff_refs >= 1):
+                    subtask = "I2VA"
+                    align_hint = (
+                        "Use the exact I2VA first line:\n"
+                        "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
+                    )
+                    fmt_label = "H3 三段式 (I2VA · 看首帧)" if attached else "H3 三段式 (I2VA)"
+                else:
+                    subtask = "T2VA"
+                    align_hint = "No image-alignment header line. Start directly with integrated_multimodal_description: [Shot 1] ..."
+                    fmt_label = "H3 三段式 (T2VA)"
+
+                system_prompt = (
+                    "You are the MiniMax-H3 video prompt rewriting specialist. "
+                    "Strictly follow the official MiniMax-H3 Base Video Prompt Writing Guide below.\n\n"
+                    f"{guide}\n\n"
+                    "STRICT OUTPUT RULES:\n"
+                    f"- Active mode: {subtask}. {align_hint}\n"
+                    "- After any required alignment line + blank line, output the exact three sections in order:\n"
+                    "  integrated_multimodal_description: [Shot 1] ...\n"
+                    "  overall_soundscape: ...\n"
+                    "  non_diegetic_music: ...\n"
+                    "- Write in English (preserve original language only inside <d>[Language] ...</d> dialogue/lyrics and quoted on-screen text).\n"
+                    "- When keyframe image(s) are attached, ground the visual style, appearance, clothing, lighting, and spatial layout accurately in those images.\n"
+                    "- Do NOT output explanations, markdown code fences, extra headings, or negative prompts."
+                )
+                user_text = (
+                    f"Task: MiniMax-H3 {subtask}\n"
+                    f"Target duration: {duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
+                    f"User request:\n{text}"
+                )
         else:
             system_prompt = (
-                "你是图像生成模型的提示词助手。用户用自然语言描述想要的画面或修改指令，"
-                "你只输出一段可直接用于出图的正面提示词。"
-                "不要解释，不要加标题，不要加引号，不要写负面提示词。"
-                "写清主体、构图、光线、景深与质感；如果是在改已有的图，明确指出保留主体和背景只修改指定部分。"
-                "严禁生成任何涉及未成年人的不当内容。"
+                "你是专业图像生成与多图编辑提示词专家（适配 Qwen-Image-2.1 / FLUX.2 / ComfyUI）。"
+                "用户会给出自然语言想法，并可能附上 1–6 张参考图（按 图1、图2… 标注）。"
+                "请你只输出一段可直接用于出图的高质量正面提示词，不要解释、不要标题、不要引号、不要代码块、不要负面提示词。"
+                "写清主体细节、服饰姿态、构图景别、光线质感、镜头景深与环境氛围。"
+                "如果附带了参考图，必须仔细观察每张参考图的真实外观细节，明确说明保留哪些人物/场景/材质特征，以及只修改或融合哪些指定部分；多张参考图时用「图1」「图2」清楚区分各自贡献的元素。"
             )
-            if editing:
-                if ref_count > 1:
-                    text = f"（这是结合 {ref_count} 张参考图的融合/编辑指令，可用图1、图2等明确各参考元素）" + text
+            if attached:
+                labels = "、".join(lbl for lbl, _ in attached)
+                user_text = f"（已附带 {len(attached)} 张参考图：{labels}，请仔细看图后改写为完整出图提示词）\n用户需求：{text}"
+                fmt_label = f"多模态改图 ({len(attached)} 张图)"
+            elif editing:
+                if eff_refs > 1:
+                    user_text = f"（这是结合 {eff_refs} 张参考图的融合/编辑指令，可用图1、图2等明确各参考元素）\n{text}"
                 else:
-                    text = "（这是对一张已有参考图的修改指令）" + text
+                    user_text = f"（这是对一张已有参考图的修改指令）\n{text}"
+                fmt_label = "参考图编辑提示词"
+            else:
+                user_text = text
+                fmt_label = "文生图提示词"
+
+        if attached:
+            user_content: Any = [{"type": "text", "text": user_text}]
+            for lbl, blob in attached:
+                user_content.append({"type": "text", "text": f"{lbl}:"})
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": self._encode_vision_image(blob)},
+                })
+        else:
+            user_content = user_text
+
         payload = {
             "model": model,
             "temperature": 0.4,
+            "max_tokens": 8192,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
+                {"role": "user", "content": user_content},
             ],
         }
         req = urllib.request.Request(
@@ -1554,7 +1748,7 @@ class Studio:
             else None
         )
         try:
-            cm = opener.open(req, timeout=90) if opener is not None else urllib.request.urlopen(req, timeout=90)
+            cm = opener.open(req, timeout=180) if opener is not None else urllib.request.urlopen(req, timeout=180)
             with cm as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
@@ -1563,16 +1757,46 @@ class Studio:
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError(f"连接 CPA 失败：{exc}") from exc
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"].get("content")
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("CPA 没有返回提示词") from exc
         if isinstance(content, list):
             content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
-        content = str(content).strip().strip('"').strip()
+        content = self._clean_prompt_output(content or "")
         if not content:
-            raise RuntimeError("CPA 返回了空提示词")
-        self.log(f"已通过 CPA 生成{'视频' if mode == 'video' else '图像'}提示词")
-        return content[:2000]
+            reason = choice.get("finish_reason") or "empty"
+            raise RuntimeError(f"CPA 返回了空提示词（model={model}, finish_reason={reason}）")
+        content = content[: LIMITS["prompt_max"]]
+        self.log(f"已通过 {model} 生成提示词（{fmt_label}，{len(content)} 字）")
+        return {
+            "prompt": content,
+            "model": model,
+            "format": fmt_label,
+            "images_used": len(attached),
+        }
+
+    def write_prompt(
+        self,
+        text: str,
+        mode: str = "image",
+        editing: bool = False,
+        ref_count: int = 0,
+        workflow: str = "t2va",
+        num_frames: int = 124,
+        chain: bool = False,
+        has_last_image: bool = False,
+    ) -> str:
+        return self.write_prompt_rich(
+            text,
+            mode=mode,
+            editing=editing,
+            ref_count=ref_count,
+            workflow=workflow,
+            num_frames=num_frames,
+            chain=chain,
+            has_last_image=has_last_image,
+        )["prompt"]
 
     def list_hf_safetensors(self, repo_id: str) -> list[str]:
         repo_id = repo_id.strip().strip("/")

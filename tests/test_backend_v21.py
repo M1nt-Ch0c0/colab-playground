@@ -425,14 +425,14 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
                 return []
 
         # Local mock CPA server on 127.0.0.1; set a broken HTTP_PROXY to prove bypass works!
-        seen_prompts: list[str] = []
+        seen_bodies: list[dict] = []
 
         class MockCPA(BaseHTTPRequestHandler):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                seen_prompts.append(body["messages"][-1]["content"])
-                resp = json.dumps({"choices": [{"message": {"content": "clean enhanced prompt"}}]}).encode("utf-8")
+                seen_bodies.append(body)
+                resp = json.dumps({"choices": [{"message": {"content": "```text\nclean enhanced prompt\n```"}}]}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
@@ -455,7 +455,6 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
                 {
                     "cpa_base": f"http://127.0.0.1:{port}",
                     "cpa_api_key": "test-key",
-                    "cpa_model": "grok-4.7",
                     "proxy_url_us": "http://198.51.100.1:1",  # unreachable proxy!
                 },
                 FakeColab(),
@@ -464,9 +463,16 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
                 600,
             )
             assert "172.17.0.1" in os.environ.get("NO_PROXY", "")
-            rewritten = st.write_prompt("两张图融合", mode="image", editing=True, ref_count=2)
-            assert rewritten == "clean enhanced prompt"
-            assert "2 张参考图" in seen_prompts[-1]
+            # Default model must be deepseek-flash, and editing=True with reference.bin must attach image_url!
+            rich_img = st.write_prompt_rich("两张图融合", mode="image", editing=True, ref_count=2)
+            assert rich_img["prompt"] == "clean enhanced prompt"
+            assert rich_img["model"] == "deepseek-flash"
+            assert rich_img["images_used"] == 1
+            last_body = seen_bodies[-1]
+            assert last_body["model"] == "deepseek-flash"
+            user_content = last_body["messages"][-1]["content"]
+            assert isinstance(user_content, list)
+            assert any(p.get("type") == "image_url" for p in user_content)
 
             # Multi-ref add / promote legacy / remove / upload
             rep0 = st.refs_report()
@@ -476,6 +482,29 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             rep1 = st.refs_report()
             assert len(rep1["items"]) == 3 and rep1["max"] == LIMITS["refs_max"]
             assert len(st.ref_blobs()) == 3
+
+            # Video Ref2VA: must attach all 3 reference images and use 6-section official H3 guide
+            rich_ref2va = st.write_prompt_rich("赛博街头漫步", mode="video", workflow="ref2va", num_frames=175)
+            assert rich_ref2va["images_used"] == 3
+            assert "六段式" in rich_ref2va["format"]
+            sys_ref = seen_bodies[-1]["messages"][0]["content"]
+            assert "subject_definitions" in sys_ref and "retention_analysis" in sys_ref and "non_diegetic_music" in sys_ref
+            img_parts = [p for p in seen_bodies[-1]["messages"][-1]["content"] if p.get("type") == "image_url"]
+            assert len(img_parts) == 3
+
+            # Video T2VA: text-only 3-section official H3 guide
+            rich_t2va = st.write_prompt_rich("雨夜城市", mode="video", workflow="t2va", num_frames=124)
+            assert rich_t2va["images_used"] == 0
+            assert "三段式" in rich_t2va["format"]
+            sys_base = seen_bodies[-1]["messages"][0]["content"]
+            assert "integrated_multimodal_description" in sys_base and "overall_soundscape" in sys_base
+
+            # Video FL2VA with both first + last frames attached
+            st.set_ref("last", png2, "upload")
+            rich_fl2va = st.write_prompt_rich("从白天过渡到夜晚", mode="video", workflow="fl2va", num_frames=124, has_last_image=True)
+            assert rich_fl2va["images_used"] == 2
+            assert "FL2VA" in rich_fl2va["format"]
+            assert "5.17" in seen_bodies[-1]["messages"][0]["content"]
 
             st.enqueue(normalize_job({"prompt": "multi ref test", "has_image": True}))
             deadline = time.time() + 5.0

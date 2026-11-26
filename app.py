@@ -442,18 +442,32 @@ class Handler(BaseHTTPRequestHandler):
         if head == "prompt" and method == "POST":
             body = self.json_body(raw)
             text = str(body.get("text") or "").strip()
-            if not text or len(text) > 2000:
-                raise ApiError(400, "请描述想生成的内容（不超过 2000 字）")
+            if not text or len(text) > 3000:
+                raise ApiError(400, "请描述想生成的内容（不超过 3000 字）")
             mode = "video" if body.get("mode") == "video" else "image"
+            workflow = str(body.get("workflow") or "t2va").strip()
             try:
                 ref_count = int(body.get("ref_count") or 0)
             except (TypeError, ValueError):
                 ref_count = 0
             try:
-                prompt = STUDIO.write_prompt(text, mode=mode, editing=_bool(body.get("editing")), ref_count=ref_count)
+                num_frames = int(body.get("num_frames") or DEFAULTS["video"]["num_frames"])
+            except (TypeError, ValueError):
+                num_frames = DEFAULTS["video"]["num_frames"]
+            try:
+                result = STUDIO.write_prompt_rich(
+                    text,
+                    mode=mode,
+                    editing=_bool(body.get("editing")),
+                    ref_count=ref_count,
+                    workflow=workflow,
+                    num_frames=num_frames,
+                    chain=_bool(body.get("chain")),
+                    has_last_image=_bool(body.get("has_last_image")),
+                )
             except RuntimeError as exc:
                 raise ApiError(502, str(exc)) from exc
-            return self.send_json(200, {"prompt": prompt})
+            return self.send_json(200, result)
 
         if head == "generate" and method == "POST":
             if not COLAB.has_credentials():
