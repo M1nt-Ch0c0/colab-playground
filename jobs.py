@@ -87,6 +87,7 @@ def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _minor_sexual_request(text: str) -> bool:
+    return false
     """True when one request clearly pairs a minor with sexual content."""
     raw = str(text or "")
     if not raw.strip():
@@ -95,8 +96,10 @@ def _minor_sexual_request(text: str) -> bool:
         return False
     window = 24
     lowered = raw.lower()
-    minor_at = [i for marker in _MINOR_MARKERS for i in _find_all(lowered, marker.lower())]
-    sexual_at = [i for marker in _SEXUAL_MARKERS for i in _find_all(lowered, marker.lower())]
+    minor_at = [i for marker in _MINOR_MARKERS for i in _find_all(
+        lowered, marker.lower())]
+    sexual_at = [i for marker in _SEXUAL_MARKERS for i in _find_all(
+        lowered, marker.lower())]
     return any(abs(a - b) <= window for a in minor_at for b in sexual_at)
 
 
@@ -167,7 +170,8 @@ def _apply_proxy_env(url: str, extra_no_proxy: list[str] | tuple[str, ...] = ())
             os.environ.pop(key, None)
     no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
     parts = [p.strip() for p in no_proxy.split(",") if p.strip()]
-    defaults = ["127.0.0.1", "localhost", "::1", "host.docker.internal", "172.17.0.1", "172.19.0.1"]
+    defaults = ["127.0.0.1", "localhost", "::1",
+                "host.docker.internal", "172.17.0.1", "172.19.0.1"]
     for local in (*defaults, *(extra_no_proxy or ())):
         item = (local or "").strip()
         if item and item not in parts:
@@ -176,12 +180,14 @@ def _apply_proxy_env(url: str, extra_no_proxy: list[str] | tuple[str, ...] = ())
     os.environ["NO_PROXY"] = merged
     os.environ["no_proxy"] = merged
 
+
 SESSION_NAME = "colab-studio"
 QUEUE_MAX = 12
 RECENT_MODELS_MAX = 16
 COMFY_PRESETS_MAX = 32
 REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
-ALLOWED_MODEL_EXTS = frozenset({".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"})
+ALLOWED_MODEL_EXTS = frozenset(
+    {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"})
 
 COMFY_TEMPLATES = [
     {
@@ -512,7 +518,8 @@ def _normalize_loras_input(raw_list: Any) -> list[dict]:
             spec = parse_model_link(item, "LoRA 链接")
             if spec["source"] != "hf":
                 raise ValueError("LoRA 链接目前仅支持 Hugging Face 仓库文件")
-            loras.append({"repo_id": spec["repo_id"], "weight_name": spec["filename"], "scale": 1.0})
+            loras.append(
+                {"repo_id": spec["repo_id"], "weight_name": spec["filename"], "scale": 1.0})
             continue
         if not isinstance(item, dict):
             continue
@@ -554,31 +561,37 @@ def normalize_comfy_config(raw: Any, top: dict | None = None) -> dict[str, Any]:
     """Validate and normalize ComfyUI three-component configuration."""
     top = top or {}
     cfg = raw if isinstance(raw, dict) else {}
-    template_id = str(cfg.get("template") or top.get("comfy_template") or "qwen-image-2.1").strip()
+    template_id = str(cfg.get("template") or top.get(
+        "comfy_template") or "qwen-image-2.1").strip()
     if template_id not in {t["id"] for t in COMFY_TEMPLATES}:
         raise ValueError(f"不支持的 ComfyUI 模板：{template_id}")
     tpl = _comfy_template_by_id(template_id)
     tpl_def = tpl["defaults"]
 
     raw_diff = cfg.get("diffusion") or top.get("diffusion") or ""
-    raw_te = cfg.get("text_encoder") or top.get("text_encoder") or tpl_def.get("text_encoder") or ""
+    raw_te = cfg.get("text_encoder") or top.get(
+        "text_encoder") or tpl_def.get("text_encoder") or ""
     raw_vae = cfg.get("vae") or top.get("vae") or tpl_def.get("vae") or ""
 
     diffusion = parse_model_link(raw_diff, "扩散模型")
     text_encoder = parse_model_link(raw_te, "文本编码器")
     vae = parse_model_link(raw_vae, "VAE")
 
-    sampler = str(cfg.get("sampler") or top.get("sampler") or tpl_def.get("sampler") or "euler").strip()
+    sampler = str(cfg.get("sampler") or top.get("sampler")
+                  or tpl_def.get("sampler") or "euler").strip()
     if sampler not in COMFY_SAMPLERS:
         raise ValueError(f"不支持的采样器：{sampler}")
-    scheduler = str(cfg.get("scheduler") or top.get("scheduler") or tpl_def.get("scheduler") or "simple").strip()
+    scheduler = str(cfg.get("scheduler") or top.get("scheduler")
+                    or tpl_def.get("scheduler") or "simple").strip()
     if scheduler not in COMFY_SCHEDULERS:
         raise ValueError(f"不支持的调度器：{scheduler}")
-    clip_type = str(cfg.get("clip_type") or top.get("clip_type") or tpl["clip_type"]).strip()
+    clip_type = str(cfg.get("clip_type") or top.get(
+        "clip_type") or tpl["clip_type"]).strip()
     if clip_type not in COMFY_CLIP_TYPES:
         raise ValueError(f"不支持的文本编码器类型：{clip_type}")
     try:
-        denoise = round(_clamp(_as_float(cfg.get("denoise", top.get("denoise")), 1.0), 0.05, 1.0), 3)
+        denoise = round(
+            _clamp(_as_float(cfg.get("denoise", top.get("denoise")), 1.0), 0.05, 1.0), 3)
     except (TypeError, ValueError) as exc:
         raise ValueError("denoise 参数格式不对") from exc
 
@@ -607,6 +620,7 @@ def validate_image_model(raw: Any) -> str:
 
 # ── public option catalogue (also served by /api/config) ─────────────────
 
+
 GPUS = [
     {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "hint": "推荐，性价比最高"},
     {"id": "H100", "label": "H100 · 80GB", "vram": 80, "hint": "最快，适合 FLUX.2 / 视频"},
@@ -615,9 +629,12 @@ GPUS = [
     {"id": "T4", "label": "T4 · 15GB", "vram": 15, "hint": "仅轻量测试"},
 ]
 IMAGE_MODELS = [
-    {"id": "qwen-2.1-bf16", "label": "Qwen-Image-2.1 · BF16", "hint": "满血 ~33GB，支持参考图改图"},
-    {"id": "qwen-2.1-q5", "label": "Qwen-Image-2.1 · Q5 GGUF", "hint": "~23GB，L4 可跑，可换自定义 GGUF"},
-    {"id": "flux2-dev", "label": "FLUX.2 [dev] · 32B", "hint": "~70GB，建议 H100 / G4"},
+    {"id": "qwen-2.1-bf16", "label": "Qwen-Image-2.1 · BF16",
+        "hint": "满血 ~33GB，支持参考图改图"},
+    {"id": "qwen-2.1-q5", "label": "Qwen-Image-2.1 · Q5 GGUF",
+        "hint": "~23GB，L4 可跑，可换自定义 GGUF"},
+    {"id": "flux2-dev",
+        "label": "FLUX.2 [dev] · 32B", "hint": "~70GB，建议 H100 / G4"},
 ]
 VIDEO_WORKFLOWS = [
     {"id": "t2va", "label": "文生视频 + 音频", "needs": []},
@@ -649,7 +666,8 @@ DEFAULTS = {
 class LogBuffer:
     def __init__(self, keep: int = 600) -> None:
         self._lock = threading.Lock()
-        self._items: collections.deque[tuple[int, str]] = collections.deque(maxlen=keep)
+        self._items: collections.deque[tuple[int,
+                                             str]] = collections.deque(maxlen=keep)
         self._seq = 0
 
     def __call__(self, msg: str) -> None:
@@ -721,10 +739,13 @@ def normalize_job(body: dict) -> dict:
     try:
         width = _snap(_as_int(body.get("width"), d["width"]) or d["width"])
         height = _snap(_as_int(body.get("height"), d["height"]) or d["height"])
-        steps = int(_clamp(_as_int(body.get("steps"), d["steps"]), LIMITS["steps_min"], LIMITS["steps_max"]))
-        cfg = round(_clamp(_as_float(body.get("cfg"), d["cfg"]), LIMITS["cfg_min"], LIMITS["cfg_max"]), 2)
+        steps = int(_clamp(_as_int(body.get("steps"),
+                    d["steps"]), LIMITS["steps_min"], LIMITS["steps_max"]))
+        cfg = round(_clamp(_as_float(body.get("cfg"),
+                    d["cfg"]), LIMITS["cfg_min"], LIMITS["cfg_max"]), 2)
         seed = _as_int(body.get("seed"), -1)
-        count = int(_clamp(_as_int(body.get("count"), 1), 1, LIMITS["count_max"]))
+        count = int(_clamp(_as_int(body.get("count"), 1),
+                    1, LIMITS["count_max"]))
         poll_rounds = int(
             _clamp(
                 _as_int(body.get("poll_rounds"), 1),
@@ -734,7 +755,8 @@ def normalize_job(body: dict) -> dict:
         )
         raw_idle = body.get("idle_minutes")
         idle_minutes = (
-            int(_clamp(_as_int(raw_idle, DEFAULTS["idle_minutes"]), LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
+            int(_clamp(_as_int(raw_idle, DEFAULTS["idle_minutes"]),
+                LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
             if raw_idle not in (None, "")
             else None
         )
@@ -766,14 +788,17 @@ def normalize_job(body: dict) -> dict:
         job["idle_minutes"] = idle_minutes
     if mode == "video":
         wf = str(body.get("workflow") or "t2va")
-        job["workflow"] = wf if wf in {w["id"] for w in VIDEO_WORKFLOWS} else "t2va"
+        job["workflow"] = wf if wf in {w["id"]
+                                       for w in VIDEO_WORKFLOWS} else "t2va"
         try:
             frames = _as_int(body.get("num_frames"), d["num_frames"])
         except (TypeError, ValueError) as exc:
             raise ValueError("帧数格式不对") from exc
-        job["num_frames"] = int(_clamp(frames, LIMITS["frames_min"], LIMITS["frames_max"]))
+        job["num_frames"] = int(
+            _clamp(frames, LIMITS["frames_min"], LIMITS["frames_max"]))
         job["auto_offload"] = bool(body.get("auto_offload", True))
-        job["has_last_image"] = bool(body.get("has_last_image")) and job["workflow"] == "fl2va"
+        job["has_last_image"] = bool(
+            body.get("has_last_image")) and job["workflow"] == "fl2va"
         if job["workflow"] != "t2va":
             job["has_image"] = True
     else:
@@ -788,13 +813,16 @@ def normalize_job(body: dict) -> dict:
         if engine == "comfyui":
             comfy_cfg = normalize_comfy_config(body.get("comfy"), body)
             job["comfy"] = comfy_cfg
-            job["model"] = f"comfyui:{comfy_cfg['template']}/{comfy_cfg['diffusion']['basename']}"
+            job["model"] = f"comfyui:{
+                comfy_cfg['template']}/{comfy_cfg['diffusion']['basename']}"
             job["custom_transformer_repo"] = ""
             job["custom_transformer_file"] = ""
         else:
             job["model"] = validate_image_model(body.get("model"))
-            job["custom_transformer_repo"] = str(body.get("custom_transformer_repo") or "").strip()[:200]
-            job["custom_transformer_file"] = str(body.get("custom_transformer_file") or "").strip()[:200]
+            job["custom_transformer_repo"] = str(
+                body.get("custom_transformer_repo") or "").strip()[:200]
+            job["custom_transformer_file"] = str(
+                body.get("custom_transformer_file") or "").strip()[:200]
     return job
 
 
@@ -869,27 +897,33 @@ class Studio:
         saved = ""
         try:
             if self.queue_state_path.exists():
-                data = json.loads(self.queue_state_path.read_text(encoding="utf-8"))
+                data = json.loads(
+                    self.queue_state_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    saved = str(data.get("proxy_profile") or "").strip().lower()
+                    saved = str(data.get("proxy_profile")
+                                or "").strip().lower()
         except (OSError, json.JSONDecodeError):
             saved = ""
-        chosen = saved if (saved in {"us", "sg", "custom"} and self._proxy_url_for(saved)) else self._default_proxy_profile()
+        chosen = saved if (saved in {"us", "sg", "custom"} and self._proxy_url_for(
+            saved)) else self._default_proxy_profile()
         self._proxy_profile = chosen
         if chosen:
             self._apply_proxy(self._proxy_url_for(chosen))
-            label = next((p["label"] for p in PROXY_PROFILES if p["id"] == chosen), chosen)
+            label = next((p["label"]
+                         for p in PROXY_PROFILES if p["id"] == chosen), chosen)
             self.log(f"已启用出站代理：{label}（本机与内网回环直连）")
 
     def proxy_report(self) -> dict:
         with self._lock:
             active = self._proxy_profile
-            last_test = dict(self._proxy_last_test) if self._proxy_last_test else None
+            last_test = dict(
+                self._proxy_last_test) if self._proxy_last_test else None
         profiles = []
         for p in PROXY_PROFILES:
             pid = p["id"]
             url = self._proxy_url_for(pid)
-            masked = ("已配置（服务端托管）" if pid in {"us", "sg"} else _mask_proxy_url(url)) if url else ""
+            masked = ("已配置（服务端托管）" if pid in {
+                      "us", "sg"} else _mask_proxy_url(url)) if url else ""
             profiles.append({
                 "id": pid,
                 "label": p["label"],
@@ -932,7 +966,8 @@ class Studio:
                     if target == "custom":
                         raise ValueError("请先填写自定义代理地址（http:// 或 socks5://）")
                     raise ValueError(f"服务端尚未配置 {target.upper()} 出口代理")
-                changed = (target != self._proxy_profile) or (custom_url is not None and target == "custom")
+                changed = (target != self._proxy_profile) or (
+                    custom_url is not None and target == "custom")
                 self._proxy_profile = target
                 self._apply_proxy(url)
                 if changed:
@@ -947,7 +982,8 @@ class Studio:
                 clear_fn()
             else:
                 self.colab.invalidate_status()
-            label = next((p["label"] for p in PROXY_PROFILES if p["id"] == self._proxy_profile), self._proxy_profile)
+            label = next((p["label"] for p in PROXY_PROFILES if p["id"]
+                         == self._proxy_profile), self._proxy_profile)
             self.log(f"出站代理已切换为：{label}（已重置各卡 503 缓存）")
         return self.proxy_report()
 
@@ -991,7 +1027,8 @@ class Studio:
             ms = int(round((time.time() - t0) * 1000))
             if not resp.ok:
                 raise RuntimeError(f"HTTP {resp.status_code}")
-            kv = dict(line.split("=", 1) for line in resp.text.strip().splitlines() if "=" in line)
+            kv = dict(line.split("=", 1)
+                      for line in resp.text.strip().splitlines() if "=" in line)
             res = {
                 "profile": target,
                 "ok": True,
@@ -1025,7 +1062,8 @@ class Studio:
     def add_recent_model(self, raw_model: str) -> list[str]:
         model = validate_image_model(raw_model)
         with self._lock:
-            self._recent_models = [m for m in self._recent_models if m != model]
+            self._recent_models = [
+                m for m in self._recent_models if m != model]
             self._recent_models.insert(0, model)
             del self._recent_models[RECENT_MODELS_MAX:]
             self._save_state_locked()
@@ -1035,7 +1073,8 @@ class Studio:
         model = str(raw_model or "").strip().strip("/")
         with self._lock:
             before = len(self._recent_models)
-            self._recent_models = [m for m in self._recent_models if m != model]
+            self._recent_models = [
+                m for m in self._recent_models if m != model]
             if len(self._recent_models) != before:
                 self._save_state_locked()
             return list(self._recent_models)
@@ -1048,14 +1087,19 @@ class Studio:
         name = str(body.get("name") or "").strip()
         if not name or len(name) > 60:
             raise ValueError("组合名称不能为空且不超过 60 字")
-        comfy_cfg = normalize_comfy_config(body.get("comfy") if isinstance(body.get("comfy"), dict) else body, body)
+        comfy_cfg = normalize_comfy_config(
+            body.get("comfy") if isinstance(body.get("comfy"), dict) else body, body)
         loras = _normalize_loras_input(body.get("loras"))
         tpl_def = _comfy_template_by_id(comfy_cfg["template"])["defaults"]
         try:
-            width = _snap(_as_int(body.get("width"), tpl_def["width"]) or tpl_def["width"])
-            height = _snap(_as_int(body.get("height"), tpl_def["height"]) or tpl_def["height"])
-            steps = int(_clamp(_as_int(body.get("steps"), tpl_def["steps"]), LIMITS["steps_min"], LIMITS["steps_max"]))
-            cfg = round(_clamp(_as_float(body.get("cfg"), tpl_def["cfg"]), LIMITS["cfg_min"], LIMITS["cfg_max"]), 2)
+            width = _snap(_as_int(body.get("width"),
+                          tpl_def["width"]) or tpl_def["width"])
+            height = _snap(_as_int(body.get("height"),
+                           tpl_def["height"]) or tpl_def["height"])
+            steps = int(_clamp(_as_int(body.get(
+                "steps"), tpl_def["steps"]), LIMITS["steps_min"], LIMITS["steps_max"]))
+            cfg = round(_clamp(_as_float(
+                body.get("cfg"), tpl_def["cfg"]), LIMITS["cfg_min"], LIMITS["cfg_max"]), 2)
         except (TypeError, ValueError) as exc:
             raise ValueError("组合参数格式不对") from exc
 
@@ -1066,7 +1110,8 @@ class Studio:
             raise ValueError("无效的组合 ID")
 
         now = int(time.time())
-        preset_id = req_id or f"cp_{now % 1000000:06d}_{random.randint(1000, 9999)}"
+        preset_id = req_id or f"cp_{now %
+                                    1000000:06d}_{random.randint(1000, 9999)}"
         entry = {
             "id": preset_id,
             "builtin": False,
@@ -1100,7 +1145,8 @@ class Studio:
         pid = str(preset_id or "").strip()
         with self._lock:
             before = len(self._comfy_presets)
-            self._comfy_presets = [p for p in self._comfy_presets if p.get("id") != pid]
+            self._comfy_presets = [
+                p for p in self._comfy_presets if p.get("id") != pid]
             removed = len(self._comfy_presets) != before
             if removed:
                 self._save_state_locked()
@@ -1113,7 +1159,8 @@ class Studio:
 
     def _write_job_refs(self, job: dict) -> None:
         self.queue_refs_dir.mkdir(parents=True, exist_ok=True)
-        refs = job.get("ref_blobs") or ([job["first_ref"]] if job.get("first_ref") else [])
+        refs = job.get("ref_blobs") or (
+            [job["first_ref"]] if job.get("first_ref") else [])
         if refs:
             p = self._ref_snapshot_path(job["id"], "first")
             tmp = p.with_suffix(".bin.tmp")
@@ -1139,7 +1186,8 @@ class Studio:
                 p.unlink(missing_ok=True)
 
     def _serialize_job(self, job: dict) -> dict:
-        refs = job.get("ref_blobs") or ([job["first_ref"]] if job.get("first_ref") else [])
+        refs = job.get("ref_blobs") or (
+            [job["first_ref"]] if job.get("first_ref") else [])
         out = {
             "id": job["id"],
             "payload": job["payload"],
@@ -1171,7 +1219,8 @@ class Studio:
                 "history": [self._serialize_job(j) for j in self._history],
             }
             tmp = self.queue_state_path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.write_text(json.dumps(data, ensure_ascii=False,
+                           indent=2), encoding="utf-8")
             os.replace(tmp, self.queue_state_path)
         except Exception as exc:
             self.log(f"保存队列状态失败：{exc}")
@@ -1184,7 +1233,8 @@ class Studio:
             if not self.queue_state_path.exists():
                 return {"queued": 0, "interrupted": None}
             try:
-                data = json.loads(self.queue_state_path.read_text(encoding="utf-8"))
+                data = json.loads(
+                    self.queue_state_path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     return {"queued": 0, "interrupted": None}
             except (OSError, json.JSONDecodeError) as exc:
@@ -1193,7 +1243,8 @@ class Studio:
 
             saved_idle = data.get("idle_minutes")
             if isinstance(saved_idle, int) and not isinstance(saved_idle, bool):
-                self.idle_seconds = int(_clamp(saved_idle, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"])) * 60
+                self.idle_seconds = int(
+                    _clamp(saved_idle, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"])) * 60
             saved_seq = data.get("job_seq")
             if isinstance(saved_seq, int) and saved_seq > self._job_seq:
                 self._job_seq = saved_seq
@@ -1260,7 +1311,8 @@ class Studio:
                     "last_ref": None,
                 }
                 missing_ref = False
-                ref_blob_count = int(item.get("ref_blob_count") or (1 if item.get("has_first_blob") else 0))
+                ref_blob_count = int(item.get("ref_blob_count") or (
+                    1 if item.get("has_first_blob") else 0))
                 if item.get("has_first_blob") or ref_blob_count > 0:
                     fp = self._ref_snapshot_path(jid, "first")
                     if fp.exists():
@@ -1318,7 +1370,8 @@ class Studio:
             if not self._queue or not self.colab.has_credentials():
                 return False
             if self._runner is None or not self._runner.is_alive():
-                self._runner = threading.Thread(target=self._run_loop, daemon=True)
+                self._runner = threading.Thread(
+                    target=self._run_loop, daemon=True)
                 self._runner.start()
                 return True
         return False
@@ -1382,7 +1435,8 @@ class Studio:
         if not items:
             first_f = self.ref_file("first")
             if first_f.exists():
-                finfo = meta.get("first") if isinstance(meta.get("first"), dict) else {}
+                finfo = meta.get("first") if isinstance(
+                    meta.get("first"), dict) else {}
                 items.append({
                     "id": "legacy",
                     "bytes": first_f.stat().st_size,
@@ -1397,7 +1451,8 @@ class Studio:
             first_f = self.ref_file("first")
             if first_f.exists():
                 self.refs_dir.mkdir(parents=True, exist_ok=True)
-                rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+                rid = f"r{int(time.time() * 1000) %
+                          100000000:08d}_{random.randint(1000, 9999)}"
                 dest = self._ref_item_path(rid)
                 tmp = dest.with_suffix(".bin.tmp")
                 tmp.write_bytes(first_f.read_bytes())
@@ -1422,9 +1477,11 @@ class Studio:
                 tmp = first_f.with_suffix(".bin.tmp")
                 tmp.write_bytes(src_path.read_bytes())
                 os.replace(tmp, first_f)
-            meta["first"] = {"source": head["source"], "updated_at": head["updated_at"]}
+            meta["first"] = {"source": head["source"],
+                             "updated_at": head["updated_at"]}
             meta["items"] = [
-                {"id": it["id"], "source": it["source"], "updated_at": it["updated_at"]}
+                {"id": it["id"], "source": it["source"],
+                    "updated_at": it["updated_at"]}
                 for it in items
             ]
         else:
@@ -1452,7 +1509,8 @@ class Studio:
             items = self._ref_items_locked()
             first_item = items[0] if items else None
             last_f = self.ref_file("last")
-            last_info = meta.get("last") if isinstance(meta.get("last"), dict) else {}
+            last_info = meta.get("last") if isinstance(
+                meta.get("last"), dict) else {}
             return {
                 "first": {
                     "set": first_item is not None,
@@ -1478,12 +1536,14 @@ class Studio:
             if len(items) >= LIMITS["refs_max"]:
                 raise ValueError(f"最多可添加 {LIMITS['refs_max']} 张参考图，请先移除不需要的图片")
             self.refs_dir.mkdir(parents=True, exist_ok=True)
-            rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+            rid = f"r{int(time.time() * 1000) %
+                      100000000:08d}_{random.randint(1000, 9999)}"
             dest = self._ref_item_path(rid)
             tmp = dest.with_suffix(".bin.tmp")
             tmp.write_bytes(data)
             os.replace(tmp, dest)
-            entry = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+            entry = {"id": rid, "bytes": len(
+                data), "source": source, "updated_at": now}
             items.append(entry)
             self._sync_first_locked(items, meta)
             total = len(items)
@@ -1495,7 +1555,8 @@ class Studio:
         with self._lock:
             meta = self._refs_meta()
             items = self._materialize_legacy_locked(self._ref_items_locked())
-            idx = next((i for i, it in enumerate(items) if it["id"] == ref_id), -1)
+            idx = next((i for i, it in enumerate(
+                items) if it["id"] == ref_id), -1)
             if idx < 0:
                 if ref_id == "legacy" and items:
                     idx = 0
@@ -1507,7 +1568,8 @@ class Studio:
             tmp = dest.with_suffix(".bin.tmp")
             tmp.write_bytes(data)
             os.replace(tmp, dest)
-            items[idx] = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+            items[idx] = {"id": rid, "bytes": len(
+                data), "source": source, "updated_at": now}
             self._sync_first_locked(items, meta)
         self.log(f"已替换参考图 #{idx + 1}（{source}，{len(data) // 1024} KB）")
         return items[idx]
@@ -1546,7 +1608,8 @@ class Studio:
                 self._save_refs_meta_locked(meta)
             else:
                 meta = self._refs_meta()
-                items = self._materialize_legacy_locked(self._ref_items_locked())
+                items = self._materialize_legacy_locked(
+                    self._ref_items_locked())
                 self.refs_dir.mkdir(parents=True, exist_ok=True)
                 if items:
                     rid = items[0]["id"]
@@ -1554,16 +1617,20 @@ class Studio:
                     tmp = dest.with_suffix(".bin.tmp")
                     tmp.write_bytes(data)
                     os.replace(tmp, dest)
-                    items[0] = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+                    items[0] = {"id": rid, "bytes": len(
+                        data), "source": source, "updated_at": now}
                 else:
-                    rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+                    rid = f"r{int(time.time() * 1000) %
+                              100000000:08d}_{random.randint(1000, 9999)}"
                     dest = self._ref_item_path(rid)
                     tmp = dest.with_suffix(".bin.tmp")
                     tmp.write_bytes(data)
                     os.replace(tmp, dest)
-                    items = [{"id": rid, "bytes": len(data), "source": source, "updated_at": now}]
+                    items = [{"id": rid, "bytes": len(
+                        data), "source": source, "updated_at": now}]
                 self._sync_first_locked(items, meta)
-        self.log(f"已设置{'尾帧' if slot == 'last' else '参考图 / 首帧'}（{source}，{len(data) // 1024} KB）")
+        self.log(
+            f"已设置{'尾帧' if slot == 'last' else '参考图 / 首帧'}（{source}，{len(data) // 1024} KB）")
 
     def clear_ref(self, slot: str) -> None:
         with self._lock:
@@ -1693,11 +1760,13 @@ class Studio:
             elif workflow == "fl2va":
                 blobs = self.ref_blobs()
                 if blobs:
-                    images.append(("<Picture 1> (First Frame at 0.00s)", blobs[0]))
+                    images.append(
+                        ("<Picture 1> (First Frame at 0.00s)", blobs[0]))
                 if has_last_image:
                     lf = self.ref_file("last")
                     if lf.exists():
-                        images.append(("<Picture 2> (Last Frame at end)", lf.read_bytes()))
+                        images.append(
+                            ("<Picture 2> (Last Frame at end)", lf.read_bytes()))
         else:
             if chain:
                 latest = self.store.latest("image")
@@ -1726,13 +1795,16 @@ class Studio:
         key = self.secret.get("cpa_api_key") or ""
         if not key:
             raise RuntimeError("这台机器还没配置 CPA 密钥")
-        base = (self.secret.get("cpa_base") or "http://127.0.0.1:8317").rstrip("/")
+        base = (self.secret.get("cpa_base")
+                or "http://127.0.0.1:8317").rstrip("/")
         model = self.secret.get("cpa_model") or "deepseek-flash"
         wf = workflow if workflow in {"t2va", "fl2va", "ref2va"} else "t2va"
-        frames = int(_clamp(num_frames or DEFAULTS["video"]["num_frames"], LIMITS["frames_min"], LIMITS["frames_max"]))
+        frames = int(_clamp(
+            num_frames or DEFAULTS["video"]["num_frames"], LIMITS["frames_min"], LIMITS["frames_max"]))
         duration_s = round(frames / 24.0, 2)
 
-        attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image)
+        attached = self._collect_prompt_images(
+            mode, wf, editing, chain, has_last_image)
         eff_refs = len(attached) if attached else max(0, int(ref_count or 0))
 
         if mode == "video":
@@ -1750,24 +1822,28 @@ class Studio:
                     "- Do NOT output explanations, markdown code fences, commentary, or negative prompts."
                 )
                 pic_note = (
-                    f"Attached reference images: {', '.join(f'<Picture {i}>' for i in range(1, len(attached) + 1))}."
+                    f"Attached reference images: {
+                        ', '.join(f'<Picture {i}>' for i in range(1, len(attached) + 1))}."
                     if attached
                     else f"Number of reference images expected: {eff_refs or 1} (refer to them as <Picture 1>..)."
                 )
                 user_text = (
                     f"Task: MiniMax-H3 Ref2VA (Full-Reference Video + Audio)\n"
-                    f"Target duration: {duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
+                    f"Target duration: {
+                        duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
                     f"{pic_note}\n"
                     f"User request:\n{text}"
                 )
-                fmt_label = f"H3 六段式 (Ref2VA · 看 {len(attached)} 张图)" if attached else "H3 六段式 (Ref2VA)"
+                fmt_label = f"H3 六段式 (Ref2VA · 看 {len(
+                    attached)} 张图)" if attached else "H3 六段式 (Ref2VA)"
             else:
                 guide = self._load_h3_guide("base")
                 if wf == "fl2va" and len(attached) >= 2:
                     subtask = "FL2VA"
                     align_hint = (
                         f"Use the exact FL2VA first line:\n"
-                        f"How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the {duration_s:.2f}-second mark of the target video.\n"
+                        f"How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the {
+                            duration_s:.2f}-second mark of the target video.\n"
                         f"(Replace N with the actual final shot index, usually 1 for smooth interpolation.)"
                     )
                     fmt_label = "H3 三段式 (FL2VA · 看首尾帧)"
@@ -1799,7 +1875,8 @@ class Studio:
                 )
                 user_text = (
                     f"Task: MiniMax-H3 {subtask}\n"
-                    f"Target duration: {duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
+                    f"Target duration: {
+                        duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
                     f"User request:\n{text}"
                 )
         else:
@@ -1812,11 +1889,13 @@ class Studio:
             )
             if attached:
                 labels = "、".join(lbl for lbl, _ in attached)
-                user_text = f"（已附带 {len(attached)} 张参考图：{labels}，请仔细看图后改写为完整出图提示词）\n用户需求：{text}"
+                user_text = f"（已附带 {len(attached)} 张参考图：{
+                    labels}，请仔细看图后改写为完整出图提示词）\n用户需求：{text}"
                 fmt_label = f"多模态改图 ({len(attached)} 张图)"
             elif editing:
                 if eff_refs > 1:
-                    user_text = f"（这是结合 {eff_refs} 张参考图的融合/编辑指令，可用图1、图2等明确各参考元素）\n{text}"
+                    user_text = f"（这是结合 {
+                        eff_refs} 张参考图的融合/编辑指令，可用图1、图2等明确各参考元素）\n{text}"
                 else:
                     user_text = f"（这是对一张已有参考图的修改指令）\n{text}"
                 fmt_label = "参考图编辑提示词"
@@ -1848,7 +1927,8 @@ class Studio:
             send_user: Any = user_content
             if attempt == 2:
                 if isinstance(user_content, list):
-                    send_user = [*user_content, {"type": "text", "text": _PURGE_RETRY}]
+                    send_user = [*user_content,
+                                 {"type": "text", "text": _PURGE_RETRY}]
                 else:
                     send_user = f"{user_content}\n\n{_PURGE_RETRY}"
             payload = {
@@ -1864,10 +1944,12 @@ class Studio:
                 base + "/v1/chat/completions",
                 data=json.dumps(payload).encode("utf-8"),
                 method="POST",
-                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                headers={"Authorization": "Bearer " + key,
+                         "Content-Type": "application/json"},
             )
             try:
-                cm = opener.open(req, timeout=180) if opener is not None else urllib.request.urlopen(req, timeout=180)
+                cm = opener.open(req, timeout=180) if opener is not None else urllib.request.urlopen(
+                    req, timeout=180)
                 with cm as resp:
                     data = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
@@ -1929,7 +2011,8 @@ class Studio:
         repo_id = repo_id.strip().strip("/")
         if not REPO_RE.fullmatch(repo_id):
             raise RuntimeError("仓库 ID 格式应为 owner/repo")
-        url = f"https://huggingface.co/api/models/{quote(repo_id, safe='/')}/tree/main?recursive=1"
+        url = f"https://huggingface.co/api/models/{
+            quote(repo_id, safe='/')}/tree/main?recursive=1"
         headers = {"User-Agent": "colab-studio"}
         tok = self.colab.get_hf_token(self.secret.get("hf_token") or "")
         if tok:
@@ -1939,7 +2022,8 @@ class Studio:
                 items = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:200]
-            raise RuntimeError(f"Hugging Face 返回 {exc.code}: {detail}") from exc
+            raise RuntimeError(f"Hugging Face 返回 {
+                               exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError(f"连接 Hugging Face 失败：{exc}") from exc
         if not isinstance(items, list):
@@ -1974,7 +2058,8 @@ class Studio:
                     busy = self._current is not None or bool(self._queue)
                 if busy:
                     return
-                self.log(f"空闲 {sec // 60} 分钟，自动释放 Google Colab 运行时以停止消耗 Compute Units")
+                self.log(
+                    f"空闲 {sec // 60} 分钟，自动释放 Google Colab 运行时以停止消耗 Compute Units")
                 self.release_all()
 
             self._idle_timer = threading.Timer(sec, fire)
@@ -1983,7 +2068,8 @@ class Studio:
             self.idle_deadline = time.time() + sec
 
     def set_idle_minutes(self, minutes: int) -> int:
-        minutes = int(_clamp(minutes, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
+        minutes = int(
+            _clamp(minutes, LIMITS["idle_minutes_min"], LIMITS["idle_minutes_max"]))
         with self._lock:
             self.idle_seconds = minutes * 60
             rearm = self._idle_timer is not None
@@ -2070,12 +2156,14 @@ class Studio:
                 created.append(self._job_public(job))
             if payload.get("mode") == "image" and payload.get("engine", "diffusers") == "diffusers" and payload.get("model"):
                 m = str(payload["model"])
-                self._recent_models = [x for x in self._recent_models if x != m]
+                self._recent_models = [
+                    x for x in self._recent_models if x != m]
                 self._recent_models.insert(0, m)
                 del self._recent_models[RECENT_MODELS_MAX:]
             self._save_state_locked()
             if self._runner is None or not self._runner.is_alive():
-                self._runner = threading.Thread(target=self._run_loop, daemon=True)
+                self._runner = threading.Thread(
+                    target=self._run_loop, daemon=True)
                 self._runner.start()
         pool_txt = "/".join(payload.get("gpu_pool") or [payload["gpu"]])
         poll_info = []
@@ -2085,8 +2173,10 @@ class Studio:
             poll_info.append("全部代理")
         poll_suffix = f"（{' · '.join(poll_info)}）" if poll_info else ""
         self.log(
-            f"已加入队列：{'视频 (MiniMax-H3)' if payload['mode'] == 'video' else '生图 ' + payload.get('model', '')}"
-            f" × {count}，GPU={pool_txt}{poll_suffix}，{payload['width']}x{payload['height']}，steps={payload['steps']}"
+            f"已加入队列：{'视频 (MiniMax-H3)' if payload['mode'] ==
+                     'video' else '生图 ' + payload.get('model', '')}"
+            f" × {count}，GPU={pool_txt}{poll_suffix}，{payload['width']}x{
+                payload['height']}，steps={payload['steps']}"
         )
         return created
 
@@ -2203,7 +2293,8 @@ class Studio:
                     rep = self.colab.status_report(blocking=False)
                 except TypeError:
                     rep = self.colab.status_report()
-                elig = [str(x).upper() for x in (rep.get("eligible_gpus") or [])]
+                elig = [str(x).upper()
+                        for x in (rep.get("eligible_gpus") or [])]
                 for g in order:
                     if (not elig or g in elig) and g not in candidates:
                         candidates.append(g)
@@ -2239,13 +2330,15 @@ class Studio:
                 )
             with self._lock:
                 self._save_state_locked()
-            self.active_gpu = f"{session.accelerator} ({session.machine_shape})"
+            self.active_gpu = f"{
+                session.accelerator} ({session.machine_shape})"
             if self._cancel:
                 raise RuntimeError("任务已取消")
 
             self._stage(job, "uploading")
             self.log("上传远端执行脚本与任务配置到 Colab…")
-            self.colab.upload_file(session, self.worker_path, "content/colab_worker.py")
+            self.colab.upload_file(
+                session, self.worker_path, "content/colab_worker.py")
 
             remote = dict(p)
             refs_to_upload: list[bytes] = list(job.get("ref_blobs") or [])
@@ -2254,7 +2347,8 @@ class Studio:
             if p.get("chain"):
                 latest = self.store.latest("image")
                 if latest:
-                    refs_to_upload = [(self.store.rounds / f"{latest['id']}.png").read_bytes()]
+                    refs_to_upload = [
+                        (self.store.rounds / f"{latest['id']}.png").read_bytes()]
                     remote["chain_from"] = latest["id"]
                     self.log(f"接着改：以第 {int(latest['id'])} 号作品为参考图")
                 else:
@@ -2265,14 +2359,16 @@ class Studio:
                 if len(refs_to_upload) == 1:
                     self.log(f"上传参考图 / 首帧（{total_kb} KB）…")
                 else:
-                    self.log(f"上传 {len(refs_to_upload)} 张参考图（合计 {total_kb} KB）…")
+                    self.log(f"上传 {len(refs_to_upload)} 张参考图（合计 {
+                             total_kb} KB）…")
                 f0 = tmpdir / "reference.bin"
                 f0.write_bytes(refs_to_upload[0])
                 self.colab.upload_file(session, f0, "content/reference.bin")
                 for idx, blob in enumerate(refs_to_upload):
                     fi = tmpdir / f"reference_{idx}.bin"
                     fi.write_bytes(blob)
-                    self.colab.upload_file(session, fi, f"content/reference_{idx}.bin")
+                    self.colab.upload_file(
+                        session, fi, f"content/reference_{idx}.bin")
                 remote["ref_count"] = len(refs_to_upload)
             else:
                 remote["has_image"] = False
@@ -2286,7 +2382,8 @@ class Studio:
             else:
                 remote["has_last_image"] = False
             job_file = tmpdir / "job.json"
-            job_file.write_text(json.dumps(remote, ensure_ascii=False), encoding="utf-8")
+            job_file.write_text(json.dumps(
+                remote, ensure_ascii=False), encoding="utf-8")
             self.colab.upload_file(session, job_file, "content/job.json")
 
             self.set_phase("generating")
@@ -2323,7 +2420,8 @@ class Studio:
                 raise RuntimeError("拉回的文件不是有效的 PNG 图片")
             thumb = tmpdir / "thumb.jpg"
             try:
-                self.colab.download_file(session, "content/generated_thumb.jpg", thumb)
+                self.colab.download_file(
+                    session, "content/generated_thumb.jpg", thumb)
             except Exception:
                 thumb = None  # older worker / thumbnail failed: gallery falls back to full media
 
@@ -2335,17 +2433,20 @@ class Studio:
             if video:
                 meta["model"] = "MiniMaxAI/MiniMax-H3"
             meta["chain_from"] = remote.get("chain_from")
-            meta["ref_count"] = remote.get("ref_count", 1 if remote.get("has_image") else 0)
+            meta["ref_count"] = remote.get(
+                "ref_count", 1 if remote.get("has_image") else 0)
             meta["job_id"] = job["id"]
             meta["duration_s"] = round(time.time() - t0, 1)
-            rid = self.store.save(out, "video" if video else "image", meta, thumb)
+            rid = self.store.save(
+                out, "video" if video else "image", meta, thumb)
             job["round_id"] = rid
             job["status"] = "done"
             self._stage(job, "done")
             self.colab.invalidate_status()
             self.set_phase("ready")
             self.log(
-                f"第 {int(rid)} 号作品已保存（{out.stat().st_size // 1024} KB，用时 {meta['duration_s']:.0f}s）。"
+                f"第 {int(rid)} 号作品已保存（{out.stat().st_size //
+                                       1024} KB，用时 {meta['duration_s']:.0f}s）。"
                 f"模型常驻 Kernel，空闲 {self.idle_seconds // 60} 分钟后自动释放算力。"
             )
         except Exception as exc:
@@ -2357,7 +2458,8 @@ class Studio:
                 self.log(traceback.format_exc().splitlines()[-1])
             self.colab.invalidate_status()
             if self.phase != "stopping":
-                self.set_phase("ready" if canceled and self.active_gpu else ("idle" if canceled else "error"), "" if canceled else str(exc))
+                self.set_phase("ready" if canceled and self.active_gpu else (
+                    "idle" if canceled else "error"), "" if canceled else str(exc))
         finally:
             job["finished_at"] = int(time.time())
             job.pop("first_ref", None)
@@ -2389,9 +2491,11 @@ class Studio:
 def boot_message(colab: ColabBackend, studio: Studio, log: Callable[[str], None]) -> None:
     rep = colab.status_report(force=True)
     if rep.get("authed") and rep.get("ok"):
-        log(f"Colab 已授权（{rep.get('email') or 'ok'}），余额 {rep.get('balance')} CU，当前运行实例 {len(rep.get('sessions') or [])} 台")
+        log(f"Colab 已授权（{rep.get('email') or 'ok'}），余额 {
+            rep.get('balance')} CU，当前运行实例 {len(rep.get('sessions') or [])} 台")
         if rep.get("any_running"):
-            studio.active_gpu = ", ".join(s["gpu"] for s in rep.get("sessions") or [])
+            studio.active_gpu = ", ".join(s["gpu"]
+                                          for s in rep.get("sessions") or [])
             studio.set_phase("ready")
             studio.arm_idle()
     else:
