@@ -367,10 +367,147 @@ def test_gpu_shape_and_retry_cancel() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from jobs import LIMITS, LogBuffer, Studio, _is_local_or_private_host, normalize_job
+    from store import Store
+
+    assert _is_local_or_private_host("127.0.0.1")
+    assert _is_local_or_private_host("172.17.0.1")
+    assert _is_local_or_private_host("172.19.0.1")
+    assert _is_local_or_private_host("host.docker.internal")
+    assert _is_local_or_private_host("10.0.1.5")
+    assert not _is_local_or_private_host("api.openai.com")
+
+    tmp = Path(tempfile.mkdtemp(prefix="qp-test-multi-"))
+    try:
+        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
+        png1 = make_png(64, 64, (10, 20, 30))
+        png2 = make_png(64, 64, (40, 50, 60))
+        png3 = make_png(64, 64, (70, 80, 90))
+        # Seed legacy reference.bin to verify seamless promotion
+        (tmp / "reference.bin").write_bytes(png1)
+
+        uploaded: list[str] = []
+
+        class FakeColab:
+            def has_credentials(self):
+                return True
+
+            def status_report(self, force=False, blocking=True):
+                return {"authed": True, "ok": True, "sessions": [], "any_running": False}
+
+            def ensure_session(self, **kw):
+                class S:
+                    accelerator = "A100"
+                    machine_shape = "HIGH_RAM"
+
+                return S()
+
+            def upload_file(self, s, local, remote):
+                uploaded.append(remote)
+
+            def get_hf_token(self, fb=""):
+                return ""
+
+            def execute_code(self, s, code, cancel_check=None, idle_timeout=0, progress_cb=None):
+                pass
+
+            def download_file(self, s, remote, local):
+                if remote.endswith("thumb.jpg"):
+                    raise RuntimeError("no thumb")
+                Path(local).write_bytes(png1)
+
+            def invalidate_status(self):
+                pass
+
+            def release_all(self):
+                return []
+
+        # Local mock CPA server on 127.0.0.1; set a broken HTTP_PROXY to prove bypass works!
+        seen_prompts: list[str] = []
+
+        class MockCPA(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                seen_prompts.append(body["messages"][-1]["content"])
+                resp = json.dumps({"choices": [{"message": {"content": "clean enhanced prompt"}}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        srv = HTTPServer(("127.0.0.1", 0), MockCPA)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        old_env = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")}
+        try:
+            log = LogBuffer()
+            store = Store(tmp / "out", log)
+            st = Studio(
+                tmp,
+                {
+                    "cpa_base": f"http://127.0.0.1:{port}",
+                    "cpa_api_key": "test-key",
+                    "cpa_model": "grok-4.7",
+                    "proxy_url_us": "http://198.51.100.1:1",  # unreachable proxy!
+                },
+                FakeColab(),
+                store,
+                log,
+                600,
+            )
+            assert "172.17.0.1" in os.environ.get("NO_PROXY", "")
+            rewritten = st.write_prompt("两张图融合", mode="image", editing=True, ref_count=2)
+            assert rewritten == "clean enhanced prompt"
+            assert "2 张参考图" in seen_prompts[-1]
+
+            # Multi-ref add / promote legacy / remove / upload
+            rep0 = st.refs_report()
+            assert len(rep0["items"]) == 1 and rep0["first"]["set"] is True
+            it2 = st.add_ref(png2, "upload")
+            it3 = st.add_ref(png3, "upload")
+            rep1 = st.refs_report()
+            assert len(rep1["items"]) == 3 and rep1["max"] == LIMITS["refs_max"]
+            assert len(st.ref_blobs()) == 3
+
+            st.enqueue(normalize_job({"prompt": "multi ref test", "has_image": True}))
+            deadline = time.time() + 5.0
+            while st.busy() and time.time() < deadline:
+                time.sleep(0.05)
+            assert "content/reference.bin" in uploaded
+            assert "content/reference_0.bin" in uploaded
+            assert "content/reference_1.bin" in uploaded
+            assert "content/reference_2.bin" in uploaded
+
+            assert st.remove_ref(it2["id"]) is True
+            assert len(st.refs_report()["items"]) == 2
+            st.clear_ref("first")
+            assert len(st.refs_report()["items"]) == 0 and st.refs_report()["first"]["set"] is False
+            print("OK test_multi_refs_and_local_cpa_proxy_bypass")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_tqdm_and_redaction()
     test_non_blocking_colab_status()
     test_gpu_shape_and_retry_cancel()
     test_store_features()
     test_queue_persistence_and_recovery()
+    test_multi_refs_and_local_cpa_proxy_bypass()
     print("ALL BACKEND TESTS PASSED")

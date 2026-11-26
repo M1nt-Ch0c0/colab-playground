@@ -181,6 +181,19 @@ def test_build_comfy_prompt_graphs():
     assert g2["25"]["inputs"]["images.image_1"] == ["24", 0]
     assert g2["25"]["inputs"]["vae"] == ["3", 0]
 
+    # 2b. Qwen-Image 2.1 multi-ref i2i (3 images -> images.image_1..3)
+    g_multi, _ = colab_worker._build_comfy_prompt(
+        base_job,
+        files_gguf,
+        has_ref=True,
+        ref_image_names=["r0.png", "r1.png", "r2.png"],
+    )
+    assert g_multi["25"]["inputs"]["images.image_1"] == ["24", 0]
+    assert g_multi["25"]["inputs"]["images.image_2"] == ["33", 0]
+    assert g_multi["25"]["inputs"]["images.image_3"] == ["35", 0]
+    assert g_multi["32"]["inputs"]["image"] == "r1.png"
+    assert g_multi["34"]["inputs"]["image"] == "r2.png"
+
     # 3. Flux & sd-generic templates
     for tpl in ("flux", "sd-generic"):
         j_tpl = json.loads(json.dumps(base_job))
@@ -191,9 +204,68 @@ def test_build_comfy_prompt_graphs():
         assert gt["28"]["class_type"] == "SaveImage"
 
 
+def test_minimax_h3_comfy_lora_conversion():
+    class TinyArr:
+        """Minimal array wrapper so unit tests run with zero numpy/torch dependency."""
+
+        def __init__(self, rows: list[list[float]]):
+            self.rows = rows
+            self.shape = (len(rows), len(rows[0]) if rows else 0)
+
+        def __getitem__(self, slc):
+            return TinyArr(self.rows[slc])
+
+        def __mul__(self, scalar: float):
+            return TinyArr([[x * scalar for x in r] for r in self.rows])
+
+    orig_cat = colab_worker._cat_dim0
+    colab_worker._cat_dim0 = lambda parts: TinyArr([r for p in parts for r in p.rows])
+    try:
+        sd = {
+            "diffusion_model.audio_patch_proj.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.audio_patch_proj.lora_B.weight": TinyArr([[2.0, 3.0] for _ in range(6)]),
+            "diffusion_model.final_layer.audio_out.lora_A.weight": TinyArr([[1.0] * 6 for _ in range(2)]),
+            "diffusion_model.final_layer.audio_out.lora_B.weight": TinyArr([[4.0, 5.0] for _ in range(4)]),
+            "diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight": TinyArr(
+                [[10.0, 10.0], [11.0, 11.0], [20.0, 20.0], [21.0, 21.0], [30.0, 30.0], [31.0, 31.0]]
+            ),
+            "diffusion_model.blocks.0.attn.out_proj.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.blocks.0.attn.out_proj.lora_B.weight": TinyArr([[7.0, 8.0] for _ in range(4)]),
+            "diffusion_model.blocks.0.mlp.fc1.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.blocks.0.mlp.fc1.lora_B.weight": TinyArr(
+                [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]]  # [gate; value]
+            ),
+            "diffusion_model.blocks.0.mlp.fc2.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.blocks.0.mlp.fc2.lora_B.weight": TinyArr([[9.0, 9.0] for _ in range(4)]),
+            "diffusion_model.token_refiner.blocks.1.attn.qkv_proj.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
+            "diffusion_model.token_refiner.blocks.1.attn.qkv_proj.lora_B.weight": TinyArr(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]
+            ),
+        }
+        assert colab_worker._is_minimax_h3_comfy_lora(sd.keys()) is True
+        conv = colab_worker._convert_minimax_h3_comfy_lora(sd)
+        assert conv["transformer.audio_proj_in.lora_A.weight"].shape == (2, 4)
+        assert conv["transformer.audio_proj_out.lora_B.weight"].shape == (4, 2)
+        # QKV split exact check
+        assert conv["transformer.transformer_blocks.0.attn.to_q.lora_B.weight"].rows == [[10.0, 10.0], [11.0, 11.0]]
+        assert conv["transformer.transformer_blocks.0.attn.to_k.lora_B.weight"].rows == [[20.0, 20.0], [21.0, 21.0]]
+        assert conv["transformer.transformer_blocks.0.attn.to_v.lora_B.weight"].rows == [[30.0, 30.0], [31.0, 31.0]]
+        assert conv["transformer.transformer_blocks.0.attn.to_out.0.lora_B.weight"].shape == (4, 2)
+        # SwiGLU [gate; value] -> [value; gate] exact swap check
+        assert conv["transformer.transformer_blocks.0.ff.net.0.proj.lora_B.weight"].rows == [
+            [3.0, 3.0], [4.0, 4.0], [1.0, 1.0], [2.0, 2.0]
+        ]
+        assert conv["transformer.transformer_blocks.0.ff.net.2.lora_B.weight"].shape == (4, 2)
+        assert conv["transformer.token_refiner.refiner_blocks.1.attn.to_k.lora_B.weight"].rows == [[2.0, 0.0]]
+    finally:
+        colab_worker._cat_dim0 = orig_cat
+
+
 if __name__ == "__main__":
     test_parse_model_link()
     test_normalize_job_comfy_and_loras()
     test_comfy_presets_persistence()
     test_build_comfy_prompt_graphs()
+    test_minimax_h3_comfy_lora_conversion()
     print("ALL_COMFY_UNIT_TESTS_PASSED")

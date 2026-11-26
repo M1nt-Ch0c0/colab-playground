@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import ipaddress
 import json
 import os
 import random
@@ -56,7 +57,20 @@ def _validate_proxy_url(raw: str) -> str:
     return url
 
 
-def _apply_proxy_env(url: str) -> None:
+def _is_local_or_private_host(host: str) -> bool:
+    h = (host or "").strip().lower().strip("[]")
+    if not h:
+        return False
+    if h in {"localhost", "host.docker.internal", "gateway.docker.internal"} or h.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
+
+
+def _apply_proxy_env(url: str, extra_no_proxy: list[str] | tuple[str, ...] = ()) -> None:
     if url:
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             os.environ[key] = url
@@ -65,9 +79,11 @@ def _apply_proxy_env(url: str) -> None:
             os.environ.pop(key, None)
     no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
     parts = [p.strip() for p in no_proxy.split(",") if p.strip()]
-    for local in ("127.0.0.1", "localhost", "::1"):
-        if local not in parts:
-            parts.append(local)
+    defaults = ["127.0.0.1", "localhost", "::1", "host.docker.internal", "172.17.0.1", "172.19.0.1"]
+    for local in (*defaults, *(extra_no_proxy or ())):
+        item = (local or "").strip()
+        if item and item not in parts:
+            parts.append(item)
     merged = ",".join(parts)
     os.environ["NO_PROXY"] = merged
     os.environ["no_proxy"] = merged
@@ -525,7 +541,7 @@ LIMITS = {
     "steps_min": 2, "steps_max": 60,
     "cfg_min": 1.0, "cfg_max": 12.0,
     "frames_min": 120, "frames_max": 360,
-    "count_max": 4, "loras_max": 4, "lora_scale_max": 2.5,
+    "count_max": 4, "loras_max": 4, "lora_scale_max": 2.5, "refs_max": 6,
     "idle_minutes_min": 5, "idle_minutes_max": 60,
     "poll_rounds_min": 1, "poll_rounds_max": 10,
     "prompt_max": 2500, "negative_max": 1200, "upload_max_mb": 12,
@@ -705,6 +721,7 @@ class Studio:
         self.log = log
         self.worker_path = Path(__file__).resolve().parent / "colab_worker.py"
         self.refs_path = root / "refs.json"
+        self.refs_dir = root / "refs"
         self.queue_state_path = store.out / "queue.json"
         self.queue_refs_dir = store.out / "queue_refs"
         self._lock = threading.RLock()
@@ -752,6 +769,14 @@ class Studio:
                 return pid
         return ""
 
+    def _cpa_no_proxy_hosts(self) -> list[str]:
+        base = (self.secret.get("cpa_base") or "").strip()
+        host = urlsplit(base).hostname if base else None
+        return [host] if host and _is_local_or_private_host(host) else []
+
+    def _apply_proxy(self, url: str) -> None:
+        _apply_proxy_env(url, extra_no_proxy=self._cpa_no_proxy_hosts())
+
     def _init_proxy(self) -> None:
         saved = ""
         try:
@@ -764,9 +789,9 @@ class Studio:
         chosen = saved if (saved in {"us", "sg", "custom"} and self._proxy_url_for(saved)) else self._default_proxy_profile()
         self._proxy_profile = chosen
         if chosen:
-            _apply_proxy_env(self._proxy_url_for(chosen))
+            self._apply_proxy(self._proxy_url_for(chosen))
             label = next((p["label"] for p in PROXY_PROFILES if p["id"] == chosen), chosen)
-            self.log(f"已启用出站代理：{label}（本机回环直连）")
+            self.log(f"已启用出站代理：{label}（本机与内网回环直连）")
 
     def proxy_report(self) -> dict:
         with self._lock:
@@ -821,7 +846,7 @@ class Studio:
                     raise ValueError(f"服务端尚未配置 {target.upper()} 出口代理")
                 changed = (target != self._proxy_profile) or (custom_url is not None and target == "custom")
                 self._proxy_profile = target
-                _apply_proxy_env(url)
+                self._apply_proxy(url)
                 if changed:
                     self._proxy_last_test = None
                 self._save_state_locked()
@@ -857,7 +882,7 @@ class Studio:
             return
         with self._lock:
             self._proxy_profile = profile
-            _apply_proxy_env(url)
+            self._apply_proxy(url)
 
     def test_proxy(self, profile: str | None = None) -> dict:
         target = str(profile or self._proxy_profile or "").strip().lower()
@@ -1000,19 +1025,33 @@ class Studio:
 
     def _write_job_refs(self, job: dict) -> None:
         self.queue_refs_dir.mkdir(parents=True, exist_ok=True)
-        for key, slot in (("first_ref", "first"), ("last_ref", "last")):
-            blob = job.get(key)
-            if blob:
-                p = self._ref_snapshot_path(job["id"], slot)
-                tmp = p.with_suffix(".bin.tmp")
-                tmp.write_bytes(blob)
-                os.replace(tmp, p)
+        refs = job.get("ref_blobs") or ([job["first_ref"]] if job.get("first_ref") else [])
+        if refs:
+            p = self._ref_snapshot_path(job["id"], "first")
+            tmp = p.with_suffix(".bin.tmp")
+            tmp.write_bytes(refs[0])
+            os.replace(tmp, p)
+            for idx, blob in enumerate(refs[1:], start=1):
+                ep = self._ref_snapshot_path(job["id"], f"ref_{idx}")
+                etmp = ep.with_suffix(".bin.tmp")
+                etmp.write_bytes(blob)
+                os.replace(etmp, ep)
+        last_blob = job.get("last_ref")
+        if last_blob:
+            lp = self._ref_snapshot_path(job["id"], "last")
+            ltmp = lp.with_suffix(".bin.tmp")
+            ltmp.write_bytes(last_blob)
+            os.replace(ltmp, lp)
 
     def _cleanup_job_refs(self, job_id: str) -> None:
         for slot in ("first", "last"):
             self._ref_snapshot_path(job_id, slot).unlink(missing_ok=True)
+        if self.queue_refs_dir.exists():
+            for p in self.queue_refs_dir.glob(f"{job_id}_ref_*.bin"):
+                p.unlink(missing_ok=True)
 
     def _serialize_job(self, job: dict) -> dict:
+        refs = job.get("ref_blobs") or ([job["first_ref"]] if job.get("first_ref") else [])
         out = {
             "id": job["id"],
             "payload": job["payload"],
@@ -1023,7 +1062,8 @@ class Studio:
             "finished_at": job.get("finished_at"),
             "round_id": job.get("round_id"),
             "error": job.get("error", ""),
-            "has_first_blob": bool(job.get("first_ref")),
+            "has_first_blob": bool(refs),
+            "ref_blob_count": len(refs),
             "has_last_blob": bool(job.get("last_ref")),
         }
         return out
@@ -1073,7 +1113,7 @@ class Studio:
             saved_proxy = str(data.get("proxy_profile") or "").strip().lower()
             if saved_proxy in {"us", "sg", "custom"} and self._proxy_url_for(saved_proxy):
                 self._proxy_profile = saved_proxy
-                _apply_proxy_env(self._proxy_url_for(saved_proxy))
+                self._apply_proxy(self._proxy_url_for(saved_proxy))
 
             saved_recent = data.get("recent_models")
             if isinstance(saved_recent, list):
@@ -1128,13 +1168,22 @@ class Studio:
                     "created_at": int(item.get("created_at") or time.time()),
                     "progress": None,
                     "first_ref": None,
+                    "ref_blobs": [],
                     "last_ref": None,
                 }
                 missing_ref = False
-                if item.get("has_first_blob"):
+                ref_blob_count = int(item.get("ref_blob_count") or (1 if item.get("has_first_blob") else 0))
+                if item.get("has_first_blob") or ref_blob_count > 0:
                     fp = self._ref_snapshot_path(jid, "first")
                     if fp.exists():
-                        job["first_ref"] = fp.read_bytes()
+                        first_bytes = fp.read_bytes()
+                        job["first_ref"] = first_bytes
+                        blobs = [first_bytes]
+                        for ridx in range(1, ref_blob_count):
+                            ep = self._ref_snapshot_path(jid, f"ref_{ridx}")
+                            if ep.exists():
+                                blobs.append(ep.read_bytes())
+                        job["ref_blobs"] = blobs
                     else:
                         missing_ref = True
                 if item.get("has_last_blob"):
@@ -1192,10 +1241,23 @@ class Studio:
         with self._lock:
             self._save_state_locked()
 
-    # ── references ────────────────────────────────────────────────────
+    # ── references (multi-image list + dedicated last-frame slot) ─────
 
     def ref_file(self, slot: str) -> Path:
         return self.root / ("last_frame.bin" if slot == "last" else "reference.bin")
+
+    def _ref_item_path(self, ref_id: str) -> Path:
+        return self.refs_dir / f"{ref_id}.bin"
+
+    def ref_item_file(self, ref_id: str) -> Path | None:
+        rid = str(ref_id or "").strip()
+        if rid == "legacy":
+            f = self.ref_file("first")
+            return f if f.exists() else None
+        if not re.fullmatch(r"r[A-Za-z0-9_-]{4,32}", rid):
+            return None
+        p = self._ref_item_path(rid)
+        return p if p.exists() else None
 
     def _refs_meta(self) -> dict:
         try:
@@ -1204,50 +1266,245 @@ class Studio:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    def refs_report(self) -> dict:
+    def _save_refs_meta_locked(self, meta: dict) -> None:
+        mtmp = self.refs_path.with_suffix(".json.tmp")
+        mtmp.write_text(json.dumps(meta), encoding="utf-8")
+        os.replace(mtmp, self.refs_path)
+
+    def _ref_items_locked(self) -> list[dict]:
         meta = self._refs_meta()
-        out = {}
-        for slot in ("first", "last"):
-            f = self.ref_file(slot)
-            info = meta.get(slot) or {}
-            out[slot] = {
-                "set": f.exists(),
-                "bytes": f.stat().st_size if f.exists() else 0,
-                "source": info.get("source") or ("legacy" if f.exists() else ""),
-                "updated_at": int(info.get("updated_at") or (f.stat().st_mtime if f.exists() else 0)),
+        raw_items = meta.get("items")
+        items: list[dict] = []
+        if isinstance(raw_items, list):
+            for it in raw_items:
+                if not isinstance(it, dict):
+                    continue
+                rid = str(it.get("id") or "").strip()
+                if not re.fullmatch(r"r[A-Za-z0-9_-]{4,32}", rid):
+                    continue
+                p = self._ref_item_path(rid)
+                if not p.exists():
+                    continue
+                items.append({
+                    "id": rid,
+                    "bytes": p.stat().st_size,
+                    "source": str(it.get("source") or "upload"),
+                    "updated_at": int(it.get("updated_at") or p.stat().st_mtime),
+                })
+        if not items:
+            first_f = self.ref_file("first")
+            if first_f.exists():
+                finfo = meta.get("first") if isinstance(meta.get("first"), dict) else {}
+                items.append({
+                    "id": "legacy",
+                    "bytes": first_f.stat().st_size,
+                    "source": str(finfo.get("source") or "legacy"),
+                    "updated_at": int(finfo.get("updated_at") or first_f.stat().st_mtime),
+                })
+        return items
+
+    def _materialize_legacy_locked(self, items: list[dict]) -> list[dict]:
+        """Promote a legacy reference.bin entry into refs/ before mutating the list."""
+        if len(items) == 1 and items[0]["id"] == "legacy":
+            first_f = self.ref_file("first")
+            if first_f.exists():
+                self.refs_dir.mkdir(parents=True, exist_ok=True)
+                rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+                dest = self._ref_item_path(rid)
+                tmp = dest.with_suffix(".bin.tmp")
+                tmp.write_bytes(first_f.read_bytes())
+                os.replace(tmp, dest)
+                items = [{
+                    "id": rid,
+                    "bytes": dest.stat().st_size,
+                    "source": items[0]["source"],
+                    "updated_at": items[0]["updated_at"],
+                }]
+            else:
+                items = []
+        return items
+
+    def _sync_first_locked(self, items: list[dict], meta: dict) -> None:
+        """Keep legacy reference.bin and meta['first'] in sync with items[0]."""
+        first_f = self.ref_file("first")
+        if items:
+            head = items[0]
+            src_path = self.ref_item_file(head["id"])
+            if src_path and src_path.exists() and src_path != first_f:
+                tmp = first_f.with_suffix(".bin.tmp")
+                tmp.write_bytes(src_path.read_bytes())
+                os.replace(tmp, first_f)
+            meta["first"] = {"source": head["source"], "updated_at": head["updated_at"]}
+            meta["items"] = [
+                {"id": it["id"], "source": it["source"], "updated_at": it["updated_at"]}
+                for it in items
+            ]
+        else:
+            first_f.unlink(missing_ok=True)
+            meta.pop("first", None)
+            meta["items"] = []
+        self._save_refs_meta_locked(meta)
+
+    def ref_blobs(self) -> list[bytes]:
+        with self._lock:
+            blobs: list[bytes] = []
+            for it in self._ref_items_locked():
+                p = self.ref_item_file(it["id"])
+                if p and p.exists():
+                    blobs.append(p.read_bytes())
+            return blobs
+
+    def ref_count(self) -> int:
+        with self._lock:
+            return len(self._ref_items_locked())
+
+    def refs_report(self) -> dict:
+        with self._lock:
+            meta = self._refs_meta()
+            items = self._ref_items_locked()
+            first_item = items[0] if items else None
+            last_f = self.ref_file("last")
+            last_info = meta.get("last") if isinstance(meta.get("last"), dict) else {}
+            return {
+                "first": {
+                    "set": first_item is not None,
+                    "bytes": first_item["bytes"] if first_item else 0,
+                    "source": first_item["source"] if first_item else "",
+                    "updated_at": first_item["updated_at"] if first_item else 0,
+                },
+                "last": {
+                    "set": last_f.exists(),
+                    "bytes": last_f.stat().st_size if last_f.exists() else 0,
+                    "source": last_info.get("source") or ("legacy" if last_f.exists() else ""),
+                    "updated_at": int(last_info.get("updated_at") or (last_f.stat().st_mtime if last_f.exists() else 0)),
+                },
+                "items": items,
+                "max": LIMITS["refs_max"],
             }
-        return out
+
+    def add_ref(self, data: bytes, source: str) -> dict:
+        now = int(time.time())
+        with self._lock:
+            meta = self._refs_meta()
+            items = self._materialize_legacy_locked(self._ref_items_locked())
+            if len(items) >= LIMITS["refs_max"]:
+                raise ValueError(f"最多可添加 {LIMITS['refs_max']} 张参考图，请先移除不需要的图片")
+            self.refs_dir.mkdir(parents=True, exist_ok=True)
+            rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+            dest = self._ref_item_path(rid)
+            tmp = dest.with_suffix(".bin.tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            entry = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+            items.append(entry)
+            self._sync_first_locked(items, meta)
+            total = len(items)
+        self.log(f"已添加参考图 #{total}（{source}，{len(data) // 1024} KB）")
+        return entry
+
+    def replace_ref(self, ref_id: str, data: bytes, source: str) -> dict:
+        now = int(time.time())
+        with self._lock:
+            meta = self._refs_meta()
+            items = self._materialize_legacy_locked(self._ref_items_locked())
+            idx = next((i for i, it in enumerate(items) if it["id"] == ref_id), -1)
+            if idx < 0:
+                if ref_id == "legacy" and items:
+                    idx = 0
+                else:
+                    raise ValueError("未找到要替换的参考图")
+            rid = items[idx]["id"]
+            self.refs_dir.mkdir(parents=True, exist_ok=True)
+            dest = self._ref_item_path(rid)
+            tmp = dest.with_suffix(".bin.tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            items[idx] = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+            self._sync_first_locked(items, meta)
+        self.log(f"已替换参考图 #{idx + 1}（{source}，{len(data) // 1024} KB）")
+        return items[idx]
+
+    def remove_ref(self, ref_id: str) -> bool:
+        with self._lock:
+            meta = self._refs_meta()
+            items = self._ref_items_locked()
+            if ref_id == "legacy":
+                if not items or items[0]["id"] != "legacy":
+                    return False
+                self._sync_first_locked([], meta)
+                return True
+            kept = []
+            removed = False
+            for it in items:
+                if it["id"] == ref_id:
+                    self._ref_item_path(ref_id).unlink(missing_ok=True)
+                    removed = True
+                else:
+                    kept.append(it)
+            if not removed:
+                return False
+            self._sync_first_locked(kept, meta)
+            return True
 
     def set_ref(self, slot: str, data: bytes, source: str) -> None:
+        now = int(time.time())
         with self._lock:
-            tmp = self.ref_file(slot).with_suffix(".bin.tmp")
-            tmp.write_bytes(data)
-            os.replace(tmp, self.ref_file(slot))
-            meta = self._refs_meta()
-            meta[slot] = {"source": source, "updated_at": int(time.time())}
-            mtmp = self.refs_path.with_suffix(".json.tmp")
-            mtmp.write_text(json.dumps(meta), encoding="utf-8")
-            os.replace(mtmp, self.refs_path)
+            if slot == "last":
+                tmp = self.ref_file("last").with_suffix(".bin.tmp")
+                tmp.write_bytes(data)
+                os.replace(tmp, self.ref_file("last"))
+                meta = self._refs_meta()
+                meta["last"] = {"source": source, "updated_at": now}
+                self._save_refs_meta_locked(meta)
+            else:
+                meta = self._refs_meta()
+                items = self._materialize_legacy_locked(self._ref_items_locked())
+                self.refs_dir.mkdir(parents=True, exist_ok=True)
+                if items:
+                    rid = items[0]["id"]
+                    dest = self._ref_item_path(rid)
+                    tmp = dest.with_suffix(".bin.tmp")
+                    tmp.write_bytes(data)
+                    os.replace(tmp, dest)
+                    items[0] = {"id": rid, "bytes": len(data), "source": source, "updated_at": now}
+                else:
+                    rid = f"r{int(time.time() * 1000) % 100000000:08d}_{random.randint(1000, 9999)}"
+                    dest = self._ref_item_path(rid)
+                    tmp = dest.with_suffix(".bin.tmp")
+                    tmp.write_bytes(data)
+                    os.replace(tmp, dest)
+                    items = [{"id": rid, "bytes": len(data), "source": source, "updated_at": now}]
+                self._sync_first_locked(items, meta)
         self.log(f"已设置{'尾帧' if slot == 'last' else '参考图 / 首帧'}（{source}，{len(data) // 1024} KB）")
 
     def clear_ref(self, slot: str) -> None:
         with self._lock:
-            self.ref_file(slot).unlink(missing_ok=True)
             meta = self._refs_meta()
-            meta.pop(slot, None)
-            mtmp = self.refs_path.with_suffix(".json.tmp")
-            mtmp.write_text(json.dumps(meta), encoding="utf-8")
-            os.replace(mtmp, self.refs_path)
+            if slot == "last":
+                self.ref_file("last").unlink(missing_ok=True)
+                meta.pop("last", None)
+                self._save_refs_meta_locked(meta)
+            else:
+                for it in self._ref_items_locked():
+                    if it["id"] != "legacy":
+                        self._ref_item_path(it["id"]).unlink(missing_ok=True)
+                self._sync_first_locked([], meta)
 
-    def use_round(self, rid: str, slot: str = "first") -> None:
+    def use_round(self, rid: str, slot: str = "first", append: bool = False) -> None:
         found = self.store.media_path(rid)
         if not found or found[0] != "image":
             raise RuntimeError("只能把图片作品设为参考图或首尾帧")
-        self.set_ref(slot, found[1].read_bytes(), f"round:{rid}")
+        data = found[1].read_bytes()
+        if slot == "last":
+            self.set_ref("last", data, f"round:{rid}")
+        elif append:
+            self.add_ref(data, f"round:{rid}")
+        else:
+            self.set_ref("first", data, f"round:{rid}")
 
     # ── prompt helpers ────────────────────────────────────────────────
 
-    def write_prompt(self, text: str, mode: str = "image", editing: bool = False) -> str:
+    def write_prompt(self, text: str, mode: str = "image", editing: bool = False, ref_count: int = 0) -> str:
         key = self.secret.get("cpa_api_key") or ""
         if not key:
             raise RuntimeError("这台机器还没配置 CPA 密钥")
@@ -1261,6 +1518,8 @@ class Studio:
                 "重点写清镜头运动（推/拉/摇/移/特写）、主体动作连贯变化、光线质感、环境氛围，以及同步环境音效或人物声音。"
                 "严禁生成任何涉及未成年人的不当内容。"
             )
+            if ref_count > 1:
+                text = f"（这是结合 {ref_count} 张参考图生成视频的指令）" + text
         else:
             system_prompt = (
                 "你是图像生成模型的提示词助手。用户用自然语言描述想要的画面或修改指令，"
@@ -1269,8 +1528,11 @@ class Studio:
                 "写清主体、构图、光线、景深与质感；如果是在改已有的图，明确指出保留主体和背景只修改指定部分。"
                 "严禁生成任何涉及未成年人的不当内容。"
             )
-        if editing and mode == "image":
-            text = "（这是对一张已有参考图的修改指令）" + text
+            if editing:
+                if ref_count > 1:
+                    text = f"（这是结合 {ref_count} 张参考图的融合/编辑指令，可用图1、图2等明确各参考元素）" + text
+                else:
+                    text = "（这是对一张已有参考图的修改指令）" + text
         payload = {
             "model": model,
             "temperature": 0.4,
@@ -1285,8 +1547,15 @@ class Studio:
             method="POST",
             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         )
+        host = urlsplit(base).hostname or ""
+        opener = (
+            urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            if _is_local_or_private_host(host)
+            else None
+        )
         try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            cm = opener.open(req, timeout=90) if opener is not None else urllib.request.urlopen(req, timeout=90)
+            with cm as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:300]
@@ -1412,11 +1681,16 @@ class Studio:
         if base_seed is None or base_seed < 0:
             base_seed = random.randint(0, 2**31 - 2)
         first_ref = last_ref = None
+        ref_blobs: list[bytes] = []
         if payload["has_image"] and not payload.get("chain"):
-            f = self.ref_file("first")
-            if not f.exists():
+            refs = self.ref_blobs()
+            if not refs:
                 raise ValueError("当前没有参考图 / 首帧，请先上传或从作品中选择")
-            first_ref = f.read_bytes()
+            if payload["mode"] == "video" and payload.get("workflow") == "fl2va":
+                refs = refs[:1]
+            ref_blobs = refs
+            first_ref = refs[0]
+            payload["ref_count"] = len(refs)
         if payload.get("has_last_image"):
             f = self.ref_file("last")
             last_ref = f.read_bytes() if f.exists() else None
@@ -1433,6 +1707,7 @@ class Studio:
                     "id": f"j{int(time.time()) % 100000:05d}{self._job_seq:03d}",
                     "payload": p,
                     "first_ref": first_ref,
+                    "ref_blobs": list(ref_blobs),
                     "last_ref": last_ref,
                     "status": "queued",
                     "stage": "queued",
@@ -1472,6 +1747,7 @@ class Studio:
                     job["status"] = "canceled"
                     job["finished_at"] = int(time.time())
                     job.pop("first_ref", None)
+                    job.pop("ref_blobs", None)
                     job.pop("last_ref", None)
                     self._cleanup_job_refs(job_id)
                     self._history.appendleft(job)
@@ -1621,23 +1897,35 @@ class Studio:
             self.colab.upload_file(session, self.worker_path, "content/colab_worker.py")
 
             remote = dict(p)
-            first = job.get("first_ref")
+            refs_to_upload: list[bytes] = list(job.get("ref_blobs") or [])
+            if not refs_to_upload and job.get("first_ref"):
+                refs_to_upload = [job["first_ref"]]
             if p.get("chain"):
                 latest = self.store.latest("image")
                 if latest:
-                    first = (self.store.rounds / f"{latest['id']}.png").read_bytes()
+                    refs_to_upload = [(self.store.rounds / f"{latest['id']}.png").read_bytes()]
                     remote["chain_from"] = latest["id"]
                     self.log(f"接着改：以第 {int(latest['id'])} 号作品为参考图")
                 else:
-                    first = None
+                    refs_to_upload = []
                     self.log("接着改：暂无历史图片，改为文生图")
-            if remote.get("has_image") and first:
-                f = tmpdir / "reference.bin"
-                f.write_bytes(first)
-                self.log(f"上传参考图 / 首帧（{len(first) // 1024} KB）…")
-                self.colab.upload_file(session, f, "content/reference.bin")
+            if remote.get("has_image") and refs_to_upload:
+                total_kb = sum(len(b) for b in refs_to_upload) // 1024
+                if len(refs_to_upload) == 1:
+                    self.log(f"上传参考图 / 首帧（{total_kb} KB）…")
+                else:
+                    self.log(f"上传 {len(refs_to_upload)} 张参考图（合计 {total_kb} KB）…")
+                f0 = tmpdir / "reference.bin"
+                f0.write_bytes(refs_to_upload[0])
+                self.colab.upload_file(session, f0, "content/reference.bin")
+                for idx, blob in enumerate(refs_to_upload):
+                    fi = tmpdir / f"reference_{idx}.bin"
+                    fi.write_bytes(blob)
+                    self.colab.upload_file(session, fi, f"content/reference_{idx}.bin")
+                remote["ref_count"] = len(refs_to_upload)
             else:
                 remote["has_image"] = False
+                remote["ref_count"] = 0
             last = job.get("last_ref")
             if remote.get("has_last_image") and last:
                 f = tmpdir / "last_frame.bin"
@@ -1696,6 +1984,7 @@ class Studio:
             if video:
                 meta["model"] = "MiniMaxAI/MiniMax-H3"
             meta["chain_from"] = remote.get("chain_from")
+            meta["ref_count"] = remote.get("ref_count", 1 if remote.get("has_image") else 0)
             meta["job_id"] = job["id"]
             meta["duration_s"] = round(time.time() - t0, 1)
             rid = self.store.save(out, "video" if video else "image", meta, thumb)
@@ -1721,6 +2010,7 @@ class Studio:
         finally:
             job["finished_at"] = int(time.time())
             job.pop("first_ref", None)
+            job.pop("ref_blobs", None)
             job.pop("last_ref", None)
             self._cleanup_job_refs(job["id"])
             shutil.rmtree(tmpdir, ignore_errors=True)

@@ -208,6 +208,18 @@ input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;bac
 .drop .ttl{position:absolute;left:8px;top:6px;z-index:2;font-size:11px;color:#fff;background:rgba(0,0,0,.55);padding:1px 7px;border-radius:6px}
 .drop.set .empty{display:none}
 .drop:not(.set) img,.drop:not(.set) .tag,.drop:not(.set) .clear{display:none}
+.ref-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.ref-card{position:relative;aspect-ratio:1/1;border-radius:11px;border:1px solid var(--line);background:var(--viewer-bg);overflow:hidden}
+.ref-card img{width:100%;height:100%;object-fit:cover;display:block}
+.ref-card .ref-idx{position:absolute;left:5px;top:5px;z-index:2;font-size:10px;font-weight:700;color:#fff;background:rgba(15,23,42,.72);padding:1px 6px;border-radius:5px}
+.ref-card .tag{position:absolute;left:5px;bottom:5px;right:5px;z-index:2;background:rgba(0,0,0,.68);color:#fff;font-size:10px;padding:1px 5px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ref-card .clear{position:absolute;right:5px;top:5px;z-index:2;width:22px;height:22px;border-radius:7px;border:0;background:rgba(0,0,0,.68);color:#fff;cursor:pointer;display:grid;place-items:center}
+.ref-card .clear:hover{background:#ef4444}
+.ref-add{position:relative;aspect-ratio:1/1;border:1.5px dashed var(--line2);border-radius:11px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  text-align:center;cursor:pointer;background:var(--surface);color:var(--muted);font-size:11.5px;padding:8px;transition:.15s}
+.ref-add.wide{grid-column:1/-1;aspect-ratio:auto;min-height:108px}
+.ref-add:hover,.ref-add.over{border-color:var(--a1);background:rgba(124,58,237,.08);color:var(--text)}
+.ref-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:11.5px;color:var(--dim)}
 
 .lora{display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:8px;padding:10px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
 .lora .full{grid-column:1/-1}
@@ -471,11 +483,18 @@ _BODY = r"""
       </section>
 
       <section class="block" id="refBlock">
-        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint">点击 / 拖入 / 粘贴</span></div>
-        <div class="drops" id="drops" style="margin-top:10px">
+        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴（可多选）</span></div>
+        <div id="multiRefWrap">
+          <div class="ref-grid" id="refGrid"></div>
+          <div class="ref-bar hide" id="refBar">
+            <span id="refCountText"></span>
+            <button type="button" class="btn sm ghost" id="refClearAll" style="height:24px;padding:0 8px;font-size:11px">清空全部</button>
+          </div>
+        </div>
+        <div class="drops hide" id="drops" style="margin-top:10px">
           <div class="drop" id="dropFirst" data-slot="first">
-            <span class="ttl" id="firstTtl">参考图</span>
-            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">上传参考图</div><div class="dim">PNG / JPEG / WebP ≤ 12MB</div></div>
+            <span class="ttl" id="firstTtl">首帧</span>
+            <div class="empty"><i data-i="upload" class="lg"></i><div style="margin-top:6px">上传首帧图</div><div class="dim">PNG / JPEG / WebP ≤ 12MB</div></div>
             <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
           </div>
           <div class="drop hide" id="dropLast" data-slot="last">
@@ -484,7 +503,7 @@ _BODY = r"""
             <img alt=""><span class="tag"></span><button class="clear" title="移除"><i data-i="x"></i></button>
           </div>
         </div>
-        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp" hidden>
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <div id="imgRefOpts">
           <label class="switch"><input type="checkbox" id="useRef" data-p><span class="tg"></span>用参考图改图</label>
           <label class="switch" title="自动以最新作品为参考图，适合连续修改"><input type="checkbox" id="chain" data-p><span class="tg"></span>接着改（自动用最新作品）</label>
@@ -604,7 +623,7 @@ _BODY = r"""
       <details class="block" id="loraBlock">
         <summary class="bh"><i data-i="link"></i>LoRA 挂载<span class="hint" id="loraHint">未启用</span><i data-i="right" class="chev"></i></summary>
         <div id="loraRows"></div>
-        <div class="help">填 Hugging Face 仓库 ID（owner/repo），点扫描列出 .safetensors；文件名留空则自动选择。</div>
+        <div class="help">填 Hugging Face 仓库 ID（owner/repo）或直接粘贴 .safetensors 文件链接；MiniMax-H3 支持自动无损转换 ComfyUI 格式 LoRA。</div>
       </details>
 
       <section class="block" id="gpuBlock">
@@ -1139,6 +1158,9 @@ function setMode(m, {keep=false}={}){
   updateModeUI();
   saveSoon();
 }
+function isMultiRefMode(){
+  return S.mode === 'image' || (S.mode === 'video' && S.workflow === 'ref2va');
+}
 function updateModeUI(){
   const v = S.mode === 'video';
   $('#imageModelWrap').classList.toggle('hide', v);
@@ -1147,17 +1169,23 @@ function updateModeUI(){
   $('#offloadWrap').classList.toggle('hide', !v);
   $('#imgRefOpts').classList.toggle('hide', v);
   const wf = S.workflow;
-  const needFirst = v && wf !== 't2va';
+  const multi = isMultiRefMode();
   $('#refBlock').classList.toggle('hide', v && wf === 't2va');
+  $('#multiRefWrap').classList.toggle('hide', !multi);
+  $('#drops').classList.toggle('hide', multi);
   $('#dropLast').classList.toggle('hide', !(v && wf === 'fl2va'));
   $('#drops').classList.toggle('two', v && wf === 'fl2va');
-  $('#refTitle').textContent = v ? (wf === 'fl2va' ? '首帧 / 尾帧' : '参考图') : '参考图';
+  $('#refTitle').textContent = v ? (wf === 'fl2va' ? '首帧 / 尾帧' : '参考图（多图）') : '参考图（多图）';
+  $('#refHint').textContent = multi ? '点击 / 拖入 / 粘贴（可多选）' : '点击 / 拖入 / 粘贴';
   $('#firstTtl').textContent = v ? (wf === 'fl2va' ? '首帧' : '参考图') : '参考图';
   $('#firstTtl').classList.toggle('hide', !(v && wf === 'fl2va'));
-  $('#refHelp').textContent = needFirst ? '此工作流需要首帧 / 参考图。' : '';
+  const maxR = (S.refs && S.refs.max) || (S.cfg && S.cfg.limits && S.cfg.limits.refs_max) || 6;
+  $('#refHelp').textContent = v
+    ? (wf === 'fl2va' ? '首帧必填，尾帧可选。' : `最多可传 ${maxR} 张参考图，MiniMax-H3 ref2va 会同时参考所有图片。`)
+    : `最多可传 ${maxR} 张参考图（Qwen-2.1 / FLUX.2 / ComfyUI 均支持多图融合与编辑）。`;
   renderModelOptions();
   $('#goText').textContent = v ? '生成视频' : '开始生成';
-  $('#stepsHint').textContent = v ? '（Turbo LoRA 可设 4–8）' : (S.engine === 'comfyui' ? '（精细 28–35 步 / Turbo LoRA 8 步）' : '');
+  $('#stepsHint').textContent = v ? '（Turbo LoRA 可设 4–8；写实 LoRA 建议 18 步）' : (S.engine === 'comfyui' ? '（精细 28–35 步 / Turbo LoRA 8 步）' : '');
   renderSizeChips();
   updateGoState();
 }
@@ -1174,35 +1202,78 @@ function renderRefs(refs){
       $('.tag', el).textContent = r.source && r.source.startsWith('round:') ? '作品 #' + r.source.slice(6) : r.source === 'upload' ? '上传' : '已设置';
     }
   }
+  const items = Array.isArray(S.refs.items) ? S.refs.items : [];
+  const maxR = S.refs.max || (S.cfg && S.cfg.limits && S.cfg.limits.refs_max) || 6;
+  const cards = items.map((it, idx) => {
+    const src = `api/reference?id=${encodeURIComponent(it.id)}&t=${it.updated_at}`;
+    const tag = it.source && it.source.startsWith('round:') ? '#' + it.source.slice(6) : it.source === 'upload' ? '上传' : '已设置';
+    return `<div class="ref-card" data-rid="${esc(it.id)}">
+      <span class="ref-idx">图${idx + 1}</span>
+      <img src="${src}" alt="参考图 ${idx + 1}">
+      <span class="tag">${esc(tag)}</span>
+      <button type="button" class="clear" data-rmref="${esc(it.id)}" title="移除图${idx + 1}">${I('x')}</button>
+    </div>`;
+  });
+  if (items.length < maxR){
+    const wide = items.length === 0 ? ' wide' : '';
+    cards.push(`<div class="ref-add${wide}" id="refAddZone" title="点击选择或拖入图片（可多选）">
+      ${I('upload', items.length === 0 ? 'lg' : '')}
+      <div>${items.length === 0 ? '上传参考图（可多选）' : '添加'}</div>
+      ${items.length === 0 ? `<div class="dim">PNG / JPEG / WebP ≤ 12MB · 最多 ${maxR} 张</div>` : `<div class="dim">${items.length}/${maxR}</div>`}
+    </div>`);
+  }
+  $('#refGrid').innerHTML = cards.join('');
+  $('#refBar').classList.toggle('hide', items.length === 0);
+  $('#refCountText').textContent = `已选 ${items.length} / ${maxR} 张参考图`;
 }
-async function uploadRef(slot, file){
-  if (!file) return;
-  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return toast('只支持 PNG / JPEG / WebP', 'err');
-  if (file.size > 12*1048576) return toast('图片超过 12MB', 'err');
+async function uploadRef(slot, file, {append=false, silent=false}={}){
+  if (!file) return false;
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)){ toast('只支持 PNG / JPEG / WebP', 'err'); return false; }
+  if (file.size > 12*1048576){ toast('图片超过 12MB', 'err'); return false; }
   try {
-    await api('api/reference?slot=' + slot, {method:'POST', body:file});
-    toast(slot === 'last' ? '尾帧已上传' : '参考图已上传', 'ok');
+    const qs = slot === 'last' ? 'slot=last' : (append ? 'slot=first&append=1' : 'slot=first');
+    const r = await api('api/reference?' + qs, {method:'POST', body:file});
+    if (r && r.references) renderRefs(r.references);
+    if (!silent) toast(slot === 'last' ? '尾帧已上传' : (append ? '已添加参考图' : '参考图已上传'), 'ok');
     if (slot === 'first' && S.mode === 'image'){ $('#useRef').checked = true; $('#chain').checked = false; saveSoon(); }
+    if (!silent) refresh();
+    return true;
+  } catch(e){ toast('上传失败：' + e.message, 'err'); return false; }
+}
+async function uploadMultipleRefs(files){
+  const list = [...(files || [])].filter(Boolean);
+  if (!list.length) return;
+  let ok = 0;
+  for (const f of list){
+    const res = await uploadRef('first', f, {append: true, silent: true});
+    if (!res) break;
+    ok++;
+  }
+  if (ok){
+    toast(ok > 1 ? `已添加 ${ok} 张参考图` : '已添加参考图', 'ok');
     refresh();
-  } catch(e){ toast('上传失败：' + e.message, 'err'); }
+  }
 }
-async function useAsRef(id, slot='first'){
+async function useAsRef(id, slot='first', append=null){
+  const shouldAppend = append !== null ? append : (slot === 'first' && isMultiRefMode());
   try {
-    await post(`api/rounds/${id}/use`, {slot});
+    const r = await post(`api/rounds/${id}/use`, {slot, append: shouldAppend});
+    if (r && r.references) renderRefs(r.references);
     if (slot === 'first' && S.mode === 'image'){ $('#useRef').checked = true; $('#chain').checked = false; saveSoon(); }
-    toast(`已将 #${id} 设为${slot==='last'?'尾帧':'参考图 / 首帧'}`, 'ok'); refresh();
+    toast(slot === 'last' ? `已将 #${id} 设为尾帧` : (shouldAppend ? `已将 #${id} 加入参考图` : `已将 #${id} 设为首帧`), 'ok');
+    refresh();
   } catch(e){ toast(e.message, 'err'); }
 }
 function bindDrop(el){
   const slot = el.dataset.slot;
-  el.addEventListener('click', e => { if (e.target.closest('.clear')) return; S.pickSlot = slot; $('#fileInput').click(); });
+  el.addEventListener('click', e => { if (e.target.closest('.clear')) return; S.pickSlot = slot; S.pickAppend = false; $('#fileInput').multiple = false; $('#fileInput').click(); });
   $('.clear', el).addEventListener('click', async e => { e.stopPropagation(); await api('api/reference?slot='+slot, {method:'DELETE'}); if (slot==='first') $('#useRef').checked = false; saveSoon(); refresh(); });
   el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('over'); });
   el.addEventListener('dragleave', () => el.classList.remove('over'));
   el.addEventListener('drop', e => {
     e.preventDefault(); el.classList.remove('over');
     const rid = e.dataTransfer.getData('text/x-round');
-    if (rid) return useAsRef(rid, slot);
+    if (rid) return useAsRef(rid, slot, false);
     const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadRef(slot, f);
   });
 }
@@ -1213,7 +1284,10 @@ async function rewrite(){
   if (!idea) { toast('先写一句想法', 'err'); $('#idea').focus(); return; }
   const b = $('#rewriteBtn'); b.disabled = true; b.innerHTML = '<span class="sp"></span>改写中…';
   try {
-    const r = await post('api/prompt', {text: idea, mode: S.mode, editing: S.mode==='image' && ($('#useRef').checked || $('#chain').checked)});
+    const items = Array.isArray(S.refs.items) ? S.refs.items : [];
+    const editing = S.mode==='image' && ($('#useRef').checked || $('#chain').checked);
+    const ref_count = S.mode==='image' ? (editing ? ($('#chain').checked ? 1 : items.length) : 0) : (S.workflow==='ref2va' ? items.length : 0);
+    const r = await post('api/prompt', {text: idea, mode: S.mode, editing, ref_count});
     $('#prompt').value = r.prompt; updateCount(); saveSoon();
     $('#rewriteHint').textContent = '✓ 已写入下方提示词';
     setTimeout(() => $('#rewriteHint').textContent = '', 3000);
@@ -1512,7 +1586,7 @@ function renderStage(){
   add('工作流', it.workflow); add('尺寸', it.width && `${it.width}×${it.height}`); add('步数', it.steps); add('CFG', it.cfg);
   add('种子', it.seed); add('帧数', it.num_frames); add('GPU', it.gpu); add('用时', it.duration_s && dur(it.duration_s));
   if (it.chain_from) add('接着改自', '#' + +it.chain_from);
-  if (it.has_image) add('参考图', '是');
+  if (it.has_image) add('参考图', it.ref_count > 1 ? `${it.ref_count} 张` : '是');
   (it.loras || []).forEach(l => add('LoRA', `${l.repo_id}${l.weight_name ? ' / ' + l.weight_name.split('/').pop() : ''} ×${l.scale}`));
   $('#vTags').innerHTML = tags.join('');
 }
@@ -1584,7 +1658,7 @@ function reuse(it){
   toast(`已把 #${+it.id} 的参数填回左侧（含种子 ${m.seed ?? '-'}）`, 'ok');
 }
 async function toVideo(id){
-  await useAsRef(id, 'first');
+  await useAsRef(id, 'first', false);
   setMode('video'); S.workflow = 'fl2va'; renderWorkflowChips(); updateModeUI(); saveSoon();
   window.scrollTo({top:0, behavior:'smooth'});
 }
@@ -2051,10 +2125,51 @@ function bind(){
     b.disabled = false; b.textContent = '扫描';
   });
   bindDrop($('#dropFirst')); bindDrop($('#dropLast'));
-  $('#fileInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; uploadRef(S.pickSlot || 'first', f); };
+  $('#refGrid').addEventListener('click', async e => {
+    const rm = e.target.closest('[data-rmref]');
+    if (rm){
+      e.stopPropagation();
+      const rid = rm.dataset.rmref;
+      try {
+        const r = await api('api/reference?id=' + encodeURIComponent(rid), {method:'DELETE'});
+        if (r && r.references){
+          renderRefs(r.references);
+          if (!(r.references.items && r.references.items.length)) $('#useRef').checked = false;
+        }
+        saveSoon(); refresh();
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    if (e.target.closest('#refAddZone')){
+      S.pickSlot = 'first'; S.pickAppend = true; $('#fileInput').multiple = true; $('#fileInput').click();
+    }
+  });
+  $('#refGrid').addEventListener('dragover', e => { e.preventDefault(); const z = $('#refAddZone'); if (z) z.classList.add('over'); });
+  $('#refGrid').addEventListener('dragleave', () => { const z = $('#refAddZone'); if (z) z.classList.remove('over'); });
+  $('#refGrid').addEventListener('drop', e => {
+    e.preventDefault(); const z = $('#refAddZone'); if (z) z.classList.remove('over');
+    const rid = e.dataTransfer.getData('text/x-round');
+    if (rid) return useAsRef(rid, 'first', true);
+    if (e.dataTransfer.files && e.dataTransfer.files.length) uploadMultipleRefs(e.dataTransfer.files);
+  });
+  $('#refClearAll').onclick = async () => {
+    const r = await api('api/reference?slot=first', {method:'DELETE'});
+    if (r && r.references) renderRefs(r.references);
+    $('#useRef').checked = false; saveSoon(); refresh();
+  };
+  $('#fileInput').onchange = e => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    if (S.pickAppend && S.pickSlot !== 'last') uploadMultipleRefs(files);
+    else uploadRef(S.pickSlot || 'first', files[0]);
+  };
   document.addEventListener('paste', e => {
-    const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/'));
-    if (f){ e.preventDefault(); uploadRef('first', f); }
+    const imgs = [...(e.clipboardData?.files || [])].filter(x => x.type.startsWith('image/'));
+    if (!imgs.length) return;
+    e.preventDefault();
+    if (isMultiRefMode()) uploadMultipleRefs(imgs);
+    else uploadRef('first', imgs[0]);
   });
 
   // stage

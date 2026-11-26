@@ -140,6 +140,148 @@ def _normalize_loras(raw_loras: list[dict] | None) -> list[dict]:
     return items
 
 
+_MINIMAX_H3_COMFY_RENAME = (
+    ("token_refiner.blocks.", "token_refiner.refiner_blocks."),
+    ("time_embedder.proj_in.", "time_embedder.linear_1."),
+    ("time_embedder.proj_out.", "time_embedder.linear_2."),
+    ("video_patch_proj.", "proj_in."),
+    ("audio_patch_proj.", "audio_proj_in."),
+    ("condition_proj.", "context_embedder."),
+    ("final_layer.norm.", "norm_out.norm."),
+    ("final_layer.adaln_proj.linear.", "norm_out.linear."),
+    ("final_layer.video_out.", "proj_out."),
+    ("final_layer.audio_out.", "audio_proj_out."),
+    (".attn.q_norm.", ".attn.norm_q."),
+    (".attn.k_norm.", ".attn.norm_k."),
+    (".attn.out_proj.", ".attn.to_out.0."),
+    (".mlp.fc1.", ".ff.net.0.proj."),
+    (".mlp.fc2.", ".ff.net.2."),
+)
+
+
+def _split_dim0(tensor: Any, chunks: int) -> list[Any]:
+    size = tensor.shape[0]
+    if size % chunks != 0:
+        raise ValueError(f"tensor dim0 {size} not divisible by {chunks}")
+    step = size // chunks
+    return [tensor[i * step : (i + 1) * step] for i in range(chunks)]
+
+
+def _cat_dim0(parts: list[Any]) -> Any:
+    try:
+        import torch
+
+        if isinstance(parts[0], torch.Tensor):
+            return torch.cat(parts, dim=0)
+    except ImportError:
+        pass
+    import numpy as np
+
+    return np.concatenate(parts, axis=0)
+
+
+def _is_minimax_h3_comfy_lora(keys: Any) -> bool:
+    for k in keys:
+        s = str(k)
+        if any(
+            marker in s
+            for marker in (
+                "diffusion_model.blocks.",
+                "diffusion_model.token_refiner.blocks.",
+                "diffusion_model.audio_patch_proj.",
+                ".attn.qkv_proj.",
+                ".mlp.fc1.",
+                ".mlp.fc2.",
+            )
+        ):
+            return True
+        if s.startswith(("blocks.", "token_refiner.blocks.", "audio_patch_proj.")):
+            return True
+    return False
+
+
+def _convert_minimax_h3_comfy_lora(
+    state_dict: dict[str, Any],
+    valid_modules: set[str] | None = None,
+) -> dict[str, Any]:
+    """Losslessly convert ComfyUI / native MiniMax-H3 LoRA tensors to Diffusers PEFT layout.
+
+    Handles:
+    - Stripping `model.diffusion_model.` / `diffusion_model.` prefix
+    - Splitting fused `attn.qkv_proj` (`[q; k; v]`) LoRA B into 3 contiguous chunks for
+      `attn.to_q`, `attn.to_k`, `attn.to_v` sharing the same LoRA A (mathematically exact)
+    - Swapping `[gate; value]` halves of `mlp.fc1` LoRA B to Diffusers SwiGLU `[value; gate]`
+      layout for `ff.net.0.proj` (mathematically exact)
+    - Renaming `blocks.` -> `transformer_blocks.`, `token_refiner.blocks.` -> `token_refiner.refiner_blocks.`,
+      `attn.out_proj` -> `attn.to_out.0`, `mlp.fc2` -> `ff.net.2`, `audio_patch_proj` -> `audio_proj_in`, etc.
+    - Folding explicit `.alpha` tensors into `lora_B` so PEFT's default `alpha == rank` stays exact
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for raw_key, val in state_dict.items():
+        k = str(raw_key)
+        for pref in ("model.diffusion_model.", "diffusion_model.", "transformer."):
+            if k.startswith(pref):
+                k = k[len(pref) :]
+                break
+        if k.endswith(".lora_A.weight"):
+            mod, kind = k[: -len(".lora_A.weight")], "A"
+        elif k.endswith(".lora_B.weight"):
+            mod, kind = k[: -len(".lora_B.weight")], "B"
+        elif k.endswith(".lora_down.weight"):
+            mod, kind = k[: -len(".lora_down.weight")], "A"
+        elif k.endswith(".lora_up.weight"):
+            mod, kind = k[: -len(".lora_up.weight")], "B"
+        elif k.endswith(".alpha"):
+            mod, kind = k[: -len(".alpha")], "alpha"
+        else:
+            continue
+        grouped.setdefault(mod, {})[kind] = val
+
+    converted: dict[str, Any] = {}
+    for raw_mod, entry in grouped.items():
+        a_t = entry.get("A")
+        b_t = entry.get("B")
+        if a_t is None or b_t is None:
+            continue
+        alpha_t = entry.get("alpha")
+        if alpha_t is not None:
+            rank = int(a_t.shape[0])
+            alpha_val = float(alpha_t.item() if hasattr(alpha_t, "item") else alpha_t)
+            if rank > 0 and abs(alpha_val - rank) > 1e-6:
+                b_t = b_t * (alpha_val / rank)
+
+        mod_dot = raw_mod + "."
+        if mod_dot.startswith("blocks."):
+            mod_dot = "transformer_blocks." + mod_dot[len("blocks.") :]
+        for old, new in _MINIMAX_H3_COMFY_RENAME:
+            mod_dot = mod_dot.replace(old, new)
+        mod = mod_dot[:-1]
+
+        if mod.endswith(".attn.qkv_proj"):
+            base_mod = mod[: -len("qkv_proj")]
+            bq, bk, bv = _split_dim0(b_t, 3)
+            for proj, b_part in (("to_q", bq), ("to_k", bk), ("to_v", bv)):
+                target_mod = base_mod + proj
+                if valid_modules is not None and target_mod not in valid_modules:
+                    continue
+                converted[f"transformer.{target_mod}.lora_A.weight"] = a_t
+                converted[f"transformer.{target_mod}.lora_B.weight"] = b_part
+        elif mod.endswith(".ff.net.0.proj"):
+            gate_b, val_b = _split_dim0(b_t, 2)
+            b_swapped = _cat_dim0([val_b, gate_b])
+            if valid_modules is not None and mod not in valid_modules:
+                continue
+            converted[f"transformer.{mod}.lora_A.weight"] = a_t
+            converted[f"transformer.{mod}.lora_B.weight"] = b_swapped
+        else:
+            if valid_modules is not None and mod not in valid_modules:
+                continue
+            converted[f"transformer.{mod}.lora_A.weight"] = a_t
+            converted[f"transformer.{mod}.lora_B.weight"] = b_t
+
+    return converted
+
+
 def _apply_loras(pipe: Any, loras: list[dict], hf_token: str | None) -> None:
     if loras == _CACHE["loras"]:
         return
@@ -155,7 +297,9 @@ def _apply_loras(pipe: Any, loras: list[dict], hf_token: str | None) -> None:
                     pass
             elif hasattr(target, "delete_adapters"):
                 try:
-                    target.delete_adapters()
+                    existing = list(getattr(target, "peft_config", {}).keys())
+                    if existing:
+                        target.delete_adapters(existing)
                 except Exception:
                     pass
         _CACHE["loras"] = []
@@ -163,7 +307,7 @@ def _apply_loras(pipe: Any, loras: list[dict], hf_token: str | None) -> None:
     if not loras:
         return
 
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, list_repo_files
 
     LORAS_DIR.mkdir(parents=True, exist_ok=True)
     loaded_names: list[str] = []
@@ -174,6 +318,16 @@ def _apply_loras(pipe: Any, loras: list[dict], hf_token: str | None) -> None:
         weight_name = item["weight_name"]
         scale = item["scale"]
         adapter_name = f"lora_{idx}"
+        if not weight_name:
+            try:
+                cands = [
+                    f for f in list_repo_files(repo_id, token=hf_token or None)
+                    if f.endswith(".safetensors")
+                ]
+                if len(cands) == 1:
+                    weight_name = cands[0]
+            except Exception:
+                pass
         print(
             f"加载 LoRA [{idx + 1}/{len(loras)}]: {repo_id}"
             + (f" :: {weight_name}" if weight_name else "")
@@ -220,12 +374,42 @@ def _apply_loras(pipe: Any, loras: list[dict], hf_token: str | None) -> None:
                         last_err = exc
                 except Exception as exc:
                     last_err = exc
-            elif hasattr(target, "load_lora_adapter") and local_file:
+            elif hasattr(target, "load_lora_adapter"):
                 try:
-                    p = Path(local_file)
-                    target.load_lora_adapter(
-                        str(p.parent), weight_name=p.name, adapter_name=adapter_name
-                    )
+                    if local_file and local_file.endswith(".safetensors") and "MiniMaxH3" in type(target).__name__:
+                        from safetensors.torch import load_file as _st_load
+
+                        raw_sd = _st_load(local_file)
+                        if _is_minimax_h3_comfy_lora(raw_sd.keys()):
+                            valid_mods = {name for name, _ in target.named_modules() if name}
+                            conv_sd = _convert_minimax_h3_comfy_lora(raw_sd, valid_modules=valid_mods)
+                            if not conv_sd:
+                                raise RuntimeError("未能将 ComfyUI MiniMax-H3 LoRA 映射到当前 transformer 模块")
+                            print(
+                                f"检测到 ComfyUI 格式 MiniMax-H3 LoRA，已无损转换 {len(conv_sd) // 2} 个目标层权重",
+                                flush=True,
+                            )
+                            target.load_lora_adapter(
+                                conv_sd, prefix="transformer", adapter_name=adapter_name
+                            )
+                            loaded = True
+                            break
+                        # Diffusers-format safetensors on MiniMax-H3
+                        has_pref = any(k.startswith("transformer.") for k in raw_sd)
+                        target.load_lora_adapter(
+                            raw_sd,
+                            prefix="transformer" if has_pref else None,
+                            adapter_name=adapter_name,
+                        )
+                        loaded = True
+                        break
+                    if local_file:
+                        p = Path(local_file)
+                        target.load_lora_adapter(
+                            str(p.parent), weight_name=p.name, adapter_name=adapter_name
+                        )
+                    else:
+                        target.load_lora_adapter(repo_id, token=hf_token or None, adapter_name=adapter_name)
                     loaded = True
                     break
                 except Exception as exc:
@@ -404,6 +588,23 @@ def _load_image_pipeline(model_key: str, job: dict, hf_token: str | None) -> Any
     return pipe
 
 
+def _load_ref_paths(job: dict) -> list[Path]:
+    if not job.get("has_image"):
+        return []
+    paths: list[Path] = []
+    ref_count = int(job.get("ref_count") or 0)
+    if ref_count > 0:
+        for idx in range(ref_count):
+            p = Path(f"/content/reference_{idx}.bin")
+            if p.exists():
+                paths.append(p)
+    if not paths:
+        legacy = Path("/content/reference.bin")
+        if legacy.exists():
+            paths.append(legacy)
+    return paths
+
+
 def _run_image_job(job: dict, hf_token: str | None) -> None:
     import torch
     from PIL import Image
@@ -414,11 +615,12 @@ def _run_image_job(job: dict, hf_token: str | None) -> None:
     _apply_loras(pipe, loras, hf_token)
 
     is_qwen = model_key.startswith("qwen") or model_key.lower() == "qwen/qwen-image-2.1"
-    ref = None
-    ref_path = Path("/content/reference.bin")
-    if job.get("has_image") and ref_path.exists():
-        ref = Image.open(ref_path).convert("RGBA" if is_qwen else "RGB")
-        print(f"启用参考图编辑：{ref.size}", flush=True)
+    refs: list[Any] = []
+    for rp in _load_ref_paths(job):
+        refs.append(Image.open(rp).convert("RGBA" if is_qwen else "RGB"))
+    if refs:
+        sizes = ", ".join(str(im.size) for im in refs)
+        print(f"启用参考图编辑（{len(refs)} 张）：{sizes}", flush=True)
 
     width = int(job.get("width") or 768)
     height = int(job.get("height") or 1152)
@@ -445,22 +647,24 @@ def _run_image_job(job: dict, hf_token: str | None) -> None:
             kwargs["negative_prompt"] = negative
             kwargs["true_cfg_scale"] = cfg
             kwargs["use_kv_cache"] = True
-            if ref is not None:
-                kwargs["image"] = [ref]
+            if refs:
+                kwargs["image"] = refs
                 kwargs["output_resolution"] = max(w, h)
         else:
             if "guidance_scale" in params or has_var_kw:
                 kwargs["guidance_scale"] = cfg
             if negative.strip() and ("negative_prompt" in params):
                 kwargs["negative_prompt"] = negative
-            if ref is not None and ("image" in params or has_var_kw):
-                kwargs["image"] = ref
+            if refs and ("image" in params or has_var_kw):
+                kwargs["image"] = refs if len(refs) > 1 else refs[0]
 
         try:
             return pipe(**kwargs).images[0]
         except TypeError:
             kwargs.pop("output_resolution", None)
             kwargs.pop("use_kv_cache", None)
+            if not is_qwen and isinstance(kwargs.get("image"), list) and refs:
+                kwargs["image"] = refs[0]
             return pipe(**kwargs).images[0]
 
     torch.cuda.reset_peak_memory_stats()
@@ -721,9 +925,9 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
     if workflow not in {"t2va", "fl2va", "ref2va"}:
         workflow = "t2va"
 
-    first_path = Path("/content/reference.bin")
+    ref_paths = _load_ref_paths(job)
     last_path = Path("/content/last_frame.bin")
-    has_first = bool(job.get("has_image")) and first_path.exists()
+    has_first = bool(ref_paths)
     has_last = bool(job.get("has_last_image")) and last_path.exists()
 
     if workflow == "fl2va" and not has_first:
@@ -778,20 +982,22 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
         kwargs["negative_prompt"] = negative
 
     if workflow in {"fl2va", "ref2va"} and has_first:
-        first_img = Image.open(first_path).convert("RGB")
-        print(f"加载首帧/参考图：{first_img.size}", flush=True)
+        ref_imgs = [Image.open(p).convert("RGB") for p in ref_paths]
+        first_img = ref_imgs[0]
+        sizes = ", ".join(str(im.size) for im in ref_imgs)
+        print(f"加载首帧/参考图（{len(ref_imgs)} 张）：{sizes}", flush=True)
         if workflow == "ref2va":
             if not input_names or "references" in input_names:
                 try:
                     from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
 
-                    kwargs["references"] = [MiniMaxH3ImageReference(image=first_img)]
+                    kwargs["references"] = [MiniMaxH3ImageReference(image=im) for im in ref_imgs]
                 except ImportError:
-                    kwargs["references"] = [first_img]
+                    kwargs["references"] = ref_imgs
             elif "reference_images" in input_names:
-                kwargs["reference_images"] = [first_img]
+                kwargs["reference_images"] = ref_imgs
             elif "images" in input_names:
-                kwargs["images"] = [first_img]
+                kwargs["images"] = ref_imgs
             else:
                 kwargs["image"] = first_img
         else:
@@ -1067,8 +1273,14 @@ def _build_comfy_prompt(
     files: dict[str, Any],
     has_ref: bool,
     ref_image_name: str = "colab_ref.png",
+    ref_image_names: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Build a ComfyUI /prompt API graph and human-readable node labels."""
+    names = [n for n in (ref_image_names or []) if n]
+    if not names and has_ref and ref_image_name:
+        names = [ref_image_name]
+    has_ref = bool(names)
+    primary_ref = names[0] if names else ref_image_name
     comfy = job["comfy"]
     template = str(comfy.get("template") or "qwen-image-2.1")
     clip_type = str(comfy.get("clip_type") or "qwen_image")
@@ -1153,18 +1365,21 @@ def _build_comfy_prompt(
             "resolution": max(width, height),
         }
         if has_ref:
-            graph["23"] = {"class_type": "LoadImage", "inputs": {"image": ref_image_name}}
-            labels["23"] = "读取参考图"
-            graph["24"] = {
-                "class_type": "JoinImageWithAlpha",
-                "inputs": {"image": ["23", 0], "alpha": ["23", 1]},
-            }
-            labels["24"] = "准备参考图通道"
             enc_inputs["vae"] = ["3", 0]
-            enc_inputs["images.image_1"] = ["24", 0]
+            for idx, rname in enumerate(names[:16]):
+                load_nid = "23" if idx == 0 else str(30 + idx * 2)
+                join_nid = "24" if idx == 0 else str(31 + idx * 2)
+                graph[load_nid] = {"class_type": "LoadImage", "inputs": {"image": rname}}
+                labels[load_nid] = f"读取参考图 #{idx + 1}" if len(names) > 1 else "读取参考图"
+                graph[join_nid] = {
+                    "class_type": "JoinImageWithAlpha",
+                    "inputs": {"image": [load_nid, 0], "alpha": [load_nid, 1]},
+                }
+                labels[join_nid] = f"准备参考图 #{idx + 1} 通道" if len(names) > 1 else "准备参考图通道"
+                enc_inputs[f"images.image_{idx + 1}"] = [join_nid, 0]
 
         graph["25"] = {"class_type": "TextEncodeQwenImage21", "inputs": enc_inputs}
-        labels["25"] = "编码提示词" + ("与参考图" if has_ref else "")
+        labels["25"] = "编码提示词" + (f"与 {len(names)} 张参考图" if len(names) > 1 else "与参考图" if has_ref else "")
 
         graph["26"] = {
             "class_type": "KSampler",
@@ -1194,7 +1409,7 @@ def _build_comfy_prompt(
         }
         labels["25"] = "配置 Flux Guidance"
         if has_ref:
-            graph["23"] = {"class_type": "LoadImage", "inputs": {"image": ref_image_name}}
+            graph["23"] = {"class_type": "LoadImage", "inputs": {"image": primary_ref}}
             labels["23"] = "读取参考图"
             graph["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["23", 0], "vae": ["3", 0]}}
             labels["22"] = "编码参考图潜空间"
@@ -1227,7 +1442,7 @@ def _build_comfy_prompt(
         graph["21"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": negative_text}}
         labels["21"] = "编码负向提示词"
         if has_ref:
-            graph["23"] = {"class_type": "LoadImage", "inputs": {"image": ref_image_name}}
+            graph["23"] = {"class_type": "LoadImage", "inputs": {"image": primary_ref}}
             labels["23"] = "读取参考图"
             graph["22"] = {"class_type": "VAEEncode", "inputs": {"pixels": ["23", 0], "vae": ["3", 0]}}
             labels["22"] = "编码参考图潜空间"
@@ -1298,27 +1513,31 @@ def _run_comfy_image_job(job: dict, hf_token: str | None, vram_gb: float) -> Non
         local_lora = _download_comfy_asset(lspec, "loras", f"LoRA #{idx + 1}", hf_token)
         lora_files.append({"filename": local_lora, "scale": item["scale"]})
 
-    has_ref = False
-    ref_name = "colab_ref.png"
-    ref_path = Path("/content/reference.bin")
-    if job.get("has_image") and ref_path.exists():
+    ref_names: list[str] = []
+    ref_paths = _load_ref_paths(job)
+    if ref_paths:
         inp_dir = COMFY_DIR / "input"
         inp_dir.mkdir(parents=True, exist_ok=True)
-        img = Image.open(ref_path)
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGBA")
-        ref_name = f"colab_ref_{int(time.time() * 1000) % 1000000}.png"
-        img.save(inp_dir / ref_name, format="PNG")
-        has_ref = True
-        print(f"启用 ComfyUI 参考图编辑：{img.size}", flush=True)
+        ts_tag = int(time.time() * 1000) % 1000000
+        sizes: list[str] = []
+        for idx, rp in enumerate(ref_paths):
+            img = Image.open(rp)
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            rname = f"colab_ref_{ts_tag}_{idx}.png"
+            img.save(inp_dir / rname, format="PNG")
+            ref_names.append(rname)
+            sizes.append(str(img.size))
+        print(f"启用 ComfyUI 参考图编辑（{len(ref_names)} 张）：{', '.join(sizes)}", flush=True)
 
     _ensure_comfy_server(vram_gb)
 
     graph, labels = _build_comfy_prompt(
         job,
         {"diffusion": diff_name, "text_encoder": te_name, "vae": vae_name, "loras": lora_files},
-        has_ref=has_ref,
-        ref_image_name=ref_name,
+        has_ref=bool(ref_names),
+        ref_image_name=ref_names[0] if ref_names else "colab_ref.png",
+        ref_image_names=ref_names,
     )
     client_id = uuid.uuid4().hex
     ws = websocket.create_connection(f"ws://127.0.0.1:{COMFY_PORT}/ws?clientId={client_id}", timeout=60)

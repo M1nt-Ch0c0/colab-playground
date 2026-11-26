@@ -71,13 +71,17 @@ def configure_proxy(secret: dict[str, str], log_fn) -> None:
         os.environ[key] = proxy
     no_proxy = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
     parts = [p.strip() for p in no_proxy.split(",") if p.strip()]
-    for local in ("127.0.0.1", "localhost", "::1"):
+    extras = ["127.0.0.1", "localhost", "::1", "host.docker.internal", "172.17.0.1", "172.19.0.1"]
+    cpa_host = urlsplit((secret.get("cpa_base") or "").strip()).hostname
+    if cpa_host:
+        extras.append(cpa_host)
+    for local in extras:
         if local not in parts:
             parts.append(local)
     merged = ",".join(parts)
     os.environ["NO_PROXY"] = merged
     os.environ["no_proxy"] = merged
-    log_fn("已启用出站代理（来自 secret.env，本机回环直连）")
+    log_fn("已启用出站代理（来自 secret.env，本机与内网回环直连）")
 
 
 SECRET = load_secret()
@@ -442,7 +446,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, "请描述想生成的内容（不超过 2000 字）")
             mode = "video" if body.get("mode") == "video" else "image"
             try:
-                prompt = STUDIO.write_prompt(text, mode=mode, editing=_bool(body.get("editing")))
+                ref_count = int(body.get("ref_count") or 0)
+            except (TypeError, ValueError):
+                ref_count = 0
+            try:
+                prompt = STUDIO.write_prompt(text, mode=mode, editing=_bool(body.get("editing")), ref_count=ref_count)
             except RuntimeError as exc:
                 raise ApiError(502, str(exc)) from exc
             return self.send_json(200, {"prompt": prompt})
@@ -486,23 +494,49 @@ class Handler(BaseHTTPRequestHandler):
 
         if head in {"reference", "last-frame"}:
             slot = "last" if head == "last-frame" or q.get("slot") == "last" else "first"
+            ref_id = str(q.get("id") or "").strip()
             if method == "GET":
-                f = STUDIO.ref_file(slot)
-                if not f.exists():
+                f = STUDIO.ref_item_file(ref_id) if (ref_id and slot != "last") else STUDIO.ref_file(slot)
+                if not f or not f.exists():
                     raise ApiError(404, "还没有设置")
                 head_bytes = f.read_bytes()[:12]
                 ctype = "image/png" if head_bytes.startswith(b"\x89PNG") else "image/webp" if head_bytes.startswith(b"RIFF") else "image/jpeg"
                 return self.send_file(f, ctype)
             if method == "DELETE":
-                STUDIO.clear_ref(slot)
-                return self.send_json(200, {"ok": True})
+                if ref_id and slot != "last":
+                    if not STUDIO.remove_ref(ref_id):
+                        raise ApiError(404, "未找到该参考图")
+                else:
+                    STUDIO.clear_ref(slot)
+                return self.send_json(200, {"ok": True, "references": STUDIO.refs_report()})
             if method == "POST":
                 if len(raw) < 32 or len(raw) > LIMITS["upload_max_mb"] * 1048576:
                     raise ApiError(400, f"图片为空或超过 {LIMITS['upload_max_mb']}MB")
                 if not (raw.startswith(b"\x89PNG") or raw.startswith(b"\xff\xd8") or (raw.startswith(b"RIFF") and raw[8:12] == b"WEBP")):
                     raise ApiError(400, "只接受 PNG、JPEG 或 WebP 图片")
-                STUDIO.set_ref(slot, raw, "upload")
-                return self.send_json(200, {"ok": True, "slot": slot, "bytes": len(raw)})
+                try:
+                    if slot == "last":
+                        STUDIO.set_ref("last", raw, "upload")
+                        item_id = ""
+                    elif _bool(q.get("append")):
+                        item = STUDIO.add_ref(raw, "upload")
+                        item_id = item["id"]
+                    elif ref_id:
+                        item = STUDIO.replace_ref(ref_id, raw, "upload")
+                        item_id = item["id"]
+                    else:
+                        STUDIO.set_ref("first", raw, "upload")
+                        items = STUDIO.refs_report().get("items") or []
+                        item_id = items[0]["id"] if items else ""
+                except ValueError as exc:
+                    raise ApiError(400, str(exc)) from exc
+                return self.send_json(200, {
+                    "ok": True,
+                    "slot": slot,
+                    "id": item_id,
+                    "bytes": len(raw),
+                    "references": STUDIO.refs_report(),
+                })
 
         if head == "use-latest-image" and method == "POST":
             latest = STORE.latest("image")
@@ -686,11 +720,12 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "use" and method == "POST":
             body = self.json_body(raw)
             slot = "last" if body.get("slot") == "last" or q.get("slot") == "last" else "first"
+            append = _bool(body.get("append") or q.get("append"))
             try:
-                STUDIO.use_round(rid, slot)
-            except RuntimeError as exc:
+                STUDIO.use_round(rid, slot, append=append)
+            except (RuntimeError, ValueError) as exc:
                 raise ApiError(400, str(exc)) from exc
-            return self.send_json(200, {"ok": True, "slot": slot})
+            return self.send_json(200, {"ok": True, "slot": slot, "references": STUDIO.refs_report()})
         raise ApiError(404, "not found")
 
     def route_trash(self, method: str, seg: list[str], q: dict, raw: bytes) -> None:
