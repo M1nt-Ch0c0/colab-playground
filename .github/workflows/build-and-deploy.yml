@@ -128,13 +128,7 @@ jobs:
           ELAPSED=0
           while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
             BODY=$(curl -sS --max-time 8 "$APP_HEALTH_URL" || true)
-            BUSY=$(python3 -c 'import json,sys
-try:
-    d=json.loads(sys.argv[1])
-    print("true" if d.get("busy") else "false")
-except Exception:
-    print("false")
-' "$BODY")
+            BUSY=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("true" if d.get("busy") else "false")' "$BODY" 2>/dev/null || echo "false")
             if [ "$BUSY" != "true" ]; then
               echo "Service is idle (healthz: ${BODY:-n/a}); proceeding with deployment."
               exit 0
