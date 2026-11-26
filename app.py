@@ -35,6 +35,7 @@ from jobs import (
     LogBuffer,
     Studio,
     boot_message,
+    normalize_grab,
     normalize_job,
     parse_model_link,
 )
@@ -484,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("bool")
                     out["idle_minutes"] = STUDIO.set_idle_minutes(int(raw_idle))
                 except (TypeError, ValueError) as exc:
-                    raise ApiError(400, "idle_minutes 必须是整数") from exc
+                    raise ApiError(400, "idle_minutes 必须是整数，0 表示永不超期") from exc
             return self.send_json(200, {"ok": True, **out})
 
         if head == "prompt" and method == "POST":
@@ -985,6 +986,17 @@ class Handler(BaseHTTPRequestHandler):
         if sub == "auth/logout":
             COLAB.logout()
             return self.send_json(200, {"ok": True})
+        if sub == "grab":
+            if not COLAB.has_credentials():
+                raise ApiError(400, "请先在「设置」里完成 Google Colab 授权")
+            try:
+                spec = normalize_grab(self.json_body(raw))
+                STUDIO.grab_card(**spec)
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from exc
+            except RuntimeError as exc:
+                raise ApiError(409, str(exc)) from exc
+            return self.send_json(202, {"ok": True, **spec})
         if sub == "hf-token":
             body = self.json_body(raw)
             tok = str(body.get("token") or "").strip()

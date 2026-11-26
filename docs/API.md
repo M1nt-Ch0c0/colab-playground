@@ -76,7 +76,7 @@ H="Authorization: Bearer $QP_TOKEN"
 | `phase` | `idle` / `starting` / `ready` / `generating` / `stopping` / `error` |
 | `error` | `phase=error` 时的错误信息 |
 | `active_gpu` | 当前占用的 Colab GPU，比如 `"A100 (HIGH_RAM)"` |
-| `idle_minutes`, `idle_deadline` | 空闲自动释放的分钟数，以及预计释放的时间点（没在倒计时就是 `null`） |
+| `idle_minutes`, `idle_deadline` | 空闲自动释放的分钟数（`0` 为永不超期），以及预计释放的时间点（没在倒计时或永不超期就是 `null`） |
 | `current` | 正在跑的任务（结构见 [任务对象](#任务对象)），没有就是 `null` |
 | `queue` | 排队中的任务数组（持久化在 `out/queue.json`，服务重启后自动恢复） |
 | `history` | 最近 10 个已结束的任务（持久化在 `out/queue.json`） |
@@ -134,7 +134,17 @@ H="Authorization: Bearer $QP_TOKEN"
 ```json
 {"idle_minutes": 20}
 ```
-范围 5–60，会持久化到 `out/queue.json`。如果正在倒计时，会马上按新值重新计时。返回 `{"ok":true,"idle_minutes":20}`。
+范围 5–60，会持久化到 `out/queue.json`。`0` 表示永不超期（保持持有，直到手动释放）。如果正在倒计时，会马上按新值重新计时；设为 `0` 会取消倒计时。返回 `{"ok":true,"idle_minutes":20}` 或 `{"ok":true,"idle_minutes":0}`。
+
+### `POST /api/colab/grab`
+
+在设置里抢一张卡并持有，不提交生图/生视频任务。需要已经完成 Colab 授权。
+
+```json
+{"gpu_pool": ["A100", "H100"], "poll_rounds": 2, "poll_all_proxies": false}
+```
+
+异步执行，看 `phase` 从 `starting` 变成 `ready`。已有任务或正在抢卡时返回 `409`。
 
 ---
 
@@ -170,7 +180,7 @@ H="Authorization: Bearer $QP_TOKEN"
 | `count` | int | 1 | 1–4，一次排几个任务，种子依次加 1 |
 | `loras` | array | `[]` | 最多 4 个 `{"repo_id":"owner/repo","weight_name":"x.safetensors","scale":1.0}`，`scale` 范围 0–2.5 |
 | `has_image` | bool | false | 是否用当前参考图（见第 6 节） |
-| `idle_minutes` | int | - | 可选，顺便改空闲释放时间（5–60，持久化） |
+| `idle_minutes` | int | - | 可选，顺便改空闲释放时间（5–60，或 `0` 永不超期，持久化） |
 | `idea` | string | - | 可选，原始想法，只用来记录 |
 
 生图（`mode=image`）专用：

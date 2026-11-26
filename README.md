@@ -99,7 +99,7 @@ python3 app.py
 | `QP_SECRET` | `$QP_ROOT/secret.env` | 配置文件路径 |
 | `QP_HOST` | `127.0.0.1`（Docker 内为 `0.0.0.0`） | 监听地址 |
 | `QP_PORT` | `8787` | 监听端口 |
-| `QP_IDLE_SECONDS` | `600` | 默认空闲自动释放秒数（可在页面调 5–60 分钟） |
+| `QP_IDLE_SECONDS` | `600` | 默认空闲自动释放秒数（页面可调 5–60 分钟，或设为永不超期） |
 | `QP_TRASH_DAYS` | `7` | 回收站自动清理保留天数 |
 
 ---

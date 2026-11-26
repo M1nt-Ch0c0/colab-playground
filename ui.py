@@ -759,34 +759,7 @@ _BODY = r"""
           <button type="button" class="iconbtn" id="refreshGpuBtn" title="刷新 Colab 算力状态" style="width:26px;height:26px;margin-left:4px"><i data-i="reuse"></i></button>
         </div>
         <div class="gpu-list" id="gpuChips"></div>
-        <div class="poll-bar">
-          <div class="poll-row">
-            <span>轮询次数</span>
-            <input type="number" id="pollRounds" data-p min="1" max="10" value="2">
-            <span>轮</span>
-            <span class="poll-plan" id="pollSummary"></span>
-          </div>
-          <label class="switch" style="margin:0" title="开启后每轮依次切换全部已配置的代理（美国 / 新加坡 / 自定义，绝不直连）逐卡抢算力">
-            <input type="checkbox" id="pollAllProxies" data-p>
-            <span class="tg"></span>使用全部已配代理轮询
-          </label>
-        </div>
         <div class="help" id="gpuHelp"></div>
-        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
-          <div class="row" style="justify-content:space-between;margin-bottom:6px">
-            <span class="mgroup-lbl" style="margin:0;color:var(--muted);font-weight:500">Colab 出口线路（不同地区机房库存不同）</span>
-            <button type="button" class="btn sm" id="testProxyBtn" style="height:24px;padding:0 8px;font-size:11px">测出口</button>
-          </div>
-          <div class="chips" id="proxyChips"></div>
-          <div id="customProxyWrap" class="hide" style="margin-top:8px">
-            <div class="row">
-              <input type="password" id="customProxyUrl" autocomplete="off" placeholder="http://user:pass@host:port 或 socks5://...">
-              <button type="button" class="btn sm primary" id="saveCustomProxyBtn">启用</button>
-            </div>
-            <div class="help" id="customProxyHint">密码保存在服务器 0600 文件中，页面不会回显。</div>
-          </div>
-          <div class="help" id="proxyHelp"></div>
-        </div>
       </section>
     </div>
 
@@ -1062,6 +1035,7 @@ const S = {
   filter:{kind:'', starred:false, q:''}, page:60, viewing:null, followLatest:true,
   selecting:false, selected:new Set(), lastClicked:null, refs:{}, lastLatestId:null, form:{}, unseenLogs:0,
   comfyPresets:[], studioPresets:[], promptHist:[], proxy:null, customProxyOpen:false, galleryOpen:false, galleryLoaded:false,
+  grabPool:[], pollRounds:2, pollAllProxies:false,
   wfData:null, wfRun:null, wfAssetStep:'',
 };
 const LS_KEY = 'colab-studio.v2';
@@ -1077,7 +1051,9 @@ function loadForm(){ try { S.form = JSON.parse(localStorage.getItem(LS_KEY) || '
 function saveForm(){
   const f = S.form; f.mode = S.mode; f.common = f.common || {};
   $$('[data-p]').forEach(el => { f.common[el.id] = el.type === 'checkbox' ? el.checked : el.value; });
-  f.common.count = +$('#count').textContent; f.common.gpu = S.gpu; f.common.gpu_pool = S.gpuPool; f.common.workflow = S.workflow; f.common.frames = S.frames;
+  f.common.count = +$('#count').textContent; f.common.gpu = S.gpu; f.common.gpu_pool = S.grabPool; f.common.grab_pool = S.grabPool;
+  f.common.pollRounds = S.pollRounds; f.common.pollAllProxies = !!S.pollAllProxies;
+  f.common.workflow = S.workflow; f.common.frames = S.frames;
   f.common.engine = S.engine;
   f.common.loras = collectLoras(true);
   f[S.mode] = {width:+$('#width').value, height:+$('#height').value, steps:+$('#steps').value, cfg:+$('#cfg').value, seed:$('#seed').value};
@@ -1159,7 +1135,11 @@ function applyStudioPreset(pid){
   if (p.height) setNum('height', p.height);
   if (p.steps) setNum('steps', p.steps);
   if (p.cfg) setNum('cfg', p.cfg);
-  if (p.gpu){ S.gpu = p.gpu; S.gpuPool = [p.gpu]; renderGpuChips(); }
+  if (p.gpu){
+    S.grabPool = [p.gpu];
+    if (ownedSessions().some(s => String(s.gpu).toUpperCase() === p.gpu)){ S.gpu = p.gpu; S.gpuPool = [p.gpu]; }
+    renderGpuChips();
+  }
   if (p.negative !== undefined && p.negative !== '') $('#negative').value = p.negative;
   if (Array.isArray(p.loras) && p.loras.length){ renderLoraRows(p.loras); $('#loraBlock').open = true; }
   updateModeUI(); saveForm();
@@ -1309,35 +1289,81 @@ function renderModelOptions(){
   else $('#modelHint').textContent = '格式应为内置名或 Hugging Face 仓库 ID（owner/repo）';
   $('#ggufWrap').classList.toggle('hide', S.mode === 'video' || cur !== 'qwen-2.1-q5');
 }
+function ownedSessions(){
+  const co = (S.status && S.status.colab) || {};
+  const known = new Set(((S.cfg && S.cfg.gpus) || []).map(g => g.id));
+  return (co.sessions || []).filter(s => known.has(String(s.gpu || '').toUpperCase()));
+}
 function renderGpuChips(){
+  const box = $('#gpuChips');
+  if (!box || !S.cfg) { renderGrabCatalog(); return; }
+  const co = (S.status && S.status.colab) || {};
+  if (!co.authed){
+    box.innerHTML = '<div class="help" style="margin:2px 0 0">还没连接 Google Colab。去设置里连接并抢卡。</div>';
+    $('#gpuHint').textContent = '';
+    $('#gpuHelp').textContent = '';
+    renderGrabCatalog();
+    return;
+  }
+  const owned = ownedSessions();
+  if (!owned.length){
+    box.innerHTML = `<div class="help" style="margin:2px 0 0">还没有持有的算力。去设置里抢卡。</div>
+      <button type="button" class="btn sm" data-open-settings style="margin-top:8px">打开设置</button>`;
+    $('#gpuHint').textContent = '未持有';
+    $('#gpuHelp').textContent = '';
+    renderGrabCatalog();
+    return;
+  }
+  const ids = owned.map(s => String(s.gpu).toUpperCase());
+  if (!ids.includes(S.gpu)) S.gpu = ids[0];
+  S.gpuPool = [S.gpu];
+  box.innerHTML = owned.map(s => {
+    const id = String(s.gpu).toUpperCase();
+    const meta = (S.cfg.gpus || []).find(g => g.id === id) || {label: id};
+    const on = id === S.gpu;
+    const sub = [s.shape, s.endpoint].filter(Boolean).join(' · ');
+    return `<button type="button" class="gpu-item ${on?'on':''}" data-gpu="${esc(id)}" title="使用这台已持有的卡">
+      <span class="g-radio">${on ? '✓' : ''}</span>
+      <span class="g-main">
+        <span class="g-top"><span>${esc(meta.label || id)}</span></span>
+        <span class="g-sub">${esc(sub)}</span>
+      </span>
+      <span class="gpu-badge run">持有中</span>
+    </button>`;
+  }).join('');
+  $('#gpuHint').textContent = `${owned.length} 台持有中`;
+  $('#gpuHelp').textContent = owned.length > 1
+    ? '点选本次生成使用的卡。要申请新卡，去设置里抢卡。'
+    : '生成会直接复用这台卡。要换卡或再抢一张，去设置里抢卡。';
+  renderGrabCatalog();
+}
+function renderGrabCatalog(){
+  const box = document.getElementById('sGrabGpus');
+  if (!box || !S.cfg) return;
   const co = (S.status && S.status.colab) || {};
   const elig = Array.isArray(co.eligible_gpus) ? co.eligible_gpus : [];
   const health = co.gpu_health || {};
   const running = new Set((co.sessions || []).map(s => String(s.gpu || '').toUpperCase()));
   const curTs = now();
-
   const statusFor = (id) => {
-    if (running.has(id)) return ['运行中 · 可复用', 'run', true];
+    if (running.has(id)) return ['持有中', 'run', true];
     const h = health[id];
     if (h && h.at){
       const ago = Math.max(0, Math.round((curTs - h.at) / 60));
       const agoTxt = ago < 1 ? '刚刚' : `${ago}m前`;
       if (h.status === 'unavailable') return [`近期缺货 · ${agoTxt}`, 'warn', true];
       if (h.status === 'error') return [`异常 ${h.code || ''} · ${agoTxt}`.trim(), 'bad', true];
-      if (h.status === 'ok') return [`近期可用 · ${agoTxt}`, 'run', true];
+      if (h.status === 'ok') return [`近期可用 · ${agoTxt}`, 'ok', true];
     }
-    if (elig.length){
-      return elig.includes(id) ? ['账号可用', 'ok', true] : ['无权限', 'off', false];
-    }
+    if (elig.length) return elig.includes(id) ? ['账号可用', 'ok', true] : ['无权限', 'off', false];
     return [co.authed ? '待查询' : '未连接', 'off', true];
   };
-
-  const pool = Array.isArray(S.gpuPool) && S.gpuPool.length ? S.gpuPool : [S.gpu];
-  $('#gpuChips').innerHTML = S.cfg.gpus.map(g => {
+  const pool = Array.isArray(S.grabPool) ? S.grabPool : [];
+  box.innerHTML = S.cfg.gpus.map(g => {
     const [badgeTxt, badgeCls, ok] = statusFor(g.id);
     const idx = pool.indexOf(g.id);
     const on = idx >= 0;
-    return `<button type="button" class="gpu-item ${on?'on':''} ${ok?'':'dimmed'}" data-gpu="${g.id}" title="${esc(g.hint + '（点击勾选/取消，按序号轮询）')}">
+    return `<button type="button" class="gpu-item ${on?'on':''} ${ok?'':'dimmed'}" data-grab="${g.id}" title="${esc(g.hint + '（点击勾选，按序号轮询抢卡）')}">
       <span class="g-radio">${on ? (idx + 1) : ''}</span>
       <span class="g-main">
         <span class="g-top"><span>${esc(g.label || g.id)}</span></span>
@@ -1346,26 +1372,30 @@ function renderGpuChips(){
       <span class="gpu-badge ${badgeCls}">${esc(badgeTxt)}</span>
     </button>`;
   }).join('');
-
-  const cur = S.cfg.gpus.find(x => x.id === pool[0]) || S.cfg.gpus[0];
-  const unavailCnt = S.cfg.gpus.filter(g => (health[g.id] || {}).status === 'unavailable').length;
-  $('#gpuHint').textContent = running.size ? `${running.size} 台运行中` : pool.join(' → ');
-  $('#gpuHelp').textContent = elig.length
-    ? `点击勾选多张卡按序号轮询。账号支持 ${elig.join(' / ')}${unavailCnt ? `（近期 ${unavailCnt} 档报 503）` : ''}。`
-    : cur.hint;
   updatePollSummary();
+  renderGrabState();
 }
 function updatePollSummary(){
   const el = $('#pollSummary'); if (!el) return;
-  const pool = Array.isArray(S.gpuPool) && S.gpuPool.length ? S.gpuPool : [S.gpu];
-  const rounds = Math.max(1, Math.min(10, +($('#pollRounds') && $('#pollRounds').value) || 1));
-  const allPx = !!($('#pollAllProxies') && $('#pollAllProxies').checked);
-  const pxCnt = allPx && S.proxy && Array.isArray(S.proxy.profiles)
+  const pool = Array.isArray(S.grabPool) ? S.grabPool : [];
+  const typed = $('#pollRounds');
+  const rounds = Math.max(1, Math.min(10, +(typed && typed.value) || S.pollRounds || 1));
+  const pxCnt = S.pollAllProxies && S.proxy && Array.isArray(S.proxy.profiles)
     ? Math.max(1, S.proxy.profiles.filter(p => p.configured).length)
     : 1;
-  el.textContent = `${pool.length} 卡 × ${pxCnt} 代理 × ${rounds} 轮`;
+  el.textContent = pool.length ? `${pool.length} 卡 × ${pxCnt} 代理 × ${rounds} 轮` : '还没选卡';
+}
+function renderGrabState(){
+  const el = document.getElementById('sGrabState');
+  if (!el || !S.status) return;
+  const st = S.status;
+  if (st.phase === 'starting' && !st.current) el.textContent = '正在抢卡…';
+  else if (st.phase === 'error' && st.error) el.textContent = st.error;
+  else if (st.idle_minutes === 0 && (st.active_gpu || (st.colab && st.colab.any_running))) el.textContent = '当前保持持有，不会自动释放。';
+  else el.textContent = '';
 }
 function renderProxyChips(){
+  if (!$('#proxyChips')) return;
   const px = S.proxy;
   if (!px || !Array.isArray(px.profiles)) return;
   const active = px.active || '';
@@ -1632,11 +1662,12 @@ function updateCount(){ $('#promptCount').textContent = $('#prompt').value.lengt
 /* ── generate ── */
 function buildPayload(){
   const v = S.mode === 'video';
-  const pool = Array.isArray(S.gpuPool) && S.gpuPool.length ? S.gpuPool.slice() : [S.gpu];
+  const held = ownedSessions();
+  const gpu = held.some(s => String(s.gpu).toUpperCase() === S.gpu) ? S.gpu : (held[0] ? String(held[0].gpu).toUpperCase() : (S.gpu || 'A100'));
   const p = {
-    mode:S.mode, gpu:pool[0], gpu_pool:pool,
-    poll_rounds: Math.max(1, Math.min(10, +($('#pollRounds') && $('#pollRounds').value) || 1)),
-    poll_all_proxies: !!($('#pollAllProxies') && $('#pollAllProxies').checked),
+    mode:S.mode, gpu, gpu_pool:[gpu],
+    poll_rounds: 1,
+    poll_all_proxies: false,
     prompt:$('#prompt').value.trim(), negative:$('#negative').value, idea:$('#idea').value.trim(),
     width:+$('#width').value, height:+$('#height').value, steps:+$('#steps').value, cfg:+$('#cfg').value,
     seed: $('#seed').value === '' ? -1 : +$('#seed').value, count:+$('#count').textContent, loras:collectLoras(),
@@ -1665,6 +1696,16 @@ function buildPayload(){
   return p;
 }
 async function generate(){
+  const authed = S.status && S.status.colab && S.status.colab.authed;
+  if (S.status && S.status.phase === 'starting' && !S.status.current){
+    toast('正在抢卡，请等算力就绪后再生成', 'err');
+    return;
+  }
+  if (authed && !ownedSessions().length){
+    toast('还没有持有的算力，请到设置里抢卡', 'err');
+    openSettings();
+    return;
+  }
   const p = buildPayload();
   if (!p.prompt){ toast('请先填写提示词', 'err'); $('#prompt').focus(); return; }
   if (p.mode === 'image' && p.engine === 'comfyui'){
@@ -1686,7 +1727,12 @@ async function generate(){
 function updateGoState(){
   const st = S.status; const authed = st && st.colab && st.colab.authed;
   const busy = st && (st.current || (st.queue||[]).length);
-  $('#goText').textContent = !authed && st ? '先在设置里连接 Colab' : busy ? '加入队列' : (S.mode === 'video' ? '生成视频' : '开始生成');
+  const grabbing = st && st.phase === 'starting' && !st.current;
+  $('#goText').textContent = !authed && st ? '先在设置里连接 Colab'
+    : (authed && !ownedSessions().length) ? '去设置里抢卡'
+    : grabbing ? '正在抢卡…'
+    : busy ? '加入队列'
+    : (S.mode === 'video' ? '生成视频' : '开始生成');
   $('#stopBtn').classList.toggle('hide', !(st && st.current));
 }
 
@@ -1719,6 +1765,22 @@ const SV_STATE = {
   stopping:['SCALING 0','warn','正在释放实例缩容至 0'],
   error:['ERROR','bad','最近一次执行异常'],
 };
+function renderIdleChip(st){
+  const chip = $('#idleChip');
+  if (!chip || !st) return;
+  const holding = st.idle_minutes === 0 && (st.active_gpu || (st.colab && st.colab.any_running)) && !st.current;
+  if (holding){
+    chip.classList.remove('hide');
+    chip.title = '已设为永不超期，不会自动释放';
+    $('#idleText').textContent = '保持持有';
+    return;
+  }
+  chip.title = '空闲到期自动释放 Colab 运行时';
+  if (st.idle_deadline && !st.current){
+    chip.classList.remove('hide');
+    $('#idleText').textContent = dur(st.idle_deadline - now()) + ' 后缩容';
+  } else chip.classList.add('hide');
+}
 function renderStatus(st){
   const [label, cls] = PHASE[st.phase] || [st.phase, ''];
   const [svTxt, svCls, svTip] = SV_STATE[st.phase] || ['COLD', 'cold', ''];
@@ -1727,8 +1789,8 @@ function renderStatus(st){
   $('#phaseText').textContent = label + (st.active_gpu ? ' · ' + st.active_gpu : '');
   $('#phaseDot').className = 'dot ' + cls;
   $('#phaseChip').title = st.error || svTip;
-  if (st.idle_deadline && !st.current){ $('#idleChip').classList.remove('hide'); $('#idleText').textContent = dur(st.idle_deadline - now()) + ' 后缩容'; }
-  else $('#idleChip').classList.add('hide');
+  renderIdleChip(st);
+  renderGrabState();
   const wfB = $('#wfRunBadge');
   if (wfB){
     const wa = st.workflow_active;
@@ -2059,7 +2121,12 @@ function reuse(it){
   if (m.width) setNum('width', m.width); if (m.height) setNum('height', m.height);
   if (m.steps) setNum('steps', m.steps); if (m.cfg) setNum('cfg', m.cfg);
   if (m.seed !== undefined) $('#seed').value = m.seed;
-  if (m.gpu){ S.gpu = m.gpu; S.gpuPool = [m.gpu]; renderGpuChips(); }
+  if (m.gpu){
+    const gid = String(m.gpu).toUpperCase();
+    S.grabPool = [gid];
+    if (ownedSessions().some(s => String(s.gpu).toUpperCase() === gid)) S.gpu = gid;
+    renderGpuChips();
+  }
   if (Array.isArray(m.loras)) renderLoraRows(m.loras);
   updateCount(); updateModeUI(); saveForm();
   toast(`已把 #${+it.id} 的参数填回左侧（含种子 ${m.seed ?? '-'}）`, 'ok');
@@ -2704,9 +2771,41 @@ function openSettings(){
       <div class="sect"><h4>${I('key')}Hugging Face Token <span class="dim" style="font-weight:500">${c.hf_token_set ? '· 已配置' : '· 未配置'}</span></h4>
         <div class="help" style="margin:0 0 8px">访问受限仓库（FLUX.2 / MiniMax-H3）或加速下载时需要。只保存在服务器 0600 文件里，不会回显。</div>
         <div class="row"><input type="password" id="sHf" placeholder="hf_…" autocomplete="off"><button class="btn sm" id="sHfSave">保存</button>${c.hf_token_set ? `<button class="btn sm ghost" id="sHfClear">清除</button>` : ''}</div></div>
-      <div class="sect"><h4>${I('clock')}空闲自动释放</h4>
-        <div class="help" style="margin:0 0 8px">最后一个任务结束后，空闲多久自动释放 Colab 运行时（停止消耗 CU）。</div>
-        <div class="chips" id="sIdle">${[5,10,20,30,60].map(n => `<button class="pchip ${S.status && S.status.idle_minutes===n?'on':''}" data-idle="${n}">${n} 分钟</button>`).join('')}</div></div>
+      <div class="sect" id="sGrabSect"><h4>${I('cpu')}抢卡</h4>
+        <div class="help" style="margin:0 0 8px">在这里申请 Colab GPU 并持有。Draw 页的算力列表只显示已经抢到的卡。</div>
+        <div class="gpu-list" id="sGrabGpus"></div>
+        <div class="poll-bar">
+          <div class="poll-row">
+            <span>轮询次数</span>
+            <input type="number" id="pollRounds" min="1" max="10" value="${S.pollRounds || 2}">
+            <span>轮</span>
+            <span class="poll-plan" id="pollSummary"></span>
+          </div>
+          <label class="switch" style="margin:0" title="开启后每轮依次切换全部已配置的代理（美国 / 新加坡 / 自定义，绝不直连）逐卡抢算力">
+            <input type="checkbox" id="pollAllProxies" ${S.pollAllProxies ? 'checked' : ''}>
+            <span class="tg"></span>使用全部已配代理轮询
+          </label>
+        </div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+          <div class="row" style="justify-content:space-between;margin-bottom:6px">
+            <span class="mgroup-lbl" style="margin:0;color:var(--muted);font-weight:500">Colab 出口线路（不同地区机房库存不同）</span>
+            <button type="button" class="btn sm" id="testProxyBtn" style="height:24px;padding:0 8px;font-size:11px">测出口</button>
+          </div>
+          <div class="chips" id="proxyChips"></div>
+          <div id="customProxyWrap" class="hide" style="margin-top:8px">
+            <div class="row">
+              <input type="password" id="customProxyUrl" autocomplete="off" placeholder="http://user:pass@host:port 或 socks5://...">
+              <button type="button" class="btn sm primary" id="saveCustomProxyBtn">启用</button>
+            </div>
+            <div class="help" id="customProxyHint">密码保存在服务器 0600 文件中，页面不会回显。</div>
+          </div>
+          <div class="help" id="proxyHelp"></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button class="btn sm primary" id="sGrab">${I('sparkles')}抢卡</button></div>
+        <div class="help" id="sGrabState" style="margin:8px 0 0"></div>
+        <h4 style="margin-top:16px">${I('clock')}空闲自动释放</h4>
+        <div class="help" style="margin:0 0 8px">最后一个任务结束后，空闲多久自动释放 Colab 运行时（停止消耗 CU）。选「永不超期」则一直持有，直到手动释放。</div>
+        <div class="chips" id="sIdle">${[[5,'5 分钟'],[10,'10 分钟'],[20,'20 分钟'],[30,'30 分钟'],[60,'60 分钟'],[0,'永不超期']].map(([n, label]) => `<button class="pchip ${S.status && S.status.idle_minutes===n?'on':''}" data-idle="${n}">${label}</button>`).join('')}</div></div>
       <div class="sect"><h4>${I('info')}关于</h4><div class="kv"><span>版本</span><span>Colab Studio v${S.cfg.version}</span>
         <span>快捷键</span><span>Ctrl/⌘+Enter 生成 · ←/→ 切换作品 · S 收藏 · D 下载 · Delete 删除 · F 全屏 · L 日志</span>
         <span>回收站</span><span>删除的作品保留 ${S.cfg.trash_retention_days} 天</span></div></div>
@@ -2745,10 +2844,110 @@ function openSettings(){
   $('#sHfSave', scrim).onclick = async () => { try { await post('api/colab/hf-token', {token: $('#sHf', scrim).value.trim()}); toast('HF Token 已保存', 'ok'); close(); refresh(); } catch(e){ toast(e.message, 'err'); } };
   const hc = $('#sHfClear', scrim);
   if (hc) hc.onclick = async () => { await post('api/colab/hf-token', {token:''}); toast('已清除 HF Token', 'ok'); close(); refresh(); };
+  renderGrabCatalog();
+  renderProxyChips();
+  $('#sGrabGpus', scrim).onclick = e => {
+    const b = e.target.closest('[data-grab]'); if (!b) return;
+    const id = b.dataset.grab;
+    const pool = Array.isArray(S.grabPool) ? S.grabPool.slice() : [];
+    const idx = pool.indexOf(id);
+    if (idx >= 0){
+      if (pool.length <= 1){ toast('至少保留 1 张候选 GPU', 'err'); return; }
+      pool.splice(idx, 1);
+    } else pool.push(id);
+    S.grabPool = pool;
+    renderGrabCatalog();
+    saveSoon();
+  };
+  const roundsEl = $('#pollRounds', scrim);
+  const syncRounds = () => {
+    const lim = (S.cfg && S.cfg.limits) || {};
+    S.pollRounds = Math.max(lim.poll_rounds_min || 1, Math.min(lim.poll_rounds_max || 10, +roundsEl.value || 1));
+    roundsEl.value = S.pollRounds;
+    updatePollSummary();
+    saveSoon();
+  };
+  roundsEl.addEventListener('input', () => {
+    const n = +roundsEl.value;
+    if (n >= 1 && n <= 10) S.pollRounds = n;
+    updatePollSummary();
+  });
+  roundsEl.addEventListener('change', syncRounds);
+  $('#pollAllProxies', scrim).addEventListener('change', e => {
+    S.pollAllProxies = !!e.target.checked;
+    updatePollSummary();
+    saveSoon();
+  });
+  $('#sGrab', scrim).onclick = async () => {
+    if (!S.grabPool.length) return toast('请先勾选要抢的卡', 'err');
+    const b = $('#sGrab', scrim); b.disabled = true;
+    try {
+      await post('api/colab/grab', {
+        gpu_pool: S.grabPool,
+        poll_rounds: S.pollRounds || 1,
+        poll_all_proxies: !!S.pollAllProxies,
+      });
+      toast('开始抢卡', 'ok');
+      refresh();
+    } catch(err){ toast(err.message, 'err'); }
+    b.disabled = false;
+  };
+  $('#proxyChips', scrim).onclick = async e => {
+    const b = e.target.closest('[data-proxy]'); if (!b || b.disabled) return;
+    const pid = b.dataset.proxy;
+    if (pid === 'custom'){
+      const cust = (S.proxy && S.proxy.profiles || []).find(p => p.id === 'custom');
+      S.customProxyOpen = true;
+      renderProxyChips();
+      if (!cust || !cust.configured){ $('#customProxyUrl', scrim).focus(); return; }
+    } else {
+      S.customProxyOpen = false;
+    }
+    try {
+      const r = await post('api/proxy', {active: pid});
+      S.proxy = r;
+      renderProxyChips();
+      const lbl = (r.profiles.find(p => p.id === pid) || {}).label || pid;
+      toast('已切换出口为 ' + lbl, 'ok');
+      refresh();
+    } catch(err){ toast(err.message, 'err'); }
+  };
+  $('#saveCustomProxyBtn', scrim).onclick = async () => {
+    const url = $('#customProxyUrl', scrim).value.trim();
+    if (!url) return toast('请先输入代理地址', 'err');
+    const b = $('#saveCustomProxyBtn', scrim); b.disabled = true;
+    try {
+      const r = await post('api/proxy', {active: 'custom', custom_url: url});
+      S.proxy = r;
+      $('#customProxyUrl', scrim).value = '';
+      renderProxyChips();
+      toast('自定义代理已保存并启用', 'ok');
+      refresh();
+    } catch(err){ toast(err.message, 'err'); }
+    b.disabled = false;
+  };
+  $('#testProxyBtn', scrim).onclick = async () => {
+    const b = $('#testProxyBtn', scrim); b.disabled = true; b.textContent = '测试中…';
+    try {
+      const r = await post('api/proxy/test', {});
+      if (S.proxy) S.proxy.last_test = r;
+      renderProxyChips();
+      if (r.ok) toast(`出口正常：${r.loc} / ${r.colo}（${r.ms}ms）`, 'ok');
+      else toast('出口测试失败：' + r.error, 'err');
+    } catch(err){ toast(err.message, 'err'); }
+    b.disabled = false; b.textContent = '测出口';
+  };
   $('#sIdle', scrim).onclick = async e => {
     const b = e.target.closest('[data-idle]'); if (!b) return;
-    try { const r = await post('api/settings', {idle_minutes: +b.dataset.idle}); $$('[data-idle]', scrim).forEach(x => x.classList.toggle('on', x === b)); toast(`空闲 ${r.idle_minutes} 分钟后自动释放`, 'ok'); refresh(); }
-    catch(e){ toast(e.message, 'err'); }
+    const minutes = +b.dataset.idle;
+    try {
+      const r = await post('api/settings', {idle_minutes: minutes});
+      if (S.status) S.status.idle_minutes = r.idle_minutes;
+      $$('[data-idle]', scrim).forEach(x => x.classList.toggle('on', +x.dataset.idle === r.idle_minutes));
+      toast(r.idle_minutes === 0 ? '已设为永不超期，会一直持有直到手动释放' : `空闲 ${r.idle_minutes} 分钟后自动释放`, 'ok');
+      refresh();
+    }
+    catch(err){ toast(err.message, 'err'); }
   };
 }
 
@@ -3265,26 +3464,15 @@ function bind(){
   }));
   $('#sizeChips').onclick = e => { const b = e.target.closest('[data-w]'); if (!b) return; setNum('width', +b.dataset.w); setNum('height', +b.dataset.h); saveSoon(); };
   $('#gpuChips').onclick = e => {
+    if (e.target.closest('[data-open-settings]')){ openSettings(); return; }
     const b = e.target.closest('[data-gpu]'); if (!b) return;
     const id = b.dataset.gpu;
-    const pool = Array.isArray(S.gpuPool) && S.gpuPool.length ? S.gpuPool.slice() : [S.gpu];
-    const idx = pool.indexOf(id);
-    if (idx >= 0){
-      if (pool.length <= 1){ toast('至少保留 1 张候选 GPU', 'err'); return; }
-      pool.splice(idx, 1);
-    } else {
-      pool.push(id);
-    }
-    S.gpuPool = pool; S.gpu = pool[0];
-    renderGpuChips(); saveSoon();
+    if (!ownedSessions().some(s => String(s.gpu).toUpperCase() === id)) return;
+    S.gpu = id;
+    S.gpuPool = [id];
+    renderGpuChips();
+    saveSoon();
   };
-  $('#pollRounds').addEventListener('input', updatePollSummary);
-  $('#pollRounds').addEventListener('change', () => {
-    const lim = S.cfg.limits;
-    $('#pollRounds').value = Math.max(lim.poll_rounds_min || 1, Math.min(lim.poll_rounds_max || 10, +$('#pollRounds').value || 1));
-    updatePollSummary(); saveSoon();
-  });
-  $('#pollAllProxies').addEventListener('change', () => { updatePollSummary(); saveSoon(); });
   $('#refreshGpuBtn').onclick = async () => {
     const b = $('#refreshGpuBtn'); b.disabled = true;
     try {
@@ -3294,51 +3482,6 @@ function bind(){
       toast('已刷新 Colab 算力状态', 'ok');
     } catch(e){ toast(e.message, 'err'); }
     b.disabled = false;
-  };
-  $('#proxyChips').onclick = async e => {
-    const b = e.target.closest('[data-proxy]'); if (!b || b.disabled) return;
-    const pid = b.dataset.proxy;
-    if (pid === 'custom'){
-      const cust = (S.proxy && S.proxy.profiles || []).find(p => p.id === 'custom');
-      S.customProxyOpen = true;
-      renderProxyChips();
-      if (!cust || !cust.configured){ $('#customProxyUrl').focus(); return; }
-    } else {
-      S.customProxyOpen = false;
-    }
-    try {
-      const r = await post('api/proxy', {active: pid});
-      S.proxy = r;
-      renderProxyChips();
-      const lbl = (r.profiles.find(p => p.id === pid) || {}).label || pid;
-      toast('已切换出口为 ' + lbl, 'ok');
-      refresh();
-    } catch(err){ toast(err.message, 'err'); }
-  };
-  $('#saveCustomProxyBtn').onclick = async () => {
-    const url = $('#customProxyUrl').value.trim();
-    if (!url) return toast('请先输入代理地址', 'err');
-    const b = $('#saveCustomProxyBtn'); b.disabled = true;
-    try {
-      const r = await post('api/proxy', {active: 'custom', custom_url: url});
-      S.proxy = r;
-      $('#customProxyUrl').value = '';
-      renderProxyChips();
-      toast('自定义代理已保存并启用', 'ok');
-      refresh();
-    } catch(err){ toast(err.message, 'err'); }
-    b.disabled = false;
-  };
-  $('#testProxyBtn').onclick = async () => {
-    const b = $('#testProxyBtn'); b.disabled = true; b.textContent = '测试中…';
-    try {
-      const r = await post('api/proxy/test', {});
-      if (S.proxy) S.proxy.last_test = r;
-      renderProxyChips();
-      if (r.ok) toast(`出口正常：${r.loc} / ${r.colo}（${r.ms}ms）`, 'ok');
-      else toast('出口测试失败：' + r.error, 'err');
-    } catch(err){ toast(err.message, 'err'); }
-    b.disabled = false; b.textContent = '测出口';
   };
   $('#workflowChips').onclick = e => { const b = e.target.closest('[data-wf]'); if (!b) return; S.workflow = b.dataset.wf; renderWorkflowChips(); updateModeUI(); renderStage(); saveSoon(); };
   $('#frameChips').onclick = e => { const b = e.target.closest('[data-fr]'); if (!b) return; S.frames = +b.dataset.fr; renderFrameChips(); updateRewriteBadge(); saveSoon(); };
@@ -3481,7 +3624,7 @@ function bind(){
     else if (e.key.toLowerCase() === 'l'){ toggleLogs(); }
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-  setInterval(() => { if (S.status) { renderProgress(S.status); if (S.status.idle_deadline && !S.status.current) $('#idleText').textContent = dur(S.status.idle_deadline - now()) + ' 后释放'; } }, 1000);
+  setInterval(() => { if (S.status) { renderProgress(S.status); renderIdleChip(S.status); } }, 1000);
 }
 
 async function init(){
@@ -3495,9 +3638,15 @@ async function init(){
   if (S.cfg && S.cfg.limits && S.cfg.limits.prompt_max) $('#promptMax').textContent = S.cfg.limits.prompt_max;
   const c = S.form.common || {};
   const validGpus = new Set((S.cfg.gpus || []).map(g => g.id));
-  const savedPool = Array.isArray(c.gpu_pool) ? c.gpu_pool.filter(x => validGpus.has(x)) : [];
-  S.gpuPool = savedPool.length ? savedPool : [c.gpu && validGpus.has(c.gpu) ? c.gpu : S.cfg.defaults.gpu];
-  S.gpu = S.gpuPool[0]; S.workflow = c.workflow || S.cfg.defaults.video.workflow; S.frames = Math.max(S.cfg.limits.frames_min || 120, c.frames || S.cfg.defaults.video.num_frames);
+  const savedGrab = Array.isArray(c.grab_pool) ? c.grab_pool : (Array.isArray(c.gpu_pool) ? c.gpu_pool : []);
+  S.grabPool = savedGrab.map(x => String(x || '').toUpperCase()).filter(x => validGpus.has(x));
+  if (!S.grabPool.length) S.grabPool = [c.gpu && validGpus.has(c.gpu) ? c.gpu : S.cfg.defaults.gpu];
+  S.gpu = S.grabPool[0];
+  S.gpuPool = [S.gpu];
+  const lim = S.cfg.limits || {};
+  S.pollRounds = Math.max(lim.poll_rounds_min || 1, Math.min(lim.poll_rounds_max || 10, +c.pollRounds || S.cfg.defaults.poll_rounds || 2));
+  S.pollAllProxies = !!c.pollAllProxies;
+  S.workflow = c.workflow || S.cfg.defaults.video.workflow; S.frames = Math.max(S.cfg.limits.frames_min || 120, c.frames || S.cfg.defaults.video.num_frames);
   renderStaticOptions();
   $('#imageModel').value = S.cfg.defaults.image.model;
   $$('[data-p]').forEach(el => { if (c[el.id] !== undefined){ if (el.type === 'checkbox') el.checked = c[el.id]; else el.value = c[el.id]; } });
