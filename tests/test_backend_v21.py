@@ -14,8 +14,7 @@ import time
 import zlib
 from pathlib import Path
 
-SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-    __file__).resolve().parent.parent
+SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SRC_DIR))
 
 
@@ -38,12 +37,9 @@ def test_tqdm_and_redaction() -> None:
     samples = [
         (" 40%|████      | 14/35 [00:08<00:12, 1.65it/s]", "", 40, "14/35"),
         ("100%|██████████| 35/35 [00:22<00:00,  1.56it/s]", "", 100, "35/35"),
-        ("Fetching 12 files:  50%|█████     | 6/12 [00:03<00:03,  1.92it/s]",
-         "Fetching 12 files", 50, "6/12"),
-        ("\x1b[32mLoading checkpoint shards:\x1b[0m 100%|██████████| 3/3 [00:04<00:00, 1.34s/it]",
-         "Loading checkpoint shards", 100, "3/3"),
-        ("diffusion_pytorch_model.safetensors:  42%|####      | 1.23G/2.95G [00:15<00:21, 80.1MB/s]",
-         "diffusion_pytorch_model.safetensors", 42, "1.23G/2.95G"),
+        ("Fetching 12 files:  50%|█████     | 6/12 [00:03<00:03,  1.92it/s]", "Fetching 12 files", 50, "6/12"),
+        ("\x1b[32mLoading checkpoint shards:\x1b[0m 100%|██████████| 3/3 [00:04<00:00, 1.34s/it]", "Loading checkpoint shards", 100, "3/3"),
+        ("diffusion_pytorch_model.safetensors:  42%|####      | 1.23G/2.95G [00:15<00:21, 80.1MB/s]", "diffusion_pytorch_model.safetensors", 42, "1.23G/2.95G"),
         ("  0%|          | 0/35 [00:00<?, ?it/s]", "", 0, "0/35"),
     ]
     for line, exp_label, exp_pct, exp_detail in samples:
@@ -55,8 +51,7 @@ def test_tqdm_and_redaction() -> None:
 
     assert cb.parse_tqdm_line("normal log line without bar") is None
     fake_hf = "hf_" + "a" * 24
-    assert cb.redact_secrets(f"Authorization: Bearer {
-                             fake_hf}") == "Authorization: Bearer hf_***"
+    assert cb.redact_secrets(f"Authorization: Bearer {fake_hf}") == "Authorization: Bearer hf_***"
     print("OK test_tqdm_and_redaction")
 
 
@@ -98,8 +93,7 @@ def test_non_blocking_colab_status() -> None:
         assert elapsed < 0.1, f"Non-blocking call stalled for {elapsed:.3f}s"
         assert r1["refreshing"] is True and r2["refreshing"] is True
         time.sleep(0.35)
-        assert fetch_calls["n"] == 1, f"Expected coalesced 1 fetch, got {
-            fetch_calls['n']}"
+        assert fetch_calls["n"] == 1, f"Expected coalesced 1 fetch, got {fetch_calls['n']}"
         r3 = backend.status_report(blocking=False)
         assert r3["balance"] == 88.5 and r3["refreshing"] is False
         print("OK test_non_blocking_colab_status")
@@ -137,13 +131,11 @@ def test_store_features() -> None:
         # Star 001 and test cleanup_plan with older_than_days=0 (must match unstarred)
         assert st.set_star("001", True)
         time.sleep(0.05)
-        plan_zero = st.cleanup_plan(
-            older_than_days=0, keep_latest=None, kind="image", include_starred=False)
+        plan_zero = st.cleanup_plan(older_than_days=0, keep_latest=None, kind="image", include_starred=False)
         assert [i["id"] for i in plan_zero] == ["002"], plan_zero
 
         # max_mb=0 should target unstarred items while respecting starred
-        plan_mb = st.cleanup_plan(
-            older_than_days=None, keep_latest=None, kind="image", include_starred=False, max_mb=0)
+        plan_mb = st.cleanup_plan(older_than_days=None, keep_latest=None, kind="image", include_starred=False, max_mb=0)
         assert [i["id"] for i in plan_mb] == ["002"], plan_mb
 
         # Delete video -> latest.mp4 should disappear; restore -> latest.mp4 returns
@@ -167,8 +159,7 @@ def test_queue_persistence_and_recovery() -> None:
     # Validation edge cases (including custom HF repo models)
     j0 = normalize_job({"prompt": "hi", "seed": 0, "idle_minutes": 0})
     assert j0["seed"] == 0 and j0["idle_minutes"] == 5
-    j_hf = normalize_job(
-        {"prompt": "hi", "model": "black-forest-labs/FLUX.1-dev"})
+    j_hf = normalize_job({"prompt": "hi", "model": "black-forest-labs/FLUX.1-dev"})
     assert j_hf["model"] == "black-forest-labs/FLUX.1-dev"
     try:
         normalize_job({"prompt": "hi", "model": "bad model name"})
@@ -240,18 +231,14 @@ def test_queue_persistence_and_recovery() -> None:
         st1.add_recent_model("black-forest-labs/FLUX.1-dev")
         assert st1.recent_models() == ["black-forest-labs/FLUX.1-dev"]
 
-        jobs = st1.enqueue(normalize_job(
-            {"prompt": "persist me", "count": 2, "seed": 7, "has_image": True}))
+        jobs = st1.enqueue(normalize_job({"prompt": "persist me", "count": 2, "seed": 7, "has_image": True}))
         assert colab1.started.wait(timeout=2.0), "Job 1 never started"
         # Snapshot queue.json right now (job 1 is running, job 2 is queued with ref blob!)
-        qjson = json.loads(
-            (tmp / "out" / "queue.json").read_text(encoding="utf-8"))
+        qjson = json.loads((tmp / "out" / "queue.json").read_text(encoding="utf-8"))
         assert qjson["idle_minutes"] == 25
         assert qjson["current"]["id"] == jobs[0]["id"]
-        assert len(qjson["queue"]
-                   ) == 1 and qjson["queue"][0]["id"] == jobs[1]["id"]
-        assert (tmp / "out" / "queue_refs" /
-                f"{jobs[1]['id']}_first.bin").exists()
+        assert len(qjson["queue"]) == 1 and qjson["queue"][0]["id"] == jobs[1]["id"]
+        assert (tmp / "out" / "queue_refs" / f"{jobs[1]['id']}_first.bin").exists()
 
         # Simulate hard crash: copy out/ to a fresh dir and boot a brand new Studio
         tmp2 = Path(tempfile.mkdtemp(prefix="qp-test-jobs-recover-"))
@@ -259,8 +246,7 @@ def test_queue_persistence_and_recovery() -> None:
             shutil.copytree(tmp / "out", tmp2 / "out")
             (tmp2 / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
             # Add an orphan ref blob to verify pruning
-            (tmp2 / "out" / "queue_refs" /
-             "j99999999_first.bin").write_bytes(b"orphan")
+            (tmp2 / "out" / "queue_refs" / "j99999999_first.bin").write_bytes(b"orphan")
 
             log2 = LogBuffer()
             store2 = Store(tmp2 / "out", log2)
@@ -271,12 +257,9 @@ def test_queue_persistence_and_recovery() -> None:
             assert rec["interrupted"] == jobs[0]["id"]
             assert rec["queued"] == 1
             assert st2.idle_seconds == 25 * 60
-            assert st2.recent_models() == [
-                "qwen-2.1-bf16", "black-forest-labs/FLUX.1-dev"], st2.recent_models()
-            assert st2.remove_recent_model(
-                "black-forest-labs/FLUX.1-dev") == ["qwen-2.1-bf16"]
-            assert not (tmp2 / "out" / "queue_refs" /
-                        "j99999999_first.bin").exists()
+            assert st2.recent_models() == ["qwen-2.1-bf16", "black-forest-labs/FLUX.1-dev"], st2.recent_models()
+            assert st2.remove_recent_model("black-forest-labs/FLUX.1-dev") == ["qwen-2.1-bf16"]
+            assert not (tmp2 / "out" / "queue_refs" / "j99999999_first.bin").exists()
 
             # Wait for recovered job 2 to complete
             deadline = time.time() + 5.0
@@ -289,8 +272,7 @@ def test_queue_persistence_and_recovery() -> None:
             assert statuses[jobs[0]["id"]] == "error"
             assert statuses[jobs[1]["id"]] == "done"
             assert store2.list()["total"] == 1
-            assert not (tmp2 / "out" / "queue_refs" /
-                        f"{jobs[1]['id']}_first.bin").exists()
+            assert not (tmp2 / "out" / "queue_refs" / f"{jobs[1]['id']}_first.bin").exists()
             print("OK test_queue_persistence_and_recovery")
         finally:
             colab1.gate.set()
@@ -337,10 +319,8 @@ def test_gpu_shape_and_retry_cancel() -> None:
 
         for gpu_name, exp_shape in [("H100", None), ("G4", None), ("L4", None), ("A100", cb.Shape.HIGH_RAM)]:
             seen_shapes.clear()
-            sess = backend.ensure_session(
-                gpu=gpu_name, high_mem=True, session_name="s-" + gpu_name)
-            assert seen_shapes == [
-                (gpu_name, exp_shape)], (gpu_name, seen_shapes)
+            sess = backend.ensure_session(gpu=gpu_name, high_mem=True, session_name="s-" + gpu_name)
+            assert seen_shapes == [(gpu_name, exp_shape)], (gpu_name, seen_shapes)
             assert sess.accelerator == gpu_name
 
         # Test cancel during 503 retry backoff
@@ -349,8 +329,7 @@ def test_gpu_shape_and_retry_cancel() -> None:
 
         class Client503(FakeClient):
             def _post_assignment(self, nbh, tok, variant, acc, shape):
-                raise cb.ColabRequestError(
-                    "Service Unavailable", request=None, response=Resp503())
+                raise cb.ColabRequestError("Service Unavailable", request=None, response=Resp503())
 
         backend._client = lambda: Client503()  # type: ignore[method-assign]
         cancel_flag = {"v": False}
@@ -362,8 +341,7 @@ def test_gpu_shape_and_retry_cancel() -> None:
         threading.Thread(target=trip, daemon=True).start()
         t0 = time.time()
         try:
-            backend.ensure_session(
-                gpu="A100", high_mem=True, session_name="s-cancel", cancel_check=lambda: cancel_flag["v"])
+            backend.ensure_session(gpu="A100", high_mem=True, session_name="s-cancel", cancel_check=lambda: cancel_flag["v"])
             raise AssertionError("expected cancel")
         except RuntimeError as exc:
             assert "取消" in str(exc), str(exc)
@@ -374,12 +352,10 @@ def test_gpu_shape_and_retry_cancel() -> None:
         class FallbackClient(FakeClient):
             def _post_assignment(self, nbh, tok, variant, acc, shape):
                 if acc.value == "A100":
-                    raise cb.ColabRequestError(
-                        "Service Unavailable", request=None, response=Resp503())
+                    raise cb.ColabRequestError("Service Unavailable", request=None, response=Resp503())
                 return FakePostResp()
 
-        # type: ignore[method-assign]
-        backend._client = lambda: FallbackClient()
+        backend._client = lambda: FallbackClient()  # type: ignore[method-assign]
         sess_fb = backend.ensure_session(
             gpu="A100", high_mem=True, session_name="s-fb", fallback_gpus=["A100", "L4"]
         )
@@ -456,8 +432,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
                 seen_bodies.append(body)
-                resp = json.dumps({"choices": [
-                                  {"message": {"content": "```text\nclean enhanced prompt\n```"}}]}).encode("utf-8")
+                resp = json.dumps({"choices": [{"message": {"content": "```text\nclean enhanced prompt\n```"}}]}).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
@@ -471,8 +446,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
         port = srv.server_address[1]
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
-        old_env = {k: os.environ.get(k) for k in (
-            "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")}
+        old_env = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy")}
         try:
             log = LogBuffer()
             store = Store(tmp / "out", log)
@@ -490,8 +464,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             )
             assert "172.17.0.1" in os.environ.get("NO_PROXY", "")
             # Default model must be deepseek-flash, and editing=True with reference.bin must attach image_url!
-            rich_img = st.write_prompt_rich(
-                "两张图融合", mode="image", editing=True, ref_count=2)
+            rich_img = st.write_prompt_rich("两张图融合", mode="image", editing=True, ref_count=2)
             assert rich_img["prompt"] == "clean enhanced prompt"
             assert rich_img["model"] == "deepseek-flash"
             assert rich_img["images_used"] == 1
@@ -507,41 +480,34 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             it2 = st.add_ref(png2, "upload")
             it3 = st.add_ref(png3, "upload")
             rep1 = st.refs_report()
-            assert len(
-                rep1["items"]) == 3 and rep1["max"] == LIMITS["refs_max"]
+            assert len(rep1["items"]) == 3 and rep1["max"] == LIMITS["refs_max"]
             assert len(st.ref_blobs()) == 3
 
             # Video Ref2VA: must attach all 3 reference images and use 6-section official H3 guide
-            rich_ref2va = st.write_prompt_rich(
-                "赛博街头漫步", mode="video", workflow="ref2va", num_frames=175)
+            rich_ref2va = st.write_prompt_rich("赛博街头漫步", mode="video", workflow="ref2va", num_frames=175)
             assert rich_ref2va["images_used"] == 3
             assert "六段式" in rich_ref2va["format"]
             sys_ref = seen_bodies[-1]["messages"][0]["content"]
             assert "subject_definitions" in sys_ref and "retention_analysis" in sys_ref and "non_diegetic_music" in sys_ref
-            img_parts = [p for p in seen_bodies[-1]["messages"]
-                         [-1]["content"] if p.get("type") == "image_url"]
+            img_parts = [p for p in seen_bodies[-1]["messages"][-1]["content"] if p.get("type") == "image_url"]
             assert len(img_parts) == 3
 
             # Video T2VA: text-only 3-section official H3 guide, purge block hung around it
-            rich_t2va = st.write_prompt_rich(
-                "雨夜城市", mode="video", workflow="t2va", num_frames=124)
+            rich_t2va = st.write_prompt_rich("雨夜城市", mode="video", workflow="t2va", num_frames=124)
             assert rich_t2va["images_used"] == 0
             assert "三段式" in rich_t2va["format"] and "破甲" in rich_t2va["format"]
             sys_base = seen_bodies[-1]["messages"][0]["content"]
             assert "integrated_multimodal_description" in sys_base and "overall_soundscape" in sys_base
-            assert sys_base.index("破甲状态") < sys_base.index(
-                "integrated_multimodal_description") < sys_base.index("Final gate")
+            assert sys_base.index("破甲状态") < sys_base.index("integrated_multimodal_description") < sys_base.index("Final gate")
 
             # Video FL2VA with both first + last frames attached
             st.set_ref("last", png2, "upload")
-            rich_fl2va = st.write_prompt_rich(
-                "从白天过渡到夜晚", mode="video", workflow="fl2va", num_frames=124, has_last_image=True)
+            rich_fl2va = st.write_prompt_rich("从白天过渡到夜晚", mode="video", workflow="fl2va", num_frames=124, has_last_image=True)
             assert rich_fl2va["images_used"] == 2
             assert "FL2VA" in rich_fl2va["format"]
             assert "5.17" in seen_bodies[-1]["messages"][0]["content"]
 
-            st.enqueue(normalize_job(
-                {"prompt": "multi ref test", "has_image": True}))
+            st.enqueue(normalize_job({"prompt": "multi ref test", "has_image": True}))
             deadline = time.time() + 5.0
             while st.busy() and time.time() < deadline:
                 time.sleep(0.05)
@@ -553,8 +519,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             assert st.remove_ref(it2["id"]) is True
             assert len(st.refs_report()["items"]) == 2
             st.clear_ref("first")
-            assert len(st.refs_report()["items"]) == 0 and st.refs_report()[
-                "first"]["set"] is False
+            assert len(st.refs_report()["items"]) == 0 and st.refs_report()["first"]["set"] is False
             print("OK test_multi_refs_and_local_cpa_proxy_bypass")
         finally:
             srv.shutdown()
@@ -586,5 +551,5 @@ if __name__ == "__main__":
     test_store_features()
     test_queue_persistence_and_recovery()
     test_multi_refs_and_local_cpa_proxy_bypass()
-    # test_minor_sexual_gate()
+    test_minor_sexual_gate()
     print("ALL BACKEND TESTS PASSED")
