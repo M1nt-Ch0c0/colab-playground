@@ -181,11 +181,8 @@ BUILTIN_WORKFLOWS: list[dict[str, Any]] = [
     {
         "id": "builtin:agent-long-video",
         "builtin": True,
-        "name": "完整长视频 Agent 流水线（白模找图 + 人设融合）",
-        "description": (
-            "人设图资产 → AI 写分镜脚本 → 轻量网页 Agent 搜索/抓取白模参考图到本地 → "
-            "白模 + 人设融合生关键帧（暂停审核）→ 多模态写 H3 提示词 → 逐镜生成音画视频 → FFmpeg 剪辑合成成品。"
-        ),
+        "name": "长视频 Agent 流水线",
+        "description": "人设资产 → AI 分镜 → 网页找白模 → 融合生关键帧 → H3 提示词 → 逐镜生视频 → FFmpeg 剪辑。",
         "default_topic": "赛博雨夜街头，主角手持机械伞走过霓虹巷口并回头凝望远处飞船升空，3 镜头短片",
         "steps": [
             {
@@ -198,7 +195,7 @@ BUILTIN_WORKFLOWS: list[dict[str, Any]] = [
                     "role": "character",
                     "asset_files": [],
                     "round_ids": [],
-                    "note": "上传主角人设图（可不传，仅靠白模或纯文生图）",
+                    "note": "上传主角人设图",
                 },
             },
             {
@@ -318,8 +315,8 @@ BUILTIN_WORKFLOWS: list[dict[str, Any]] = [
     {
         "id": "builtin:storyboard-short",
         "builtin": True,
-        "name": "极速多镜故事短片（4 步直出）",
-        "description": "跳过网页找图：人设图 → AI 分镜 → 批量关键帧 → H3 提示词 → 逐镜生视频 → FFmpeg 拼片。",
+        "name": "多镜故事短片",
+        "description": "人设图 → AI 分镜 → 批量关键帧 → H3 提示词 → 逐镜生视频 → FFmpeg 拼片。",
         "default_topic": "清晨海边灯塔，少女推开木窗看到海鸥掠过金色海面，然后沿着礁石阶梯奔向沙滩",
         "steps": [
             {
@@ -428,8 +425,8 @@ BUILTIN_WORKFLOWS: list[dict[str, Any]] = [
     {
         "id": "builtin:multi-shot-concept",
         "builtin": True,
-        "name": "角色多景别设定集（找参考 + 批量出图）",
-        "description": "上传人设图 + 网页找姿态/服装参考 → AI 扩展 4 组景别提示词 → 批量生图（纯图片工作流）。",
+        "name": "角色多景别设定集",
+        "description": "人设图 + 网页参考 → AI 扩展 4 组景别 → 批量生图。",
         "default_topic": "未来机能风女骑士，四套不同光影与机位的人物定妆照",
         "steps": [
             {

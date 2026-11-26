@@ -725,11 +725,11 @@ def validate_image_model(raw: Any) -> str:
 # ── public option catalogue (also served by /api/config) ─────────────────
 
 GPUS = [
-    {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "cu_per_hr": 5.4, "hint": "推荐，性价比最高"},
-    {"id": "H100", "label": "H100 · 80GB", "vram": 80, "cu_per_hr": 12.0, "hint": "最快，适合 FLUX.2 / 视频"},
-    {"id": "G4", "label": "G4 · RTX PRO 6000 96GB", "vram": 96, "cu_per_hr": 14.0, "hint": "超大显存"},
-    {"id": "L4", "label": "L4 · 24GB", "vram": 24, "cu_per_hr": 4.8, "hint": "适合 Q5 量化生图"},
-    {"id": "T4", "label": "T4 · 15GB", "vram": 15, "cu_per_hr": 1.9, "hint": "仅轻量测试"},
+    {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "hint": "推荐，性价比最高"},
+    {"id": "H100", "label": "H100 · 80GB", "vram": 80, "hint": "最快，适合 FLUX.2 / 视频"},
+    {"id": "G4", "label": "G4 · RTX PRO 6000 96GB", "vram": 96, "hint": "超大显存"},
+    {"id": "L4", "label": "L4 · 24GB", "vram": 24, "hint": "适合 Q5 量化生图"},
+    {"id": "T4", "label": "T4 · 15GB", "vram": 15, "hint": "仅轻量测试"},
 ]
 IMAGE_MODELS = [
     {"id": "qwen-2.1-bf16", "label": "Qwen-Image-2.1 · BF16", "hint": "满血 ~33GB，支持参考图改图"},
@@ -742,10 +742,10 @@ VIDEO_WORKFLOWS = [
     {"id": "ref2va", "label": "参考图生视频 + 音频", "needs": ["first"]},
 ]
 VIDEO_OFFLOAD_MODES = [
-    {"id": "auto", "label": "智能自动（推荐）", "hint": "80G/96G 用组件级卸载；40G/24G 自动切逐层 Group Offload"},
-    {"id": "component", "label": "组件级 Offload（H100 / G4 最快）", "hint": "整块组件在显存与内存间切换"},
-    {"id": "group", "label": "逐层 Group Offload（保画质 · 适配 A100 40G / L4 24G）", "hint": "无损 BF16 按 block 异步流预取，自动防爆主机内存"},
-    {"id": "none", "label": "关闭（全常驻显存）", "hint": "仅超大显存机器可用"},
+    {"id": "auto", "label": "自动", "hint": "按显存自动选择组件级或逐层卸载"},
+    {"id": "component", "label": "组件级", "hint": "适合 H100 / G4"},
+    {"id": "group", "label": "逐层", "hint": "无损 BF16，适配 A100 / L4"},
+    {"id": "none", "label": "关闭", "hint": "全常驻显存"},
 ]
 
 

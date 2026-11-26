@@ -536,7 +536,7 @@ _BODY = r"""
     <button type="button" id="wsWorkflow"><i data-i="workflow"></i><span>长视频工作流</span><span class="badge hide" id="wfRunBadge" style="position:static;margin-left:2px"></span></button>
   </nav>
   <span class="chip" id="phaseChip"><span class="dot" id="phaseDot"></span><span class="sv-pill cold" id="svBadge">COLD</span><span id="phaseText">连接中…</span></span>
-  <span class="chip hide hide-sm" id="idleChip" title="Modal / RunPod 式空闲缩容：到期自动释放 Colab 运行时，停止消耗 CU"><i data-i="clock"></i><span id="idleText"></span></span>
+  <span class="chip hide hide-sm" id="idleChip" title="空闲到期自动释放 Colab 运行时"><i data-i="clock"></i><span id="idleText"></span></span>
   <div class="grow"></div>
   <button class="chip" id="colabChip" title="Google Colab 账号与算力"><span class="dot" id="colabDot"></span><span id="colabText" class="hide-sm">Colab</span></button>
   <button class="btn sm danger hide" id="releaseBtn" title="立即释放所有 Colab 运行时，停止消耗 Compute Units"><i data-i="power"></i><span class="hide-sm">释放算力</span></button>
@@ -554,21 +554,21 @@ _BODY = r"""
         <button id="mVideo"><i data-i="video"></i>生视频 + 音频</button>
       </div>
 
-      <div class="preset-bar" title="SwarmUI 风格参数预设：一键保存或载入模型、尺寸、步数、CFG 与 LoRA 组合">
-        <select id="studioPresetSel" aria-label="参数预设"><option value="">⚡ 快速参数预设（点击一键应用）</option></select>
-        <button type="button" class="btn sm" id="saveStudioPresetBtn" title="将当前参数组合保存为预设">存预设</button>
-        <button type="button" class="iconbtn hide" id="delStudioPresetBtn" title="删除选中的自定义预设" style="width:30px;height:30px"><i data-i="trash"></i></button>
+      <div class="preset-bar" title="一键保存或应用参数组合">
+        <select id="studioPresetSel" aria-label="参数预设"><option value="">参数预设</option></select>
+        <button type="button" class="btn sm" id="saveStudioPresetBtn" title="保存当前参数为预设">存预设</button>
+        <button type="button" class="iconbtn hide" id="delStudioPresetBtn" title="删除自定义预设" style="width:30px;height:30px"><i data-i="trash"></i></button>
       </div>
 
       <section class="block" id="modeBlock">
         <div class="bh"><i data-i="layers"></i><span id="modeBlockTitle">引擎与模型</span></div>
         <div id="imageModelWrap">
           <div class="eng-seg" role="tablist" aria-label="生图引擎">
-            <button type="button" id="engDiffusers" class="on">Diffusers（整机）</button>
-            <button type="button" id="engComfy">ComfyUI（三件套）</button>
+            <button type="button" id="engDiffusers" class="on">Diffusers</button>
+            <button type="button" id="engComfy">ComfyUI</button>
           </div>
           <div id="diffusersBox">
-            <label class="f">生图模型（支持任意 HF 仓库 ID）</label>
+            <label class="f">生图模型</label>
             <div class="row">
               <input type="text" id="imageModel" data-p list="modelSuggest" placeholder="填内置名或 owner/repo，如 black-forest-labs/FLUX.1-dev">
               <button class="btn sm" id="saveModelBtn" title="保存到最近使用">保存</button>
@@ -641,17 +641,17 @@ _BODY = r"""
         </div>
 
         <div id="workflowWrap" class="hide">
-          <label class="f">MiniMax-H3 工作流（先选模式，下方自动匹配 3 段 / 6 段提示词）</label>
+          <label class="f">视频工作流</label>
           <div class="chips" id="workflowChips"></div>
         </div>
         <div id="framesWrap" class="hide">
-          <label class="f">时长（24 fps · 用于 H3 时间轴对齐）</label>
+          <label class="f">时长</label>
           <div class="chips" id="frameChips"></div>
         </div>
       </section>
 
       <section class="block" id="refBlock">
-        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴（可多选）</span></div>
+        <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴</span></div>
         <div id="multiRefWrap">
           <div class="ref-grid" id="refGrid"></div>
           <div class="ref-bar hide" id="refBar">
@@ -674,15 +674,15 @@ _BODY = r"""
         <input type="file" id="fileInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <div id="imgRefOpts">
           <label class="switch"><input type="checkbox" id="useRef" data-p><span class="tg"></span>用参考图改图</label>
-          <label class="switch" title="自动以最新作品为参考图，适合连续修改"><input type="checkbox" id="chain" data-p><span class="tg"></span>接着改（自动用最新作品）</label>
+          <label class="switch" title="自动以最新作品为参考图"><input type="checkbox" id="chain" data-p><span class="tg"></span>接着改</label>
         </div>
         <div class="help" id="refHelp"></div>
       </section>
 
       <section class="block" id="promptBlock">
         <div class="bh"><i data-i="sparkles"></i>创意与提示词<span class="hint" id="shortcutHint">Ctrl + Enter 生成</span></div>
-        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 破甲 · 自动适配当前模式</div>
-        <label class="f">一句话想法（破甲 deepseek-flash 看图 / 按 H3 规范改写）</label>
+        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 自动适配当前模式</div>
+        <label class="f">一句话想法</label>
         <div class="row" style="align-items:stretch">
           <textarea id="idea" data-p rows="2" placeholder="例如：雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感"></textarea>
         </div>
@@ -691,17 +691,17 @@ _BODY = r"""
           <span class="dim" style="font-size:12px" id="rewriteHint"></span>
         </div>
         <div class="row" style="justify-content:space-between;margin-top:10px;margin-bottom:5px">
-          <label class="f" style="margin:0">提示词 Prompt <span class="tip-q" title="支持 SwarmUI 风格抽签语法 {选项A|选项B|选项C}，一次生成多张时每张按种子自动抽取不同变体">?</span></label>
+          <label class="f" style="margin:0">提示词 Prompt <span class="tip-q" title="支持 {A|B|C} 抽签语法，多张生成时按种子自动抽取不同变体">?</span></label>
           <div class="row" style="gap:5px">
-            <button type="button" class="wc-pill" id="insertWildcardBtn" title="插入 SwarmUI 风格变体抽签语法">{a|b|c}</button>
-            <button type="button" class="wc-pill" id="promptHistBtn" title="查看并一键恢复最近使用的 15 条提示词">历史</button>
+            <button type="button" class="wc-pill" id="insertWildcardBtn" title="插入变体抽签语法">{a|b|c}</button>
+            <button type="button" class="wc-pill" id="promptHistBtn" title="最近 15 条提示词">历史</button>
           </div>
         </div>
         <div class="hist-pop hide" id="promptHistPop"></div>
-        <textarea id="prompt" data-p placeholder="直接写英文 / 中文提示词，或点上方「AI 改写」；支持 {日落|雨夜|清晨} 批量变体抽签"></textarea>
+        <textarea id="prompt" data-p placeholder="写英文或中文提示词，支持 {日落|雨夜|清晨} 抽签变体"></textarea>
         <div class="counter"><span id="promptCount">0</span> / <span id="promptMax">12000</span></div>
         <details id="negWrap">
-          <summary class="dim" style="cursor:pointer;font-size:12px;margin-top:4px">负面提示词（可选）</summary>
+          <summary class="dim" style="cursor:pointer;font-size:12px;margin-top:4px">负面提示词</summary>
           <textarea id="negative" data-p rows="2" style="margin-top:6px">blurry, lowres, jpeg artifacts, deformed, bad anatomy, watermark, text, logo, signature</textarea>
         </details>
       </section>
@@ -714,8 +714,8 @@ _BODY = r"""
         <div class="row" style="justify-content:space-between;margin:10px 0 5px">
           <label class="f" style="margin:0">画幅比例</label>
           <div class="row" style="gap:4px">
-            <button type="button" class="btn sm ghost" id="swapWH" style="height:24px;padding:0 7px;font-size:11px" title="InvokeAI 风格：一键交换宽和高 (W ↔ H)">W ↔ H</button>
-            <button type="button" class="btn sm ghost" id="optWH" style="height:24px;padding:0 7px;font-size:11px" title="按当前纵横比自动对齐模型最佳推荐像素数（64 的倍数）">最佳像素</button>
+            <button type="button" class="btn sm ghost" id="swapWH" style="height:24px;padding:0 7px;font-size:11px" title="交换宽和高">W ↔ H</button>
+            <button type="button" class="btn sm ghost" id="optWH" style="height:24px;padding:0 7px;font-size:11px" title="按当前比例对齐推荐像素数">最佳像素</button>
           </div>
         </div>
         <div class="chips" id="sizeChips"></div>
@@ -724,26 +724,25 @@ _BODY = r"""
           <div class="row"><span class="dim" style="font-size:11.5px;width:18px">H</span><input type="range" id="heightR" min="512" max="1536" step="64" style="flex:1"><input type="number" id="height" step="64" min="512" max="1536" style="width:74px;text-align:center;padding:5px"></div>
         </div>
 
-        <label class="f">采样步数 <span class="tip-q" title="去噪迭代次数：精细模型通常 28–40 步；Turbo / 蒸馏 LoRA 可降到 4–8 步">?</span> <span class="dim" id="stepsHint"></span></label>
+        <label class="f">采样步数 <span class="tip-q" title="常规 28–40 步；Turbo LoRA 可设 4–8 步">?</span> <span class="dim" id="stepsHint"></span></label>
         <div class="slider"><input type="range" id="stepsR" min="2" max="60"><input type="number" id="steps" min="2" max="60"></div>
-        <label class="f">CFG / 引导强度 <span class="tip-q" title="提示词遵循强度：过高易过饱和/生硬，Turbo 模型通常 1.0，标准 Qwen/H3 推荐 4.5–5.5">?</span></label>
+        <label class="f">CFG <span class="tip-q" title="提示词遵循强度；Turbo 通常 1.0，常规推荐 4.5–5.5">?</span></label>
         <div class="slider"><input type="range" id="cfgR" min="1" max="12" step="0.5"><input type="number" id="cfg" min="1" max="12" step="0.5"></div>
-        <label class="f">种子（-1 = 每次随机）</label>
+        <label class="f">种子</label>
         <div class="row">
-          <input type="number" id="seed" value="-1">
-          <button class="iconbtn" id="seedLast" title="锁定当前/上次作品的种子"><i data-i="lock"></i></button>
-          <button class="iconbtn" id="seedRand" title="随机一个固定种子"><i data-i="dice"></i></button>
-          <button class="iconbtn" id="seedAuto" title="改回 -1（每次随机）"><i data-i="reuse"></i></button>
+          <input type="number" id="seed" value="-1" placeholder="-1 随机">
+          <button class="iconbtn" id="seedLast" title="复用上次种子"><i data-i="lock"></i></button>
+          <button class="iconbtn" id="seedRand" title="随机固定种子"><i data-i="dice"></i></button>
+          <button class="iconbtn" id="seedAuto" title="重置为 -1 随机"><i data-i="reuse"></i></button>
         </div>
         <div id="offloadWrap" class="hide" style="margin-top:8px">
-          <label class="f" style="margin-top:0">显存卸载模式（Offload）<span class="tip-q" title="自动：80G/96G 用组件级卸载（快），40G A100 / 24G L4 自动切逐层 Group Offload（保 BF16 画质并防爆主机内存）">?</span></label>
+          <label class="f" style="margin-top:0">显存卸载 <span class="tip-q" title="自动：80G/96G 走组件级，40G/24G 自动切逐层 Group Offload">?</span></label>
           <select id="offloadMode" data-p>
-            <option value="auto">智能自动（推荐 · 按显存自动选组件/逐层）</option>
-            <option value="component">组件级 Offload（H100 / G4 最快）</option>
-            <option value="group">逐层 Group Offload（保画质 · 适配 A100 40G / L4 24G）</option>
-            <option value="none">关闭（全常驻显存）</option>
+            <option value="auto">自动</option>
+            <option value="component">组件级 · H100 / G4</option>
+            <option value="group">逐层 · A100 / L4 无损 BF16</option>
+            <option value="none">关闭</option>
           </select>
-          <div class="help" id="offloadHint">A100 40G / L4 24G 请选「智能自动」或「逐层 Group Offload」；切模型或释放算力时自动清理临时磁盘缓存。</div>
         </div>
       </section>
 
@@ -839,7 +838,7 @@ _BODY = r"""
           <button class="btn sm" id="aRef" title="设为参考图 / 首帧"><i data-i="image"></i><span class="lbl">设为参考</span></button>
           <button class="btn sm hide" id="aLast" title="设为尾帧"><i data-i="film"></i><span class="lbl">设为尾帧</span></button>
           <button class="btn sm" id="aToVideo" title="以此图为首帧生成视频"><i data-i="video"></i><span class="lbl">做成视频</span></button>
-          <button class="btn sm" id="aCompare" title="SwarmUI / InvokeAI 风格：与其他图片左右滑块对比"><i data-i="compare"></i><span class="lbl">A/B对比</span></button>
+          <button class="btn sm" id="aCompare" title="与其他图片左右滑块对比"><i data-i="compare"></i><span class="lbl">A/B对比</span></button>
           <button class="btn sm" id="aReuse" title="把这次的参数填回左侧"><i data-i="reuse"></i><span class="lbl">复用参数</span></button>
           <a class="btn sm" id="aDown" title="下载 (D)"><i data-i="download"></i><span class="lbl">下载</span></a>
           <button class="btn sm danger" id="aDel" title="删除 (Delete)"><i data-i="trash"></i><span class="lbl">删除</span></button>
@@ -917,7 +916,7 @@ _BODY = r"""
         <button type="button" class="btn sm danger hide" id="wfCancelBtn"><i data-i="stop"></i>终止</button>
       </div>
       <div class="row" style="align-items:stretch">
-        <textarea id="wfTopic" rows="2" placeholder="输入本次长视频主题 / 创意需求（支持在各步骤里用 {{topic}} 引用）" style="min-height:46px"></textarea>
+        <textarea id="wfTopic" rows="2" placeholder="输入长视频主题或创意需求" style="min-height:46px"></textarea>
       </div>
     </div>
     <div class="wf-canvas" id="wfCanvas">
@@ -1123,7 +1122,7 @@ function renderStudioPresets(){
   const builtins = (sp.builtin || []).filter(p => p.mode === S.mode);
   const customs = (S.studioPresets || []).filter(p => p.mode === S.mode);
   const prev = sel.value;
-  let html = '<option value="">⚡ 参数预设（点击一键应用）</option>';
+  let html = '<option value="">参数预设</option>';
   if (customs.length){
     html += '<optgroup label="我的自定义预设">' + customs.map(p => `<option value="${esc(p.id)}">★ ${esc(p.name)} (${p.width}×${p.height} · ${p.steps}步)</option>`).join('') + '</optgroup>';
   }
@@ -1341,7 +1340,7 @@ function renderGpuChips(){
     return `<button type="button" class="gpu-item ${on?'on':''} ${ok?'':'dimmed'}" data-gpu="${g.id}" title="${esc(g.hint + '（点击勾选/取消，按序号轮询）')}">
       <span class="g-radio">${on ? (idx + 1) : ''}</span>
       <span class="g-main">
-        <span class="g-top"><span>${esc(g.id)}</span><span class="g-vram">${g.vram}GB</span>${g.cu_per_hr ? `<span class="g-vram">~${g.cu_per_hr} CU/h</span>` : ''}</span>
+        <span class="g-top"><span>${esc(g.id)}</span><span class="g-vram">${g.vram}GB</span></span>
         <span class="g-sub">${esc(g.hint)}</span>
       </span>
       <span class="gpu-badge ${badgeCls}">${esc(badgeTxt)}</span>
@@ -1495,8 +1494,8 @@ function updateModeUI(){
   $('#drops').classList.toggle('hide', multi);
   $('#dropLast').classList.toggle('hide', !(v && wf === 'fl2va'));
   $('#drops').classList.toggle('two', v && wf === 'fl2va');
-  $('#refTitle').textContent = v ? (wf === 'fl2va' ? '首帧 / 尾帧' : '参考图（多图）') : '参考图（多图）';
-  $('#refHint').textContent = multi ? '点击 / 拖入 / 粘贴（可多选）' : '点击 / 拖入 / 粘贴';
+  $('#refTitle').textContent = v ? (wf === 'fl2va' ? '首帧 / 尾帧' : '参考图') : '参考图';
+  $('#refHint').textContent = '点击 / 拖入 / 粘贴';
   $('#firstTtl').textContent = v ? (wf === 'fl2va' ? '首帧' : '参考图') : '参考图';
   $('#firstTtl').classList.toggle('hide', !(v && wf === 'fl2va'));
   const maxR = (S.refs && S.refs.max) || (S.cfg && S.cfg.limits && S.cfg.limits.refs_max) || 6;
@@ -2401,38 +2400,38 @@ function renderStepConfigHTML(step, idx, steps, run){
     ].join('');
     return `
       <div class="row wrap" style="gap:8px">
-        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}上传本地人设/参考图</button>
+        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}上传本地图片</button>
         <button type="button" class="btn sm" data-wf-pickgal="${sid}" ${dis}>${I('image')}从作品库挑选</button>
-        <span class="dim" style="font-size:11.5px">${esc(cfg.note || '上传的角色图/白模图可在后续生图、视频步骤中被引用')}</span>
+        <span class="dim" style="font-size:11.5px">${esc(cfg.note || '供后续步骤引用的参考图')}</span>
       </div>
-      <div class="wf-thumbs">${thumbs || '<span class="dim" style="font-size:12px">暂未绑定图片（可直接跳过，或点击上方上传人设图）</span>'}</div>`;
+      <div class="wf-thumbs">${thumbs || '<span class="dim" style="font-size:12px">暂未绑定图片</span>'}</div>`;
   }
   if (step.type === 'llm_script'){
     return `
       <div class="g2">
         <div><label class="f" style="margin-top:0">分镜数量</label><input type="number" min="1" max="8" data-wfc="${sid}:scene_count:int" value="${cfg.scene_count ?? 3}" ${dis}></div>
         <div><label class="f" style="margin-top:0">输出格式</label><select data-wfc="${sid}:output_format" ${dis}>
-          <option value="storyboard" ${cfg.output_format!=='text'?'selected':''}>结构化分镜 JSON（推荐）</option>
-          <option value="text" ${cfg.output_format==='text'?'selected':''}>自由文本脚本</option>
+          <option value="storyboard" ${cfg.output_format!=='text'?'selected':''}>结构化分镜 JSON</option>
+          <option value="text" ${cfg.output_format==='text'?'selected':''}>自由文本</option>
         </select></div>
       </div>
-      <label class="f">AI 导演指令（可用 {{topic}}、{{scene_count}}）</label>
+      <label class="f">AI 导演指令</label>
       <textarea rows="3" data-wfc="${sid}:instruction" ${dis}>${esc(cfg.instruction || '')}</textarea>`;
   }
   if (step.type === 'web_asset_fetch'){
     return `
       <div class="g2">
-        <div><label class="f" style="margin-top:0">目标网页 / 图片直链 URL（选填，留空则自动检索图库）</label><input type="text" data-wfc="${sid}:url" value="${esc(cfg.url || '')}" placeholder="https://...（自动拦截内网地址防 SSRF）" ${dis}></div>
-        <div><label class="f" style="margin-top:0">图库检索关键词（支持 {{topic}}）</label><input type="text" data-wfc="${sid}:search_query" value="${esc(cfg.search_query || '')}" placeholder="例如：white clay 3d pose model" ${dis}></div>
+        <div><label class="f" style="margin-top:0">目标网页 URL</label><input type="text" data-wfc="${sid}:url" value="${esc(cfg.url || '')}" placeholder="https://... 留空则自动检索图库" ${dis}></div>
+        <div><label class="f" style="margin-top:0">检索关键词</label><input type="text" data-wfc="${sid}:search_query" value="${esc(cfg.search_query || '')}" placeholder="例如：white clay 3d pose model" ${dis}></div>
       </div>
       <div class="g2">
-        <div><label class="f" style="margin-top:0">自动读取哪一步的分镜检索词</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
-        <div><label class="f" style="margin-top:0">最多下载图片数（1-6）</label><input type="number" min="1" max="6" data-wfc="${sid}:max_images:int" value="${cfg.max_images ?? 2}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">分镜词来源</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">最多下载数</label><input type="number" min="1" max="6" data-wfc="${sid}:max_images:int" value="${cfg.max_images ?? 2}" ${dis}></div>
       </div>
       <div class="row" style="justify-content:space-between;align-items:flex-end;gap:8px">
-        <div style="flex:1"><label class="f">Agent 挑图标准（AI 按此标准筛选最契合的白模/参考图）</label>
+        <div style="flex:1"><label class="f">选图要求</label>
         <input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
-        <button type="button" class="btn sm" data-wf-upload="${sid}" title="网站抓图受限时可直接手动上传白模/参考图并跳过本步" ${dis}>${I('upload')}手动上传白模</button>
+        <button type="button" class="btn sm" data-wf-upload="${sid}" title="手动上传参考图" ${dis}>${I('upload')}手动上传白模</button>
       </div>`;
   }
   if (step.type === 'image_gen'){
@@ -2440,20 +2439,20 @@ function renderStepConfigHTML(step, idx, steps, run){
     const chosenRefs = new Set(cfg.ref_sources || []);
     const refChecks = prevImgSteps.length
       ? prevImgSteps.map(s => `<label class="pchip ${chosenRefs.has(s.id)?'on':''}" style="cursor:pointer"><input type="checkbox" style="display:none" data-wfref="${sid}:${esc(s.id)}" ${chosenRefs.has(s.id)?'checked':''} ${dis}>${chosenRefs.has(s.id)?'✓ ':''}${esc(s.name)}</label>`).join('')
-      : '<span class="dim" style="font-size:12px">上游暂无图片步骤（将纯文生图）</span>';
+      : '<span class="dim" style="font-size:12px">上游暂无图片步骤</span>';
     return `
       <div class="g2">
-        <div><label class="f" style="margin-top:0">分镜来源步骤</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
-        <div><label class="f" style="margin-top:0">生图模型（内置名或 HF repo）</label><input type="text" data-wfc="${sid}:model" value="${esc(cfg.model || 'qwen-2.1-bf16')}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">分镜来源</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">生图模型</label><input type="text" data-wfc="${sid}:model" value="${esc(cfg.model || 'qwen-2.1-bf16')}" ${dis}></div>
       </div>
-      <label class="f">合并哪些上游参考图（如：网页白模图 + 角色人设图）</label>
+      <label class="f">引用上游参考图</label>
       <div class="chips">${refChecks}</div>
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">步数 / CFG</label><div class="row"><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 35}" ${dis}><input type="number" step="0.5" min="1" max="12" data-wfc="${sid}:cfg:float" value="${cfg.cfg ?? 5.0}" ${dis}></div></div>
-        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'A100')===g.id?'selected':''}>${g.id} (${g.vram}GB)</option>`).join('')}</select></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'A100')===g.id?'selected':''}>${g.id} · ${g.vram}GB</option>`).join('')}</select></div>
       </div>
-      <label class="f">关键帧提示词模板（默认取分镜的 {{scene.keyframe_prompt}}）</label>
+      <label class="f">提示词模板</label>
       <input type="text" data-wfc="${sid}:prompt_template" value="${esc(cfg.prompt_template || '{{scene.keyframe_prompt}}')}" ${dis}>`;
   }
   if (step.type === 'h3_prompt'){
@@ -2462,55 +2461,55 @@ function renderStepConfigHTML(step, idx, steps, run){
         <div><label class="f" style="margin-top:0">分镜来源</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">H3 模式</label><select data-wfc="${sid}:workflow" ${dis}>
-          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va（首帧三段式）</option>
-          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va（角色参考六段式）</option>
-          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va（文生视频）</option>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 参考图</option>
+          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va · 文生</option>
         </select></div>
       </div>
       <div class="g2">
-        <div><label class="f" style="margin-top:0">单镜帧数（24fps）</label><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}></div>
-        <div><label class="f" style="margin-top:0">导演补充要求</label><input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">单镜帧数</label><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">补充要求</label><input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
       </div>`;
   }
   if (step.type === 'video_gen'){
     return `
       <div class="g3">
         <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
-        <div><label class="f" style="margin-top:0">H3 提示词来源</label><select data-wfc="${sid}:prompts_from" ${dis}>${upstreamOptions(steps, idx, ['h3_prompt','llm_script'], cfg.prompts_from || '')}</select></div>
-        <div><label class="f" style="margin-top:0">H3 工作流</label><select data-wfc="${sid}:workflow" ${dis}>
-          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va（首帧）</option>
-          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va（多图参考）</option>
-          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va（文生）</option>
+        <div><label class="f" style="margin-top:0">提示词来源</label><select data-wfc="${sid}:prompts_from" ${dis}>${upstreamOptions(steps, idx, ['h3_prompt','llm_script'], cfg.prompts_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">H3 模式</label><select data-wfc="${sid}:workflow" ${dis}>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 参考图</option>
+          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va · 文生</option>
         </select></div>
       </div>
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
-        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${g.id} (${g.vram}GB)</option>`).join('')}</select></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${g.id} · ${g.vram}GB</option>`).join('')}</select></div>
       </div>
-      <div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载模式（A100 40G / L4 24G 可选智能自动或逐层 Group Offload）</label>
+      <div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载</label>
         <select data-wfc="${sid}:offload_mode" ${dis}>
-          <option value="auto" ${(cfg.offload_mode||'auto')==='auto'?'selected':''}>智能自动（80G/96G 组件级，40G/24G 自动逐层）</option>
-          <option value="component" ${cfg.offload_mode==='component'?'selected':''}>组件级 Offload（H100 / G4 最快）</option>
-          <option value="group" ${cfg.offload_mode==='group'?'selected':''}>逐层 Group Offload（保画质 · 适配 40G/24G）</option>
-          <option value="none" ${cfg.offload_mode==='none'?'selected':''}>关闭（全常驻显存）</option>
+          <option value="auto" ${(cfg.offload_mode||'auto')==='auto'?'selected':''}>自动</option>
+          <option value="component" ${cfg.offload_mode==='component'?'selected':''}>组件级 · H100 / G4</option>
+          <option value="group" ${cfg.offload_mode==='group'?'selected':''}>逐层 · A100 / L4 无损 BF16</option>
+          <option value="none" ${cfg.offload_mode==='none'?'selected':''}>关闭</option>
         </select>
       </div>`;
   }
   if (step.type === 'video_stitch'){
     return `
       <div class="g3">
-        <div><label class="f" style="margin-top:0">片段来源步骤</label><select data-wfc="${sid}:clips_from" ${dis}>${upstreamOptions(steps, idx, ['video_gen'], cfg.clips_from || '')}</select></div>
-        <div><label class="f" style="margin-top:0">转场方式</label><select data-wfc="${sid}:transition" ${dis}>
-          <option value="fade" ${cfg.transition!=='cut'?'selected':''}>平滑交叉淡入淡出 (xfade)</option>
-          <option value="cut" ${cfg.transition==='cut'?'selected':''}>直接硬切 (concat)</option>
+        <div><label class="f" style="margin-top:0">片段来源</label><select data-wfc="${sid}:clips_from" ${dis}>${upstreamOptions(steps, idx, ['video_gen'], cfg.clips_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">转场</label><select data-wfc="${sid}:transition" ${dis}>
+          <option value="fade" ${cfg.transition!=='cut'?'selected':''}>交叉淡入淡出</option>
+          <option value="cut" ${cfg.transition==='cut'?'selected':''}>硬切</option>
         </select></div>
-        <div><label class="f" style="margin-top:0">转场时长 (秒)</label><input type="number" step="0.05" min="0.1" max="1.5" data-wfc="${sid}:fade_s:float" value="${cfg.fade_s ?? 0.35}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">转场秒数</label><input type="number" step="0.05" min="0.1" max="1.5" data-wfc="${sid}:fade_s:float" value="${cfg.fade_s ?? 0.35}" ${dis}></div>
       </div>
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">目标宽</label><input type="number" step="16" min="256" max="1920" data-wfc="${sid}:target_width:int" value="${cfg.target_width ?? 1280}" ${dis}></div>
         <div><label class="f" style="margin-top:0">目标高</label><input type="number" step="16" min="256" max="1920" data-wfc="${sid}:target_height:int" value="${cfg.target_height ?? 768}" ${dis}></div>
-        <div><label class="f" style="margin-top:0">手动指定作品 ID（逗号分隔，可覆盖）</label><input type="text" data-wfc="${sid}:clip_round_ids:csv" value="${esc((cfg.clip_round_ids||[]).join(','))}" placeholder="例如 012,013,014" ${dis}></div>
+        <div><label class="f" style="margin-top:0">手动作品 ID</label><input type="text" data-wfc="${sid}:clip_round_ids:csv" value="${esc((cfg.clip_round_ids||[]).join(','))}" placeholder="012,013,014" ${dis}></div>
       </div>`;
   }
   return '';
@@ -2526,7 +2525,7 @@ function renderStepOutputHTML(step, ss, run){
   if (step.type === 'llm_script' && Array.isArray(out.scenes) && out.scenes.length){
     return `<div class="wf-out">
       <div class="row" style="justify-content:space-between">
-        <b style="font-size:12.5px">分镜产出：${esc(out.title || '')}（共 ${out.scenes.length} 镜，可直接编辑后继续）</b>
+        <b style="font-size:12.5px">分镜产出 · ${esc(out.title || '')} · ${out.scenes.length} 镜</b>
         <button type="button" class="btn sm" data-wf-save-scenes="${sid}" ${dis}>保存分镜修改</button>
       </div>
       ${out.style_bible ? `<div class="dim" style="font-size:11.5px">视觉基调：${esc(out.style_bible)}</div>` : ''}
@@ -2544,8 +2543,8 @@ function renderStepOutputHTML(step, ss, run){
   if (step.type === 'web_asset_fetch' && Array.isArray(out.images)){
     return `<div class="wf-out">
       <div class="row" style="justify-content:space-between">
-        <b style="font-size:12.5px">已下载参考图（${out.images.length} 张 · 可删除不满意的或手动补充上传）</b>
-        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}手动补充上传</button>
+        <b style="font-size:12.5px">已下载参考图 · ${out.images.length} 张</b>
+        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}补充上传</button>
       </div>
       <div class="wf-thumbs">
         ${out.images.map(im => `<div class="wf-thumb">
@@ -2568,7 +2567,7 @@ function renderStepOutputHTML(step, ss, run){
   if (step.type === 'h3_prompt' && Array.isArray(out.items) && out.items.length){
     return `<div class="wf-out">
       <div class="row" style="justify-content:space-between">
-        <b style="font-size:12.5px">已生成 MiniMax-H3 视频提示词（${out.items.length} 镜，可编辑后继续）</b>
+        <b style="font-size:12.5px">H3 视频提示词 · ${out.items.length} 镜</b>
         <button type="button" class="btn sm" data-wf-save-h3="${sid}" ${dis}>保存提示词修改</button>
       </div>
       <div class="wf-scenes" data-h3-box="${sid}">
