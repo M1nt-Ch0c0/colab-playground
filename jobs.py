@@ -94,8 +94,125 @@ SESSION_NAME = "colab-studio"
 QUEUE_MAX = 12
 RECENT_MODELS_MAX = 16
 COMFY_PRESETS_MAX = 32
+STUDIO_PRESETS_MAX = 32
 REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 ALLOWED_MODEL_EXTS = frozenset({".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"})
+_WILDCARD_RE = re.compile(r"(?<!\\)\{([^{}]+)\}")
+
+
+def expand_prompt_wildcards(prompt: str, seed: int) -> str:
+    """Expand SwarmUI-style `{option A|option B|option C}` wildcards deterministically per seed.
+
+    Single-option braces without `|` (such as JSON fragments) are left untouched.
+    Escaped `\\{` / `\\}` are unescaped to literal braces.
+    """
+    text = str(prompt or "")
+    if "{" not in text or "|" not in text:
+        return text.replace(r"\{", "{").replace(r"\}", "}")
+    rng = random.Random(int(seed) & 0x7FFFFFFF)
+
+    def _pick(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        if "|" not in inner:
+            return match.group(0)
+        choices = [part.strip() for part in inner.split("|")]
+        non_empty = [c for c in choices if c]
+        if len(choices) < 2 or not non_empty:
+            return match.group(0)
+        return rng.choice(choices)
+
+    expanded = _WILDCARD_RE.sub(_pick, text)
+    return expanded.replace(r"\{", "{").replace(r"\}", "}")
+
+
+STUDIO_BUILTIN_PRESETS = [
+    {
+        "id": "builtin:img-portrait-qwen",
+        "builtin": True,
+        "name": "写实人像 2:3 · Qwen BF16",
+        "mode": "image",
+        "engine": "diffusers",
+        "model": "qwen-2.1-bf16",
+        "gpu": "A100",
+        "width": 768,
+        "height": 1152,
+        "steps": 35,
+        "cfg": 5.0,
+        "hint": "人像/角色立绘默认最佳比例与步数",
+    },
+    {
+        "id": "builtin:img-cinematic-169",
+        "builtin": True,
+        "name": "电影分镜 16:9 · 关键帧",
+        "mode": "image",
+        "engine": "diffusers",
+        "model": "qwen-2.1-bf16",
+        "gpu": "A100",
+        "width": 1280,
+        "height": 768,
+        "steps": 35,
+        "cfg": 5.0,
+        "hint": "对齐 MiniMax-H3 横屏视频比例，出图可直接转首帧",
+    },
+    {
+        "id": "builtin:img-hd-portrait",
+        "builtin": True,
+        "name": "高清精绘 2:3 · 1024×1536",
+        "mode": "image",
+        "engine": "diffusers",
+        "model": "qwen-2.1-bf16",
+        "gpu": "A100",
+        "width": 1024,
+        "height": 1536,
+        "steps": 40,
+        "cfg": 5.0,
+        "hint": "1.57 MP 高细节精绘",
+    },
+    {
+        "id": "builtin:img-flux2-square",
+        "builtin": True,
+        "name": "FLUX.2 [dev] · 1:1 精绘",
+        "mode": "image",
+        "engine": "diffusers",
+        "model": "flux2-dev",
+        "gpu": "H100",
+        "width": 1024,
+        "height": 1024,
+        "steps": 28,
+        "cfg": 3.5,
+        "hint": "32B 满血模型，推荐 H100 / G4",
+    },
+    {
+        "id": "builtin:vid-h3-fl2va-5s",
+        "builtin": True,
+        "name": "H3 首帧动态 · 5.2s 电影感",
+        "mode": "video",
+        "workflow": "fl2va",
+        "gpu": "H100",
+        "width": 1280,
+        "height": 768,
+        "num_frames": 124,
+        "steps": 30,
+        "cfg": 5.0,
+        "auto_offload": True,
+        "hint": "单张关键帧驱动 5.2 秒音画同步镜头",
+    },
+    {
+        "id": "builtin:vid-h3-ref2va-7s",
+        "builtin": True,
+        "name": "H3 多图角色参考 · 7.5s",
+        "mode": "video",
+        "workflow": "ref2va",
+        "gpu": "H100",
+        "width": 1280,
+        "height": 768,
+        "num_frames": 180,
+        "steps": 30,
+        "cfg": 5.0,
+        "auto_offload": True,
+        "hint": "锁定多张人设/场景图保持角色一致性",
+    },
+]
 
 COMFY_TEMPLATES = [
     {
@@ -522,11 +639,11 @@ def validate_image_model(raw: Any) -> str:
 # ── public option catalogue (also served by /api/config) ─────────────────
 
 GPUS = [
-    {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "hint": "推荐，性价比最高"},
-    {"id": "H100", "label": "H100 · 80GB", "vram": 80, "hint": "最快，适合 FLUX.2 / 视频"},
-    {"id": "G4", "label": "G4 · RTX PRO 6000 96GB", "vram": 96, "hint": "超大显存"},
-    {"id": "L4", "label": "L4 · 24GB", "vram": 24, "hint": "适合 Q5 量化生图"},
-    {"id": "T4", "label": "T4 · 15GB", "vram": 15, "hint": "仅轻量测试"},
+    {"id": "A100", "label": "A100 · High-RAM", "vram": 40, "cu_per_hr": 5.4, "hint": "推荐，性价比最高"},
+    {"id": "H100", "label": "H100 · 80GB", "vram": 80, "cu_per_hr": 12.0, "hint": "最快，适合 FLUX.2 / 视频"},
+    {"id": "G4", "label": "G4 · RTX PRO 6000 96GB", "vram": 96, "cu_per_hr": 14.0, "hint": "超大显存"},
+    {"id": "L4", "label": "L4 · 24GB", "vram": 24, "cu_per_hr": 4.8, "hint": "适合 Q5 量化生图"},
+    {"id": "T4", "label": "T4 · 15GB", "vram": 15, "cu_per_hr": 1.9, "hint": "仅轻量测试"},
 ]
 IMAGE_MODELS = [
     {"id": "qwen-2.1-bf16", "label": "Qwen-Image-2.1 · BF16", "hint": "满血 ~33GB，支持参考图改图"},
@@ -741,6 +858,7 @@ class Studio:
         self._job_seq = 0
         self._recent_models: list[str] = []
         self._comfy_presets: list[dict] = []
+        self._studio_presets: list[dict] = []
         self.custom_proxy_path = root / "proxy_custom.txt"
         self._proxy_profile = ""
         self._proxy_last_test: dict | None = None
@@ -1020,6 +1138,101 @@ class Studio:
                 self._save_state_locked()
             return removed, [dict(p) for p in self._comfy_presets]
 
+    # ── SwarmUI-style general studio parameter presets ────────────────
+
+    def studio_presets(self) -> list[dict]:
+        with self._lock:
+            return [dict(p) for p in self._studio_presets]
+
+    def save_studio_preset(self, body: dict) -> tuple[dict, list[dict]]:
+        name = str(body.get("name") or "").strip()
+        if not name or len(name) > 60:
+            raise ValueError("预设名称不能为空且不超过 60 字")
+        mode = "video" if body.get("mode") == "video" else "image"
+        d = DEFAULTS[mode]
+        valid_gpus = {g["id"] for g in GPUS}
+        gpu = str(body.get("gpu") or DEFAULTS["gpu"]).upper().strip()
+        if gpu not in valid_gpus:
+            gpu = DEFAULTS["gpu"]
+        try:
+            width = _snap(_as_int(body.get("width"), d["width"]) or d["width"])
+            height = _snap(_as_int(body.get("height"), d["height"]) or d["height"])
+            steps = int(_clamp(_as_int(body.get("steps"), d["steps"]), LIMITS["steps_min"], LIMITS["steps_max"]))
+            cfg = round(_clamp(_as_float(body.get("cfg"), d["cfg"]), LIMITS["cfg_min"], LIMITS["cfg_max"]), 2)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("预设参数格式不对") from exc
+
+        req_id = str(body.get("id") or "").strip()
+        if req_id.startswith("builtin:"):
+            req_id = ""
+        if req_id and not re.fullmatch(r"sp_[A-Za-z0-9_-]{4,40}", req_id):
+            raise ValueError("无效的预设 ID")
+
+        loras = _normalize_loras_input(body.get("loras"))
+        now = int(time.time())
+        preset_id = req_id or f"sp_{now % 1000000:06d}_{random.randint(1000, 9999)}"
+        entry: dict[str, Any] = {
+            "id": preset_id,
+            "builtin": False,
+            "name": name,
+            "mode": mode,
+            "gpu": gpu,
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "cfg": cfg,
+            "negative": str(body.get("negative") or "")[: LIMITS["negative_max"]],
+            "loras": loras,
+            "hint": str(body.get("hint") or "").strip()[:120],
+            "updated_at": now,
+        }
+        if mode == "video":
+            wf = str(body.get("workflow") or "t2va")
+            entry["workflow"] = wf if wf in {w["id"] for w in VIDEO_WORKFLOWS} else "t2va"
+            try:
+                frames = _as_int(body.get("num_frames"), d["num_frames"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("帧数格式不对") from exc
+            entry["num_frames"] = int(_clamp(frames, LIMITS["frames_min"], LIMITS["frames_max"]))
+            entry["auto_offload"] = bool(body.get("auto_offload", True))
+        else:
+            engine = "comfyui" if str(body.get("engine") or "").strip().lower() == "comfyui" else "diffusers"
+            entry["engine"] = engine
+            if engine == "comfyui" and isinstance(body.get("comfy"), dict) and body["comfy"].get("diffusion"):
+                cfg_c = normalize_comfy_config(body.get("comfy"), body)
+                entry["comfy"] = {
+                    "template": cfg_c["template"],
+                    "clip_type": cfg_c["clip_type"],
+                    "diffusion": cfg_c["diffusion"]["raw"],
+                    "text_encoder": cfg_c["text_encoder"]["raw"],
+                    "vae": cfg_c["vae"]["raw"],
+                    "sampler": cfg_c["sampler"],
+                    "scheduler": cfg_c["scheduler"],
+                    "denoise": cfg_c["denoise"],
+                }
+            else:
+                entry["engine"] = "diffusers"
+                entry["model"] = validate_image_model(body.get("model"))
+        with self._lock:
+            self._studio_presets = [
+                p for p in self._studio_presets
+                if p.get("id") != preset_id and not (p.get("name") == name and p.get("mode") == mode)
+            ]
+            self._studio_presets.insert(0, entry)
+            del self._studio_presets[STUDIO_PRESETS_MAX:]
+            self._save_state_locked()
+            return dict(entry), [dict(p) for p in self._studio_presets]
+
+    def delete_studio_preset(self, preset_id: str) -> tuple[bool, list[dict]]:
+        pid = str(preset_id or "").strip()
+        with self._lock:
+            before = len(self._studio_presets)
+            self._studio_presets = [p for p in self._studio_presets if p.get("id") != pid]
+            removed = len(self._studio_presets) != before
+            if removed:
+                self._save_state_locked()
+            return removed, [dict(p) for p in self._studio_presets]
+
     # ── persistence ───────────────────────────────────────────────────
 
     def _ref_snapshot_path(self, job_id: str, slot: str) -> Path:
@@ -1080,6 +1293,7 @@ class Studio:
                 "proxy_profile": self._proxy_profile,
                 "recent_models": list(self._recent_models),
                 "comfy_presets": list(self._comfy_presets),
+                "studio_presets": list(self._studio_presets),
                 "current": self._serialize_job(self._current) if self._current else None,
                 "queue": [self._serialize_job(j) for j in self._queue],
                 "history": [self._serialize_job(j) for j in self._history],
@@ -1136,6 +1350,14 @@ class Studio:
                     if isinstance(item, dict) and item.get("id") and item.get("name") and item.get("diffusion"):
                         cleaned_cp.append(dict(item))
                 self._comfy_presets = cleaned_cp[:COMFY_PRESETS_MAX]
+
+            saved_sp = data.get("studio_presets")
+            if isinstance(saved_sp, list):
+                cleaned_sp: list[dict] = []
+                for item in saved_sp:
+                    if isinstance(item, dict) and item.get("id") and item.get("name"):
+                        cleaned_sp.append(dict(item))
+                self._studio_presets = cleaned_sp[:STUDIO_PRESETS_MAX]
 
             # Restore history oldest-to-newest so appendleft ends with newest first
             self._history.clear()
@@ -1603,6 +1825,60 @@ class Studio:
                     images.append((f"图{idx}", blob))
         return images
 
+    def call_cpa_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.4,
+        max_tokens: int = 8192,
+        timeout: int = 180,
+    ) -> tuple[str, str]:
+        """Call CPA OpenAI-compatible chat/completions endpoint (bypasses proxy for local/private hosts)."""
+        key = self.secret.get("cpa_api_key") or ""
+        if not key:
+            raise RuntimeError("这台机器还没配置 CPA 密钥")
+        base = (self.secret.get("cpa_base") or "http://127.0.0.1:8317").rstrip("/")
+        model = self.secret.get("cpa_model") or "deepseek-flash"
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        req = urllib.request.Request(
+            base + "/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        )
+        host = urlsplit(base).hostname or ""
+        opener = (
+            urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            if _is_local_or_private_host(host)
+            else None
+        )
+        try:
+            cm = opener.open(req, timeout=timeout) if opener is not None else urllib.request.urlopen(req, timeout=timeout)
+            with cm as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:300]
+            raise RuntimeError(f"CPA {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"连接 CPA 失败：{exc}") from exc
+        try:
+            choice = data["choices"][0]
+            content = choice["message"].get("content")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("CPA 没有返回内容") from exc
+        if isinstance(content, list):
+            content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
+        content = str(content or "").strip()
+        if not content:
+            reason = choice.get("finish_reason") or "empty"
+            raise RuntimeError(f"CPA 返回了空内容（model={model}, finish_reason={reason}）")
+        return content, model
+
     def write_prompt_rich(
         self,
         text: str,
@@ -1613,17 +1889,16 @@ class Studio:
         num_frames: int = 124,
         chain: bool = False,
         has_last_image: bool = False,
+        override_images: list[tuple[str, bytes]] | None = None,
     ) -> dict[str, Any]:
-        key = self.secret.get("cpa_api_key") or ""
-        if not key:
-            raise RuntimeError("这台机器还没配置 CPA 密钥")
-        base = (self.secret.get("cpa_base") or "http://127.0.0.1:8317").rstrip("/")
-        model = self.secret.get("cpa_model") or "deepseek-flash"
         wf = workflow if workflow in {"t2va", "fl2va", "ref2va"} else "t2va"
         frames = int(_clamp(num_frames or DEFAULTS["video"]["num_frames"], LIMITS["frames_min"], LIMITS["frames_max"]))
         duration_s = round(frames / 24.0, 2)
 
-        attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image)
+        if override_images is not None:
+            attached = list(override_images[: LIMITS["refs_max"]])
+        else:
+            attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image)
         eff_refs = len(attached) if attached else max(0, int(ref_count or 0))
 
         if mode == "video":
@@ -1726,47 +2001,18 @@ class Studio:
         else:
             user_content = user_text
 
-        payload = {
-            "model": model,
-            "temperature": 0.4,
-            "max_tokens": 8192,
-            "messages": [
+        raw_content, model = self.call_cpa_chat(
+            [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-        }
-        req = urllib.request.Request(
-            base + "/v1/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+            temperature=0.4,
+            max_tokens=8192,
+            timeout=180,
         )
-        host = urlsplit(base).hostname or ""
-        opener = (
-            urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            if _is_local_or_private_host(host)
-            else None
-        )
-        try:
-            cm = opener.open(req, timeout=180) if opener is not None else urllib.request.urlopen(req, timeout=180)
-            with cm as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")[:300]
-            raise RuntimeError(f"CPA {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise RuntimeError(f"连接 CPA 失败：{exc}") from exc
-        try:
-            choice = data["choices"][0]
-            content = choice["message"].get("content")
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("CPA 没有返回提示词") from exc
-        if isinstance(content, list):
-            content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
-        content = self._clean_prompt_output(content or "")
+        content = self._clean_prompt_output(raw_content)
         if not content:
-            reason = choice.get("finish_reason") or "empty"
-            raise RuntimeError(f"CPA 返回了空提示词（model={model}, finish_reason={reason}）")
+            raise RuntimeError(f"CPA 返回了空提示词（model={model}）")
         content = content[: LIMITS["prompt_max"]]
         self.log(f"已通过 {model} 生成提示词（{fmt_label}，{len(content)} 字）")
         return {
@@ -1894,16 +2140,14 @@ class Studio:
             "stage": job.get("stage"),
             "progress": job.get("progress"),
             "round_id": job.get("round_id"),
+            "boot_s": job.get("boot_s"),
+            "infer_s": job.get("infer_s"),
             "error": job.get("error", ""),
         }
 
     # ── queue API ─────────────────────────────────────────────────────
 
     def enqueue(self, payload: dict) -> list[dict]:
-        count = payload.pop("count", 1)
-        base_seed = payload["seed"]
-        if base_seed is None or base_seed < 0:
-            base_seed = random.randint(0, 2**31 - 2)
         first_ref = last_ref = None
         ref_blobs: list[bytes] = []
         if payload["has_image"] and not payload.get("chain"):
@@ -1919,6 +2163,44 @@ class Studio:
             f = self.ref_file("last")
             last_ref = f.read_bytes() if f.exists() else None
             payload["has_last_image"] = last_ref is not None
+        return self._enqueue_internal(payload, ref_blobs=ref_blobs, last_ref=last_ref)
+
+    def enqueue_with_refs(
+        self,
+        payload: dict,
+        ref_blobs: list[bytes] | None = None,
+        last_ref: bytes | None = None,
+    ) -> list[dict]:
+        """Enqueue a normalized job with explicit image blobs without touching Tab 1/2 user refs."""
+        p = dict(payload)
+        blobs = [b for b in (ref_blobs or []) if b][: LIMITS["refs_max"]]
+        if p["mode"] == "video" and p.get("workflow") == "fl2va":
+            blobs = blobs[:1]
+        if blobs:
+            p["has_image"] = True
+            p["ref_count"] = len(blobs)
+        else:
+            p["has_image"] = False
+            p["ref_count"] = 0
+        if p.get("has_last_image") and last_ref:
+            p["has_last_image"] = True
+        else:
+            p["has_last_image"] = False
+            last_ref = None
+        return self._enqueue_internal(p, ref_blobs=blobs, last_ref=last_ref)
+
+    def _enqueue_internal(
+        self,
+        payload: dict,
+        *,
+        ref_blobs: list[bytes],
+        last_ref: bytes | None,
+    ) -> list[dict]:
+        count = payload.pop("count", 1)
+        base_seed = payload["seed"]
+        if base_seed is None or base_seed < 0:
+            base_seed = random.randint(0, 2**31 - 2)
+        first_ref = ref_blobs[0] if ref_blobs else None
         created = []
         with self._lock:
             if len(self._queue) + count > QUEUE_MAX:
@@ -1927,6 +2209,11 @@ class Studio:
                 self._job_seq += 1
                 p = dict(payload)
                 p["seed"] = (base_seed + i) % (2**31 - 1)
+                orig_prompt = str(p.get("prompt") or "")
+                expanded_prompt = expand_prompt_wildcards(orig_prompt, p["seed"])
+                if expanded_prompt != orig_prompt:
+                    p["prompt_template"] = orig_prompt
+                    p["prompt"] = expanded_prompt[: LIMITS["prompt_max"]]
                 job = {
                     "id": f"j{int(time.time()) % 100000:05d}{self._job_seq:03d}",
                     "payload": p,
@@ -1962,6 +2249,43 @@ class Studio:
             f" × {count}，GPU={pool_txt}{poll_suffix}，{payload['width']}x{payload['height']}，steps={payload['steps']}"
         )
         return created
+
+    def find_job(self, job_id: str) -> dict | None:
+        with self._lock:
+            if self._current and self._current["id"] == job_id:
+                return self._job_public(self._current)
+            for j in self._queue:
+                if j["id"] == job_id:
+                    return self._job_public(j)
+            for j in self._history:
+                if j["id"] == job_id:
+                    return self._job_public(j)
+        return None
+
+    def wait_for_job(
+        self,
+        job_id: str,
+        cancel_check: Callable[[], bool] | None = None,
+        timeout: float = 7200.0,
+    ) -> dict:
+        """Wait until job_id finishes; cancels the job if cancel_check returns True."""
+        deadline = time.time() + max(5.0, float(timeout))
+        while time.time() < deadline:
+            info = self.find_job(job_id)
+            if info is None:
+                return {"id": job_id, "status": "error", "error": "任务已不存在"}
+            if info["status"] in {"done", "error", "canceled"}:
+                return info
+            if cancel_check and cancel_check():
+                if not self.remove_queued(job_id):
+                    with self._lock:
+                        is_cur = self._current is not None and self._current["id"] == job_id
+                    if is_cur:
+                        self.cancel_current(clear_queue=False)
+                time.sleep(0.25)
+                continue
+            time.sleep(0.25)
+        return {"id": job_id, "status": "error", "error": "等待任务超时"}
 
     def remove_queued(self, job_id: str) -> bool:
         with self._lock:
@@ -2164,6 +2488,8 @@ class Studio:
 
             self.set_phase("generating")
             self._stage(job, "generating")
+            t_infer_start = time.time()
+            job["boot_s"] = round(t_infer_start - t0, 1)
             hf_tok = self.colab.get_hf_token(self.secret.get("hf_token") or "")
             rev = self._worker_rev()
             runner_code = (
@@ -2184,6 +2510,8 @@ class Studio:
             self.colab.execute_code(
                 session, runner_code, cancel_check=lambda: self._cancel, idle_timeout=0.0, progress_cb=on_progress
             )
+            t_infer_end = time.time()
+            job["infer_s"] = round(t_infer_end - t_infer_start, 1)
 
             self._stage(job, "downloading")
             video = p["mode"] == "video"
@@ -2201,15 +2529,18 @@ class Studio:
                 thumb = None  # older worker / thumbnail failed: gallery falls back to full media
 
             meta = {k: p.get(k) for k in (
-                "prompt", "negative", "idea", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
+                "prompt", "prompt_template", "negative", "idea", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
                 "cfg", "seed", "num_frames", "loras", "has_image", "has_last_image", "chain",
                 "custom_transformer_repo", "custom_transformer_file", "auto_offload",
+                "workflow_run_id", "workflow_step_id",
             )}
             if video:
                 meta["model"] = "MiniMaxAI/MiniMax-H3"
             meta["chain_from"] = remote.get("chain_from")
             meta["ref_count"] = remote.get("ref_count", 1 if remote.get("has_image") else 0)
             meta["job_id"] = job["id"]
+            meta["boot_s"] = job.get("boot_s")
+            meta["infer_s"] = job.get("infer_s")
             meta["duration_s"] = round(time.time() - t0, 1)
             rid = self.store.save(out, "video" if video else "image", meta, thumb)
             job["round_id"] = rid

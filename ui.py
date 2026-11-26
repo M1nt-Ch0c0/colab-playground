@@ -137,6 +137,83 @@ button.chip{cursor:pointer}button.chip:hover{border-color:var(--line2);color:var
 .btn.solid-danger{border:0;background:#ef4444;color:#fff}
 .btn.solid-danger:hover{background:#dc2626}
 
+/* ── top workspace nav & serverless badge ── */
+.ws-nav{display:inline-flex;gap:3px;padding:3px;border-radius:11px;background:var(--surface2);border:1px solid var(--line)}
+.ws-nav button{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:12.5px;font-weight:650;cursor:pointer;transition:.16s;white-space:nowrap}
+.ws-nav button:hover{color:var(--text);background:var(--card)}
+.ws-nav button.on{background:var(--grad);color:#fff;box-shadow:0 3px 12px rgba(99,102,241,.28)}
+.sv-pill{font-size:10px;font-weight:750;letter-spacing:.4px;padding:1px 6px;border-radius:5px;text-transform:uppercase;border:1px solid transparent}
+.sv-pill.warm{color:var(--badge-run-fg);background:var(--badge-run-bg);border-color:var(--badge-run-bd)}
+.sv-pill.cold{color:var(--dim);background:var(--surface2);border-color:var(--line)}
+.sv-pill.busy{color:var(--fmt-fg);background:var(--fmt-bg);border-color:var(--fmt-bd)}
+.sv-pill.warn{color:var(--badge-warn-fg);background:var(--badge-warn-bg);border-color:var(--badge-warn-bd)}
+.sv-pill.bad{color:var(--badge-bad-fg);background:var(--badge-bad-bg);border-color:var(--badge-bad-bd)}
+.tip-q{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--line2);color:var(--dim);font-size:10px;font-weight:700;cursor:help;margin-left:4px;vertical-align:middle}
+.mp-badge{font-size:11px;color:var(--a2);font-weight:600;background:var(--fmt-bg);border:1px solid var(--fmt-bd);padding:1px 7px;border-radius:6px}
+.preset-bar{display:flex;align-items:center;gap:6px;margin-bottom:10px}
+.preset-bar select{height:32px;padding:4px 8px;font-size:12.5px;flex:1}
+.hist-pop{margin-top:6px;padding:6px;border-radius:10px;border:1px solid var(--line2);background:var(--panel);box-shadow:var(--shadow);max-height:200px;overflow:auto;display:grid;gap:4px}
+.hist-item{text-align:left;padding:6px 8px;border-radius:7px;border:1px solid transparent;background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist-item:hover{border-color:var(--a1);background:var(--pchip-on-bg)}
+.wc-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:6px;font-size:11px;color:var(--muted);background:var(--surface);border:1px dashed var(--line2);cursor:pointer}
+.wc-pill:hover{color:var(--text);border-color:var(--a1)}
+
+/* ── A/B compare slider ── */
+.ab-wrap{position:relative;width:100%;height:min(66vh,560px);background:var(--viewer-bg);border-radius:12px;overflow:hidden;border:1px solid var(--line);user-select:none}
+.ab-wrap img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
+.ab-top{position:absolute;inset:0;overflow:hidden}
+.ab-line{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 10px rgba(0,0,0,.7);pointer-events:none;z-index:3}
+.ab-handle{position:absolute;top:50%;transform:translate(-50%,-50%);width:34px;height:34px;border-radius:50%;background:var(--grad);color:#fff;border:2px solid #fff;display:grid;place-items:center;font-weight:700;font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.45);pointer-events:none;z-index:4}
+.ab-tag{position:absolute;top:10px;z-index:3;padding:3px 9px;border-radius:7px;background:rgba(0,0,0,.68);color:#fff;font-size:12px;font-weight:600}
+.ab-tag.l{left:10px}.ab-tag.r{right:10px}
+.ab-range{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:ew-resize;z-index:5;margin:0}
+
+/* ── Tab 3: Long-Video Workflow Studio ── */
+.wf-layout{flex:1;min-height:0;width:100%;display:grid;grid-template-columns:clamp(270px,22vw,330px) minmax(0,1fr);gap:16px;padding:14px 18px;overflow:hidden}
+.wf-side{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
+.wf-side-scroll{flex:1;min-height:0;overflow:auto;padding:12px}
+.wf-main{height:100%;min-height:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
+.wf-head{flex:none;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);display:grid;gap:10px}
+.wf-canvas{flex:1;min-height:0;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:0}
+.wf-item{width:100%;text-align:left;padding:9px 11px;border-radius:11px;border:1px solid var(--line);background:var(--card);cursor:pointer;transition:.15s;margin-bottom:6px;display:grid;gap:3px}
+.wf-item:hover{border-color:var(--line2);background:var(--card2)}
+.wf-item.on{border-color:var(--pchip-on-bd);background:var(--pchip-on-bg)}
+.wf-item .wt{font-weight:650;font-size:13px;display:flex;align-items:center;gap:6px}
+.wf-item .ws{font-size:11.5px;color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.wf-arrow{display:flex;align-items:center;justify-content:center;height:22px;color:var(--dim);font-size:13px;user-select:none}
+.wf-node{border:1px solid var(--line);border-radius:15px;background:var(--card);overflow:hidden;transition:border-color .15s}
+.wf-node.running{border-color:var(--a2);box-shadow:0 0 0 2px rgba(34,211,238,.2)}
+.wf-node.done{border-color:rgba(16,185,129,.42)}
+.wf-node.error{border-color:rgba(239,68,68,.5)}
+.wf-node.disabled{opacity:.58}
+.wf-nh{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.wf-nb{padding:12px 14px;display:grid;gap:10px}
+.wf-type{font-size:11px;padding:2px 7px;border-radius:6px;background:var(--surface2);color:var(--muted);border:1px solid var(--line);font-weight:600}
+.wf-st{font-size:11px;padding:2px 8px;border-radius:99px;font-weight:600;border:1px solid transparent}
+.wf-st.pending{color:var(--dim);background:var(--surface2);border-color:var(--line)}
+.wf-st.running{color:var(--fmt-fg);background:var(--fmt-bg);border-color:var(--fmt-bd)}
+.wf-st.done{color:var(--badge-run-fg);background:var(--badge-run-bg);border-color:var(--badge-run-bd)}
+.wf-st.paused{color:var(--badge-warn-fg);background:var(--badge-warn-bg);border-color:var(--badge-warn-bd)}
+.wf-st.error,.wf-st.canceled{color:var(--badge-bad-fg);background:var(--badge-bad-bg);border-color:var(--badge-bad-bd)}
+.wf-st.skipped{color:var(--dim);background:var(--surface);border-color:var(--line)}
+.wf-out{border-top:1px dashed var(--line2);padding-top:10px;display:grid;gap:8px}
+.wf-scenes{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.wf-scene{padding:10px;border-radius:11px;border:1px solid var(--line);background:var(--panel);display:grid;gap:6px;font-size:12px}
+.wf-scene input,.wf-scene textarea{font-size:12px;padding:5px 7px;min-height:46px}
+.wf-scene input{min-height:0}
+.wf-thumbs{display:flex;flex-wrap:wrap;gap:8px}
+.wf-thumb{position:relative;width:116px;border-radius:10px;border:1px solid var(--line);background:var(--viewer-bg);overflow:hidden}
+.wf-thumb img,.wf-thumb video{width:100%;height:84px;object-fit:cover;display:block;cursor:pointer}
+.wf-thumb .cap{padding:4px 6px;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--panel)}
+.wf-thumb .rm{position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:6px;border:0;background:rgba(0,0,0,.68);color:#fff;cursor:pointer;display:grid;place-items:center;font-size:12px}
+.wf-thumb .rm:hover{background:#ef4444}
+.wf-pause-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:var(--badge-warn-bg);border:1px solid var(--badge-warn-bd);color:var(--badge-warn-fg);font-size:13px;font-weight:550;margin-bottom:12px}
+.wf-palette{margin-top:14px;padding:12px;border-radius:14px;border:1.5px dashed var(--line2);background:var(--card);display:grid;gap:8px}
+.wf-final-video{width:100%;max-height:380px;border-radius:12px;background:#000;border:1px solid var(--line)}
+.wf-logs{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:8px 12px;background:var(--surface)}
+.wf-logs pre{margin:6px 0 0;max-height:160px;overflow:auto;font:11.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);white-space:pre-wrap}
+@media (max-width:1100px){.wf-layout{grid-template-columns:1fr;overflow:visible;height:auto}.wf-side,.wf-main{height:auto;overflow:visible}.wf-side-scroll,.wf-canvas{overflow:visible}}
+
 /* ── desktop viewport shell layout (zoom-safe, no sticky fly-out) ── */
 .layout{flex:1;min-height:0;width:100%;display:grid;grid-template-columns:clamp(350px,27vw,430px) minmax(0,1fr);gap:16px;padding:14px 18px;overflow:hidden}
 .panel{height:100%;min-height:0;min-width:0;display:flex;flex-direction:column;
@@ -450,8 +527,13 @@ input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;bac
 _BODY = r"""
 <header class="topbar">
   <div class="brand"><div class="logo"><i data-i="sparkles"></i></div>Colab Studio<small id="ver"></small></div>
-  <span class="chip" id="phaseChip"><span class="dot" id="phaseDot"></span><span id="phaseText">连接中…</span></span>
-  <span class="chip hide hide-sm" id="idleChip" title="空闲后自动释放 Colab 运行时"><i data-i="clock"></i><span id="idleText"></span></span>
+  <nav class="ws-nav" aria-label="工作台切换">
+    <button type="button" id="wsImage" class="on"><i data-i="image"></i><span class="hide-sm">生图 / 改图</span></button>
+    <button type="button" id="wsVideo"><i data-i="video"></i><span class="hide-sm">生视频</span></button>
+    <button type="button" id="wsWorkflow"><i data-i="workflow"></i><span>长视频工作流</span><span class="badge hide" id="wfRunBadge" style="position:static;margin-left:2px"></span></button>
+  </nav>
+  <span class="chip" id="phaseChip"><span class="dot" id="phaseDot"></span><span class="sv-pill cold" id="svBadge">COLD</span><span id="phaseText">连接中…</span></span>
+  <span class="chip hide hide-sm" id="idleChip" title="Modal / RunPod 式空闲缩容：到期自动释放 Colab 运行时，停止消耗 CU"><i data-i="clock"></i><span id="idleText"></span></span>
   <div class="grow"></div>
   <button class="chip" id="colabChip" title="Google Colab 账号与算力"><span class="dot" id="colabDot"></span><span id="colabText" class="hide-sm">Colab</span></button>
   <button class="btn sm danger hide" id="releaseBtn" title="立即释放所有 Colab 运行时，停止消耗 Compute Units"><i data-i="power"></i><span class="hide-sm">释放算力</span></button>
@@ -461,12 +543,18 @@ _BODY = r"""
   <a class="iconbtn" href="logout" title="退出登录"><i data-i="logout"></i></a>
 </header>
 
-<div class="layout">
+<div class="layout" id="studioLayout">
   <aside class="panel">
     <div class="panel-scroll">
       <div class="seg">
         <button id="mImage" class="on"><i data-i="image"></i>生图 / 改图</button>
         <button id="mVideo"><i data-i="video"></i>生视频 + 音频</button>
+      </div>
+
+      <div class="preset-bar" title="SwarmUI 风格参数预设：一键保存或载入模型、尺寸、步数、CFG 与 LoRA 组合">
+        <select id="studioPresetSel" aria-label="参数预设"><option value="">⚡ 快速参数预设（点击一键应用）</option></select>
+        <button type="button" class="btn sm" id="saveStudioPresetBtn" title="将当前参数组合保存为预设">存预设</button>
+        <button type="button" class="iconbtn hide" id="delStudioPresetBtn" title="删除选中的自定义预设" style="width:30px;height:30px"><i data-i="trash"></i></button>
       </div>
 
       <section class="block" id="modeBlock">
@@ -599,8 +687,15 @@ _BODY = r"""
           <button class="btn sm" id="rewriteBtn"><i data-i="sparkles"></i>AI 改写为提示词</button>
           <span class="dim" style="font-size:12px" id="rewriteHint"></span>
         </div>
-        <label class="f">提示词 Prompt</label>
-        <textarea id="prompt" data-p placeholder="直接写英文 / 中文提示词，或点上方「AI 改写」生成标准分段提示词"></textarea>
+        <div class="row" style="justify-content:space-between;margin-top:10px;margin-bottom:5px">
+          <label class="f" style="margin:0">提示词 Prompt <span class="tip-q" title="支持 SwarmUI 风格抽签语法 {选项A|选项B|选项C}，一次生成多张时每张按种子自动抽取不同变体">?</span></label>
+          <div class="row" style="gap:5px">
+            <button type="button" class="wc-pill" id="insertWildcardBtn" title="插入 SwarmUI 风格变体抽签语法">{a|b|c}</button>
+            <button type="button" class="wc-pill" id="promptHistBtn" title="查看并一键恢复最近使用的 15 条提示词">历史</button>
+          </div>
+        </div>
+        <div class="hist-pop hide" id="promptHistPop"></div>
+        <textarea id="prompt" data-p placeholder="直接写英文 / 中文提示词，或点上方「AI 改写」；支持 {日落|雨夜|清晨} 批量变体抽签"></textarea>
         <div class="counter"><span id="promptCount">0</span> / <span id="promptMax">12000</span></div>
         <details id="negWrap">
           <summary class="dim" style="cursor:pointer;font-size:12px;margin-top:4px">负面提示词（可选）</summary>
@@ -609,21 +704,31 @@ _BODY = r"""
       </section>
 
       <section class="block">
-        <div class="bh"><i data-i="settings"></i>画幅与采样参数</div>
-        <label class="f">画幅</label>
+        <div class="bh">
+          <i data-i="settings"></i>画幅与采样参数
+          <span class="mp-badge" id="mpBadge" style="margin-left:auto">0.88 MP</span>
+        </div>
+        <div class="row" style="justify-content:space-between;margin:10px 0 5px">
+          <label class="f" style="margin:0">画幅比例</label>
+          <div class="row" style="gap:4px">
+            <button type="button" class="btn sm ghost" id="swapWH" style="height:24px;padding:0 7px;font-size:11px" title="InvokeAI 风格：一键交换宽和高 (W ↔ H)">W ↔ H</button>
+            <button type="button" class="btn sm ghost" id="optWH" style="height:24px;padding:0 7px;font-size:11px" title="按当前纵横比自动对齐模型最佳推荐像素数（64 的倍数）">最佳像素</button>
+          </div>
+        </div>
         <div class="chips" id="sizeChips"></div>
-        <div class="g2" style="margin-top:8px">
-          <div class="row"><span class="dim" style="font-size:12px;width:16px">W</span><input type="number" id="width" step="64" min="512" max="1536"></div>
-          <div class="row"><span class="dim" style="font-size:12px;width:16px">H</span><input type="number" id="height" step="64" min="512" max="1536"></div>
+        <div style="margin-top:8px;display:grid;gap:6px">
+          <div class="row"><span class="dim" style="font-size:11.5px;width:18px">W</span><input type="range" id="widthR" min="512" max="1536" step="64" style="flex:1"><input type="number" id="width" step="64" min="512" max="1536" style="width:74px;text-align:center;padding:5px"></div>
+          <div class="row"><span class="dim" style="font-size:11.5px;width:18px">H</span><input type="range" id="heightR" min="512" max="1536" step="64" style="flex:1"><input type="number" id="height" step="64" min="512" max="1536" style="width:74px;text-align:center;padding:5px"></div>
         </div>
 
-        <label class="f">采样步数 <span class="dim" id="stepsHint"></span></label>
+        <label class="f">采样步数 <span class="tip-q" title="去噪迭代次数：精细模型通常 28–40 步；Turbo / 蒸馏 LoRA 可降到 4–8 步">?</span> <span class="dim" id="stepsHint"></span></label>
         <div class="slider"><input type="range" id="stepsR" min="2" max="60"><input type="number" id="steps" min="2" max="60"></div>
-        <label class="f">CFG / 引导强度</label>
+        <label class="f">CFG / 引导强度 <span class="tip-q" title="提示词遵循强度：过高易过饱和/生硬，Turbo 模型通常 1.0，标准 Qwen/H3 推荐 4.5–5.5">?</span></label>
         <div class="slider"><input type="range" id="cfgR" min="1" max="12" step="0.5"><input type="number" id="cfg" min="1" max="12" step="0.5"></div>
         <label class="f">种子（-1 = 每次随机）</label>
         <div class="row">
           <input type="number" id="seed" value="-1">
+          <button class="iconbtn" id="seedLast" title="锁定当前/上次作品的种子"><i data-i="lock"></i></button>
           <button class="iconbtn" id="seedRand" title="随机一个固定种子"><i data-i="dice"></i></button>
           <button class="iconbtn" id="seedAuto" title="改回 -1（每次随机）"><i data-i="reuse"></i></button>
         </div>
@@ -722,6 +827,7 @@ _BODY = r"""
           <button class="btn sm" id="aRef" title="设为参考图 / 首帧"><i data-i="image"></i><span class="lbl">设为参考</span></button>
           <button class="btn sm hide" id="aLast" title="设为尾帧"><i data-i="film"></i><span class="lbl">设为尾帧</span></button>
           <button class="btn sm" id="aToVideo" title="以此图为首帧生成视频"><i data-i="video"></i><span class="lbl">做成视频</span></button>
+          <button class="btn sm" id="aCompare" title="SwarmUI / InvokeAI 风格：与其他图片左右滑块对比"><i data-i="compare"></i><span class="lbl">A/B对比</span></button>
           <button class="btn sm" id="aReuse" title="把这次的参数填回左侧"><i data-i="reuse"></i><span class="lbl">复用参数</span></button>
           <a class="btn sm" id="aDown" title="下载 (D)"><i data-i="download"></i><span class="lbl">下载</span></a>
           <button class="btn sm danger" id="aDel" title="删除 (Delete)"><i data-i="trash"></i><span class="lbl">删除</span></button>
@@ -757,6 +863,7 @@ _BODY = r"""
           <button class="btn sm ghost" id="selAll">全选当前</button>
           <button class="btn sm ghost" id="selNone">清除选择</button>
           <div class="grow"></div>
+          <button class="btn sm" id="selCompare"><i data-i="compare"></i>对比两图</button>
           <button class="btn sm" id="selStar"><i data-i="star"></i>收藏</button>
           <button class="btn sm" id="selUnstar">取消收藏</button>
           <button class="btn sm danger" id="selDel"><i data-i="trash"></i>删除所选</button>
@@ -768,6 +875,60 @@ _BODY = r"""
       </div>
     </section>
   </main>
+</div>
+
+<div class="wf-layout hide" id="workflowWorkspace">
+  <aside class="wf-side">
+    <div class="wf-side-scroll">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <b style="font-size:14px">工作流模板</b>
+        <button type="button" class="btn sm" id="wfNewBlankBtn">+ 空白流程</button>
+      </div>
+      <div id="wfTemplateList"></div>
+      <div class="row" style="justify-content:space-between;margin:14px 0 8px">
+        <b style="font-size:14px">运行实例</b>
+        <button type="button" class="iconbtn" id="wfRefreshBtn" style="width:26px;height:26px" title="刷新列表"><i data-i="reuse"></i></button>
+      </div>
+      <div id="wfRunList"></div>
+    </div>
+  </aside>
+
+  <section class="wf-main">
+    <div class="wf-head">
+      <div class="row wrap" style="gap:8px">
+        <input type="text" id="wfName" placeholder="工作流名称" style="flex:1;min-width:200px;font-weight:650">
+        <span class="wf-st pending" id="wfStatusPill">草稿</span>
+        <span class="tag" id="wfFfmpegTag" title="用于将多段视频合成为成品长视频">FFmpeg</span>
+        <button type="button" class="btn sm" id="wfSaveTplBtn">存为模板</button>
+        <button type="button" class="btn sm primary" id="wfStartBtn"><i data-i="play"></i>开始运行</button>
+        <button type="button" class="btn sm primary hide" id="wfResumeBtn"><i data-i="play"></i>继续下一步</button>
+        <button type="button" class="btn sm danger hide" id="wfCancelBtn"><i data-i="stop"></i>终止</button>
+      </div>
+      <div class="row" style="align-items:stretch">
+        <textarea id="wfTopic" rows="2" placeholder="输入本次长视频主题 / 创意需求（支持在各步骤里用 {{topic}} 引用）" style="min-height:46px"></textarea>
+      </div>
+    </div>
+    <div class="wf-canvas" id="wfCanvas">
+      <div class="wf-pause-banner hide" id="wfPauseBanner">
+        <i data-i="info"></i>
+        <span id="wfPauseText" style="flex:1"></span>
+        <button type="button" class="btn sm primary" id="wfPauseResumeBtn"><i data-i="play"></i>继续下一步</button>
+      </div>
+      <div id="wfNodes"></div>
+      <div class="wf-palette" id="wfPalette">
+        <div class="row" style="justify-content:space-between">
+          <b style="font-size:12.5px">添加流水线步骤</b>
+          <span class="dim" style="font-size:11.5px">可自由编排每一步让 AI / Agent / 生图 / 视频 / 剪辑做什么</span>
+        </div>
+        <div class="chips" id="wfAddChips"></div>
+      </div>
+      <details class="wf-logs" id="wfLogsBox">
+        <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--muted)">工作流执行日志</summary>
+        <pre id="wfLogsPre"></pre>
+      </details>
+    </div>
+    <input type="file" id="wfAssetInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
+  </section>
 </div>
 
 <div class="logdock hide" id="logDock">
@@ -821,6 +982,12 @@ const P = {
   alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
   sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
   moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
+  workflow:'<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="3" width="6" height="6" rx="1.5"/><rect x="9" y="15" width="6" height="6" rx="1.5"/><path d="M6 9v2a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9M12 13v2"/>',
+  compare:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 2v20M8 10l-2 2 2 2M16 10l2 2-2 2"/>',
+  lock:'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  up:'<path d="m18 15-6-6-6 6"/>',
+  down:'<path d="m6 9 6 6 6-6"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
 };
 const I = (n, c='') => `<svg class="ic ${c}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${P[n]||''}</svg>`;
 function hydrateIcons(root=document){ $$('i[data-i]', root).forEach(el => { el.outerHTML = I(el.dataset.i, el.className); }); }
@@ -880,12 +1047,14 @@ function confirmBox({title, body='', ok='确定', danger=false}){
 
 /* ── state ── */
 const S = {
-  cfg:null, mode:'image', engine:'diffusers', status:null, logSeq:0, logCount:0, galleryRev:-1, gallery:[], stats:{},
+  cfg:null, mode:'image', tab:'image', engine:'diffusers', status:null, logSeq:0, logCount:0, galleryRev:-1, gallery:[], stats:{},
   filter:{kind:'', starred:false, q:''}, page:60, viewing:null, followLatest:true,
   selecting:false, selected:new Set(), lastClicked:null, refs:{}, lastLatestId:null, form:{}, unseenLogs:0,
-  comfyPresets:[], proxy:null, customProxyOpen:false, galleryOpen:false, galleryLoaded:false,
+  comfyPresets:[], studioPresets:[], promptHist:[], proxy:null, customProxyOpen:false, galleryOpen:false, galleryLoaded:false,
+  wfData:null, wfRun:null, wfAssetStep:'',
 };
 const LS_KEY = 'colab-studio.v2';
+const LS_PHIST_KEY = 'colab-studio.prompt-hist.v1';
 const IMAGE_SIZES = [['1:1',1024,1024],['2:3',768,1152],['3:2',1152,768],['3:4',896,1152],['4:3',1152,896],['9:16',768,1344],['16:9',1344,768],['2:3 HD',1024,1536],['3:2 HD',1536,1024]];
 const VIDEO_SIZES = [['16:9 横',1280,768],['9:16 竖',768,1280],['1:1',768,768],['预览',512,768]];
 const FRAMES = [[124,'5 秒'],[175,'7 秒'],[243,'10 秒'],[345,'14 秒']];
@@ -910,7 +1079,80 @@ function applyPerMode(m){
   setNum('width', v.width); setNum('height', v.height); setNum('steps', v.steps); setNum('cfg', v.cfg);
   $('#seed').value = v.seed ?? -1;
 }
-function setNum(id, v){ $('#'+id).value = v; const r = $('#'+id+'R'); if (r) r.value = v; if (id==='width'||id==='height') renderSizeChips(); }
+function setNum(id, v){
+  $('#'+id).value = v;
+  const r = $('#'+id+'R'); if (r) r.value = v;
+  if (id==='width'||id==='height'){ renderSizeChips(); updateResInfo(); }
+}
+function gcd(a,b){ return b ? gcd(b, a % b) : a; }
+function updateResInfo(){
+  const w = +$('#width').value || 768, h = +$('#height').value || 1152;
+  const mp = (w * h / 1e6).toFixed(2);
+  const g = gcd(w, h) || 1;
+  const rw = Math.round(w / g), rh = Math.round(h / g);
+  const ratio = (rw <= 24 && rh <= 24) ? `${rw}:${rh}` : (w / h).toFixed(2);
+  const el = $('#mpBadge');
+  if (el) el.textContent = `${mp} MP · ${ratio}`;
+}
+function loadPromptHistory(){ try { S.promptHist = JSON.parse(localStorage.getItem(LS_PHIST_KEY) || '[]'); } catch { S.promptHist = []; } }
+function pushPromptHistory(p){
+  const t = String(p || '').trim(); if (!t) return;
+  S.promptHist = [t, ...S.promptHist.filter(x => x !== t)].slice(0, 15);
+  try { localStorage.setItem(LS_PHIST_KEY, JSON.stringify(S.promptHist)); } catch {}
+}
+function renderPromptHistory(){
+  const pop = $('#promptHistPop'); if (!pop) return;
+  if (!S.promptHist.length){ pop.innerHTML = '<div class="dim" style="padding:6px;font-size:12px">暂无历史提示词（提交生成后自动记录）</div>'; return; }
+  pop.innerHTML = S.promptHist.map((p, i) => `<button type="button" class="hist-item" data-ph="${i}" title="${esc(p)}">${esc(p.slice(0, 120))}</button>`).join('');
+}
+function renderStudioPresets(){
+  const sel = $('#studioPresetSel'); if (!sel || !S.cfg) return;
+  const sp = S.cfg.studio_presets || {};
+  const builtins = (sp.builtin || []).filter(p => p.mode === S.mode);
+  const customs = (S.studioPresets || []).filter(p => p.mode === S.mode);
+  const prev = sel.value;
+  let html = '<option value="">⚡ 参数预设（点击一键应用）</option>';
+  if (customs.length){
+    html += '<optgroup label="我的自定义预设">' + customs.map(p => `<option value="${esc(p.id)}">★ ${esc(p.name)} (${p.width}×${p.height} · ${p.steps}步)</option>`).join('') + '</optgroup>';
+  }
+  if (builtins.length){
+    html += '<optgroup label="推荐预设">' + builtins.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>';
+  }
+  sel.innerHTML = html;
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  const isCustom = customs.some(p => p.id === sel.value);
+  $('#delStudioPresetBtn').classList.toggle('hide', !isCustom);
+}
+function applyStudioPreset(pid){
+  const sp = (S.cfg && S.cfg.studio_presets) || {};
+  const all = [...(S.studioPresets || []), ...(sp.builtin || [])];
+  const p = all.find(x => x.id === pid);
+  if (!p) return;
+  if (p.mode && p.mode !== S.mode) setMode(p.mode);
+  if (p.mode === 'video'){
+    if (p.workflow){ S.workflow = p.workflow; renderWorkflowChips(); }
+    if (p.num_frames){ S.frames = p.num_frames; renderFrameChips(); }
+    if (p.auto_offload !== undefined) $('#autoOffload').checked = !!p.auto_offload;
+  } else {
+    if (p.engine === 'comfyui' && p.comfy){
+      setEngine('comfyui');
+      applyComfyPreset(p.comfy);
+    } else if (p.model){
+      setEngine('diffusers');
+      $('#imageModel').value = p.model;
+      renderModelOptions();
+    }
+  }
+  if (p.width) setNum('width', p.width);
+  if (p.height) setNum('height', p.height);
+  if (p.steps) setNum('steps', p.steps);
+  if (p.cfg) setNum('cfg', p.cfg);
+  if (p.gpu){ S.gpu = p.gpu; S.gpuPool = [p.gpu]; renderGpuChips(); }
+  if (p.negative !== undefined && p.negative !== '') $('#negative').value = p.negative;
+  if (Array.isArray(p.loras) && p.loras.length){ renderLoraRows(p.loras); $('#loraBlock').open = true; }
+  updateModeUI(); saveForm();
+  toast('已应用预设：' + p.name, 'ok');
+}
 
 /* ── option rendering ── */
 function renderStaticOptions(){
@@ -919,16 +1161,18 @@ function renderStaticOptions(){
   S.recentModels = Array.isArray(c.recent_models) ? c.recent_models.slice() : [];
   const cc = c.comfy || {};
   S.comfyPresets = Array.isArray(cc.presets) ? cc.presets.slice() : [];
+  S.studioPresets = Array.isArray(c.studio_presets && c.studio_presets.custom) ? c.studio_presets.custom.slice() : [];
   S.proxy = c.proxy || null;
   $('#comfyTemplate').innerHTML = (cc.templates || []).map(t => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('');
   $('#comfySampler').innerHTML = (cc.samplers || ['euler']).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   $('#comfyScheduler').innerHTML = (cc.schedulers || ['simple']).map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   renderComfyPresets();
+  renderStudioPresets();
   renderProxyChips();
   renderModelOptions();
   renderGpuChips(); renderWorkflowChips(); renderFrameChips();
   const lim = c.limits;
-  ['width','height'].forEach(id => { $('#'+id).min = lim.size_min; $('#'+id).max = lim.size_max; $('#'+id).step = lim.size_step; });
+  ['width','height','widthR','heightR'].forEach(id => { const el = $('#'+id); if (el){ el.min = lim.size_min; el.max = lim.size_max; el.step = lim.size_step; } });
   ['steps','stepsR'].forEach(id => { $('#'+id).min = lim.steps_min; $('#'+id).max = lim.steps_max; });
   ['cfg','cfgR'].forEach(id => { $('#'+id).min = lim.cfg_min; $('#'+id).max = lim.cfg_max; });
 }
@@ -1084,7 +1328,7 @@ function renderGpuChips(){
     return `<button type="button" class="gpu-item ${on?'on':''} ${ok?'':'dimmed'}" data-gpu="${g.id}" title="${esc(g.hint + '（点击勾选/取消，按序号轮询）')}">
       <span class="g-radio">${on ? (idx + 1) : ''}</span>
       <span class="g-main">
-        <span class="g-top"><span>${esc(g.id)}</span><span class="g-vram">${g.vram}GB</span></span>
+        <span class="g-top"><span>${esc(g.id)}</span><span class="g-vram">${g.vram}GB</span>${g.cu_per_hr ? `<span class="g-vram">~${g.cu_per_hr} CU/h</span>` : ''}</span>
         <span class="g-sub">${esc(g.hint)}</span>
       </span>
       <span class="gpu-badge ${badgeCls}">${esc(badgeTxt)}</span>
@@ -1168,13 +1412,34 @@ function collectLoras(includeEmpty=false){
 }
 function updateLoraHint(){ const n = collectLoras().length; $('#loraHint').textContent = n ? `已启用 ${n} 个` : '未启用'; }
 
-/* ── mode ── */
+/* ── mode & 3-tab workspace ── */
+function setWorkspace(tab, {keep=false}={}){
+  const t = (tab === 'workflow' || tab === 'video') ? tab : 'image';
+  S.tab = t;
+  $('#wsImage').classList.toggle('on', t === 'image');
+  $('#wsVideo').classList.toggle('on', t === 'video');
+  $('#wsWorkflow').classList.toggle('on', t === 'workflow');
+  $('#studioLayout').classList.toggle('hide', t === 'workflow');
+  $('#workflowWorkspace').classList.toggle('hide', t !== 'workflow');
+  if (t === 'workflow'){
+    loadWorkflowData();
+  } else {
+    setMode(t, {keep});
+  }
+}
 function setMode(m, {keep=false}={}){
   if (!keep && S.mode !== m) saveForm();
   S.mode = m;
+  if (S.tab !== 'workflow'){
+    S.tab = m;
+    $('#wsImage').classList.toggle('on', m === 'image');
+    $('#wsVideo').classList.toggle('on', m === 'video');
+    $('#wsWorkflow').classList.remove('on');
+  }
   $('#mImage').classList.toggle('on', m === 'image');
   $('#mVideo').classList.toggle('on', m === 'video');
   if (!keep) applyPerMode(m);
+  renderStudioPresets();
   updateModeUI();
   saveSoon();
 }
@@ -1398,6 +1663,7 @@ async function generate(){
   const b = $('#goBtn'); b.disabled = true;
   try {
     const r = await post('api/generate', p);
+    pushPromptHistory(p.prompt);
     S.followLatest = true;
     toast(r.jobs.length > 1 ? `已加入队列：${r.jobs.length} 个任务` : '任务已提交', 'ok');
     saveForm();
@@ -1424,16 +1690,42 @@ async function refresh(){
   } catch(e){ $('#phaseText').textContent = '连接断开'; $('#phaseDot').className = 'dot bad'; }
   polling = false;
   clearTimeout(pollT);
-  const st = S.status; const busy = st && (st.current || (st.queue||[]).length || st.phase === 'stopping');
-  pollT = setTimeout(refresh, document.hidden ? 10000 : busy || !$('#logDock').classList.contains('hide') ? 1200 : 3500);
+  const st = S.status;
+  const wfBusy = !!(st && st.workflow_active && st.workflow_active.status === 'running');
+  const busy = (st && (st.current || (st.queue||[]).length || st.phase === 'stopping')) || wfBusy;
+  if (S.tab === 'workflow' && S.wfRun && (wfBusy || S.wfRun.status === 'running')){
+    pollActiveWorkflowRun();
+  }
+  pollT = setTimeout(refresh, document.hidden ? 10000 : busy || !$('#logDock').classList.contains('hide') ? 1200 : 5000);
 }
+const SV_STATE = {
+  idle:['COLD','cold','按需冷启动 · 0 CU/h'],
+  starting:['BOOTING','busy','正在拉起 Colab GPU 容器'],
+  ready:['WARM','warm','模型常驻显存 · 0s 冷启'],
+  generating:['RUNNING','busy','正在 GPU 推理'],
+  stopping:['SCALING 0','warn','正在释放实例缩容至 0'],
+  error:['ERROR','bad','最近一次执行异常'],
+};
 function renderStatus(st){
   const [label, cls] = PHASE[st.phase] || [st.phase, ''];
+  const [svTxt, svCls, svTip] = SV_STATE[st.phase] || ['COLD', 'cold', ''];
+  const sv = $('#svBadge');
+  if (sv){ sv.textContent = svTxt; sv.className = 'sv-pill ' + svCls; }
   $('#phaseText').textContent = label + (st.active_gpu ? ' · ' + st.active_gpu : '');
   $('#phaseDot').className = 'dot ' + cls;
-  $('#phaseChip').title = st.error || '';
-  if (st.idle_deadline && !st.current){ $('#idleChip').classList.remove('hide'); $('#idleText').textContent = dur(st.idle_deadline - now()) + ' 后释放'; }
+  $('#phaseChip').title = st.error || svTip;
+  if (st.idle_deadline && !st.current){ $('#idleChip').classList.remove('hide'); $('#idleText').textContent = dur(st.idle_deadline - now()) + ' 后缩容'; }
   else $('#idleChip').classList.add('hide');
+  const wfB = $('#wfRunBadge');
+  if (wfB){
+    const wa = st.workflow_active;
+    if (wa && wa.status === 'running'){
+      wfB.textContent = `${wa.done_steps}/${wa.total_steps}`;
+      wfB.classList.remove('hide');
+    } else {
+      wfB.classList.add('hide');
+    }
+  }
   renderColabChip(st.colab);
   renderGpuChips();
   renderRefs(st.references);
@@ -1444,6 +1736,10 @@ function renderStatus(st){
   if (Array.isArray(st.comfy_presets) && JSON.stringify(st.comfy_presets) !== JSON.stringify(S.comfyPresets || [])){
     S.comfyPresets = st.comfy_presets.slice();
     renderComfyPresets();
+  }
+  if (Array.isArray(st.studio_presets) && JSON.stringify(st.studio_presets) !== JSON.stringify(S.studioPresets || [])){
+    S.studioPresets = st.studio_presets.slice();
+    renderStudioPresets();
   }
   if (st.proxy && JSON.stringify(st.proxy) !== JSON.stringify(S.proxy || null)){
     S.proxy = st.proxy;
@@ -1593,6 +1889,9 @@ function updateSelBar(){
   $('#selBar').classList.toggle('hide', !S.selecting);
   $('#selCount').textContent = `已选 ${S.selected.size}`;
   ['#selStar','#selUnstar','#selDel'].forEach(s => $(s).disabled = !S.selected.size);
+  const selImgs = [...S.selected].filter(id => { const it = S.gallery.find(x => x.id === id); return it && it.kind === 'image'; });
+  const sc = $('#selCompare');
+  if (sc) sc.disabled = selImgs.length < 2;
   $('#selBtn').classList.toggle('hide', S.selecting);
 }
 function onTileClick(e){
@@ -1654,6 +1953,8 @@ function renderStage(){
   $('#aRef').classList.toggle('hide', it.kind !== 'image');
   $('#aLast').classList.toggle('hide', !(it.kind === 'image' && S.mode === 'video' && S.workflow === 'fl2va'));
   $('#aToVideo').classList.toggle('hide', it.kind !== 'image');
+  const aCmp = $('#aCompare');
+  if (aCmp) aCmp.classList.toggle('hide', it.kind !== 'image' || S.gallery.filter(x => x.kind === 'image').length < 2);
   $('#aDown').href = `api/rounds/${it.id}?download=1`;
   $('span', $('#vPrompt')).textContent = it.prompt || '（没有记录提示词）';
   const tags = [];
@@ -1667,7 +1968,13 @@ function renderStage(){
     add('模型', it.model);
   }
   add('工作流', it.workflow); add('尺寸', it.width && `${it.width}×${it.height}`); add('步数', it.steps); add('CFG', it.cfg);
-  add('种子', it.seed); add('帧数', it.num_frames); add('GPU', it.gpu); add('用时', it.duration_s && dur(it.duration_s));
+  add('种子', it.seed); add('帧数', it.num_frames); add('GPU', it.gpu);
+  if (it.boot_s != null && it.infer_s != null){
+    add('冷启 / 推理', `${dur(it.boot_s)} / ${dur(it.infer_s)}`);
+  } else {
+    add('用时', it.duration_s && dur(it.duration_s));
+  }
+  if (it.workflow_run_id) add('流水线', it.workflow_run_id);
   if (it.chain_from) add('接着改自', '#' + +it.chain_from);
   if (it.has_image) add('参考图', it.ref_count > 1 ? `${it.ref_count} 张` : '是');
   (it.loras || []).forEach(l => add('LoRA', `${l.repo_id}${l.weight_name ? ' / ' + l.weight_name.split('/').pop() : ''} ×${l.scale}`));
@@ -1874,6 +2181,469 @@ function lbShow(id){
 }
 function closeLightbox(){ if (LB){ LB.remove(); LB = null; } }
 
+/* ── SwarmUI / InvokeAI A/B Split Compare ── */
+function openCompareModal(idA, idB){
+  const imgs = S.gallery.filter(x => x.kind === 'image');
+  if (imgs.length < 2){ toast('作品库里至少需要 2 张图片才能对比', 'err'); return; }
+  let a = imgs.find(x => x.id === idA) || imgs[0];
+  let b = imgs.find(x => x.id === idB && x.id !== a.id) || imgs.find(x => x.id !== a.id) || imgs[0];
+  const opts = (sel) => imgs.map(it => `<option value="${it.id}" ${it.id===sel?'selected':''}>#${+it.id} · ${esc((it.prompt||'').slice(0,32))}</option>`).join('');
+  const m = modal(`
+    <div class="mh">${I('compare','lg')}<h3>A / B 细节对比</h3><div class="grow"></div><button class="iconbtn" data-close>${I('x')}</button></div>
+    <div class="mb">
+      <div class="g2" style="margin-bottom:10px">
+        <div><label class="f" style="margin-top:0">左侧图 A</label><select id="abSelA">${opts(a.id)}</select></div>
+        <div><label class="f" style="margin-top:0">右侧图 B</label><select id="abSelB">${opts(b.id)}</select></div>
+      </div>
+      <div class="ab-wrap" id="abWrap">
+        <img id="abImgB" src="${mediaUrl(b)}" alt="">
+        <div class="ab-top" id="abTop" style="clip-path:inset(0 50% 0 0)"><img id="abImgA" src="${mediaUrl(a)}" alt=""></div>
+        <div class="ab-line" id="abLine" style="left:50%"></div>
+        <div class="ab-handle" id="abHandle" style="left:50%">⇄</div>
+        <span class="ab-tag l" id="abTagA">A #${+a.id}</span>
+        <span class="ab-tag r" id="abTagB">B #${+b.id}</span>
+        <input type="range" class="ab-range" id="abRange" min="0" max="100" value="50">
+      </div>
+      <div class="g2" style="margin-top:10px;font-size:12px;color:var(--muted)" id="abMeta"></div>
+    </div>`, {wide:true});
+  const el = m.el;
+  const sync = () => {
+    const itA = imgs.find(x => x.id === $('#abSelA', el).value) || a;
+    const itB = imgs.find(x => x.id === $('#abSelB', el).value) || b;
+    $('#abImgA', el).src = mediaUrl(itA); $('#abImgB', el).src = mediaUrl(itB);
+    $('#abTagA', el).textContent = `A #${+itA.id}`; $('#abTagB', el).textContent = `B #${+itB.id}`;
+    $('#abMeta', el).innerHTML =
+      `<div><b>A #${+itA.id}</b> · ${esc(itA.model||'')} · ${itA.width||'?'}×${itA.height||'?'} · steps ${itA.steps||'?'} · seed ${itA.seed??'-'}</div>` +
+      `<div><b>B #${+itB.id}</b> · ${esc(itB.model||'')} · ${itB.width||'?'}×${itB.height||'?'} · steps ${itB.steps||'?'} · seed ${itB.seed??'-'}</div>`;
+  };
+  const setPos = (v) => {
+    const pct = Math.max(0, Math.min(100, +v));
+    $('#abTop', el).style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+    $('#abLine', el).style.left = pct + '%';
+    $('#abHandle', el).style.left = pct + '%';
+  };
+  $('#abRange', el).addEventListener('input', e => setPos(e.target.value));
+  $('#abSelA', el).addEventListener('change', sync);
+  $('#abSelB', el).addEventListener('change', sync);
+  sync();
+}
+
+/* ── Tab 3: Composable Long-Video Workflow Studio ── */
+const WF_STATUS_ZH = {
+  draft:'草稿', pending:'待执行', running:'运行中', paused:'等待审核', done:'已完成', error:'失败', canceled:'已终止', skipped:'已跳过'
+};
+let wfSaveTimer = null;
+
+async function loadWorkflowData({keepRun=true}={}){
+  try {
+    const data = await api('api/workflows');
+    S.wfData = data;
+    renderWorkflowSidebar();
+    renderWorkflowAddChips();
+    const ff = $('#wfFfmpegTag');
+    if (ff){
+      ff.innerHTML = data.ffmpeg_available ? 'FFmpeg <b style="color:var(--ok)">就绪</b>' : 'FFmpeg <b style="color:var(--warn)">未安装</b>';
+    }
+    if (keepRun && S.wfRun){
+      const fresh = await api('api/workflows/runs/' + encodeURIComponent(S.wfRun.id)).catch(() => null);
+      if (fresh && fresh.run){ S.wfRun = fresh.run; renderWorkflowCanvas(); return; }
+    }
+    if (data.runs && data.runs.length){
+      await selectWorkflowRun(data.runs[0].id);
+    } else {
+      await createRunFromTemplate('builtin:agent-long-video');
+    }
+  } catch(e){ toast('加载工作流失败：' + e.message, 'err'); }
+}
+async function pollActiveWorkflowRun(){
+  if (!S.wfRun) return;
+  try {
+    const r = await api('api/workflows/runs/' + encodeURIComponent(S.wfRun.id));
+    if (r && r.run){
+      const prevStatus = S.wfRun.status;
+      S.wfRun = r.run;
+      renderWorkflowCanvas({preserveInputs: true});
+      if (prevStatus === 'running' && r.run.status !== 'running'){
+        const d = await api('api/workflows');
+        S.wfData = d;
+        renderWorkflowSidebar();
+        if (r.run.status === 'done') toast('工作流执行完成！成片已存入作品库', 'ok');
+        else if (r.run.status === 'paused') toast(r.run.pause_reason || '工作流已暂停，请审核后继续', '');
+        else if (r.run.status === 'error') toast(r.run.error || '工作流执行失败', 'err');
+      }
+    }
+  } catch {}
+}
+async function selectWorkflowRun(runId){
+  try {
+    const r = await api('api/workflows/runs/' + encodeURIComponent(runId));
+    S.wfRun = r.run;
+    renderWorkflowSidebar();
+    renderWorkflowCanvas();
+  } catch(e){ toast(e.message, 'err'); }
+}
+async function createRunFromTemplate(wfId){
+  try {
+    const r = await post('api/workflows/runs', {workflow_id: wfId});
+    S.wfRun = r.run;
+    S.wfData = await api('api/workflows');
+    renderWorkflowSidebar();
+    renderWorkflowCanvas();
+    toast('已创建工作流实例：' + r.run.workflow.name, 'ok');
+  } catch(e){ toast(e.message, 'err'); }
+}
+async function createBlankWorkflowRun(){
+  try {
+    const r = await post('api/workflows/runs', {
+      topic: '',
+      workflow: {
+        name: '我的自定义长视频流水线',
+        description: '自由组合 AI 策划、网页找图、生图、H3 视频与 FFmpeg 剪辑',
+        steps: [
+          {id:'script', type:'llm_script', name:'1. AI 分镜脚本', enabled:true, pause_after:true, config:{scene_count:3, output_format:'storyboard'}},
+          {id:'keyframes', type:'image_gen', name:'2. 关键帧生图', enabled:true, pause_after:true, config:{scenes_from:'script', ref_sources:[]}},
+        ],
+      },
+    });
+    S.wfRun = r.run;
+    S.wfData = await api('api/workflows');
+    renderWorkflowSidebar();
+    renderWorkflowCanvas();
+    toast('已创建空白工作流，可自由添加或删除步骤', 'ok');
+  } catch(e){ toast(e.message, 'err'); }
+}
+function renderWorkflowSidebar(){
+  const d = S.wfData; if (!d) return;
+  const allTpls = [...(d.builtin || []), ...(d.custom || [])];
+  $('#wfTemplateList').innerHTML = allTpls.map(t => `
+    <div class="wf-item" data-wftpl="${esc(t.id)}">
+      <div class="wt">
+        <span style="flex:1">${esc(t.name)}</span>
+        ${t.builtin ? '<span class="fmt-pill">内置</span>' : `<span class="rm" data-del-wftpl="${esc(t.id)}" title="删除模板" style="cursor:pointer;padding:0 4px">×</span>`}
+      </div>
+      <div class="ws">${esc(t.description || '')}</div>
+      <div class="dim" style="font-size:11px">${(t.steps||[]).length} 个步骤 · 点击新建实例</div>
+    </div>`).join('');
+  const runs = d.runs || [];
+  $('#wfRunList').innerHTML = runs.length ? runs.map(r => `
+    <div class="wf-item ${S.wfRun && S.wfRun.id === r.id ? 'on' : ''}" data-wfrun="${esc(r.id)}">
+      <div class="wt">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.workflow_name || r.id)}</span>
+        <span class="wf-st ${esc(r.status)}">${esc(WF_STATUS_ZH[r.status] || r.status)}</span>
+        <span data-del-wfrun="${esc(r.id)}" title="删除记录" style="cursor:pointer;padding:0 3px;color:var(--dim)">×</span>
+      </div>
+      <div class="ws">${esc(r.topic || '（未填主题）')}</div>
+      <div class="dim" style="font-size:11px">${r.done_steps}/${r.total_steps} 步${r.final_round_id ? ' · 成片 #' + +r.final_round_id : ''} · ${ago(r.updated_at || r.created_at)}</div>
+    </div>`).join('') : '<div class="dim" style="font-size:12px;padding:8px">暂无运行记录</div>';
+}
+function renderWorkflowAddChips(){
+  const cat = (S.wfData && S.wfData.step_catalog) || (S.cfg && S.cfg.workflow_step_catalog) || [];
+  $('#wfAddChips').innerHTML = cat.map(s =>
+    `<button type="button" class="pchip" data-wfadd="${esc(s.type)}" title="${esc(s.hint)}">${esc(s.icon)} + ${esc(s.label)}</button>`
+  ).join('');
+}
+function saveWorkflowRunSoon(){
+  clearTimeout(wfSaveTimer);
+  wfSaveTimer = setTimeout(saveWorkflowRunNow, 450);
+}
+async function saveWorkflowRunNow(){
+  if (!S.wfRun || S.wfRun.status === 'running') return;
+  try {
+    const r = await api('api/workflows/runs/' + encodeURIComponent(S.wfRun.id), {
+      method:'PATCH',
+      json:{topic: S.wfRun.topic, workflow: S.wfRun.workflow},
+    });
+    if (r && r.run){ S.wfRun = r.run; }
+  } catch(e){ toast('保存配置失败：' + e.message, 'err'); }
+}
+function stepCatalogFor(type){
+  const cat = (S.wfData && S.wfData.step_catalog) || (S.cfg && S.cfg.workflow_step_catalog) || [];
+  return cat.find(x => x.type === type) || {label:type, icon:'⚙', hint:''};
+}
+function upstreamOptions(steps, curIdx, types, selectedVal){
+  const prev = steps.slice(0, curIdx).filter(s => !types || types.includes(s.type));
+  return '<option value="">（无 / 手动）</option>' + prev.map(s =>
+    `<option value="${esc(s.id)}" ${s.id === selectedVal ? 'selected' : ''}>${esc(s.name)} (${esc(s.id)})</option>`
+  ).join('');
+}
+function renderStepConfigHTML(step, idx, steps, run){
+  const cfg = step.config || {};
+  const dis = run.status === 'running' ? 'disabled' : '';
+  const sid = esc(step.id);
+  if (step.type === 'asset_input'){
+    const files = cfg.asset_files || [];
+    const rids = cfg.round_ids || [];
+    const thumbs = [
+      ...files.map(fn => `<div class="wf-thumb"><img src="api/workflows/runs/${esc(run.id)}/assets/${encodeURIComponent(fn)}" alt=""><button type="button" class="rm" data-wf-rmasset="${esc(fn)}" title="删除" ${dis}>×</button><div class="cap">${esc(fn)}</div></div>`),
+      ...rids.map(rid => `<div class="wf-thumb"><img src="api/rounds/${esc(rid)}" alt=""><button type="button" class="rm" data-wf-rmround="${sid}:${esc(rid)}" title="移除" ${dis}>×</button><div class="cap">作品 #${+rid}</div></div>`),
+    ].join('');
+    return `
+      <div class="row wrap" style="gap:8px">
+        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}上传本地人设/参考图</button>
+        <button type="button" class="btn sm" data-wf-pickgal="${sid}" ${dis}>${I('image')}从作品库挑选</button>
+        <span class="dim" style="font-size:11.5px">${esc(cfg.note || '上传的角色图/白模图可在后续生图、视频步骤中被引用')}</span>
+      </div>
+      <div class="wf-thumbs">${thumbs || '<span class="dim" style="font-size:12px">暂未绑定图片（可直接跳过，或点击上方上传人设图）</span>'}</div>`;
+  }
+  if (step.type === 'llm_script'){
+    return `
+      <div class="g2">
+        <div><label class="f" style="margin-top:0">分镜数量</label><input type="number" min="1" max="8" data-wfc="${sid}:scene_count:int" value="${cfg.scene_count ?? 3}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">输出格式</label><select data-wfc="${sid}:output_format" ${dis}>
+          <option value="storyboard" ${cfg.output_format!=='text'?'selected':''}>结构化分镜 JSON（推荐）</option>
+          <option value="text" ${cfg.output_format==='text'?'selected':''}>自由文本脚本</option>
+        </select></div>
+      </div>
+      <label class="f">AI 导演指令（可用 {{topic}}、{{scene_count}}）</label>
+      <textarea rows="3" data-wfc="${sid}:instruction" ${dis}>${esc(cfg.instruction || '')}</textarea>`;
+  }
+  if (step.type === 'web_asset_fetch'){
+    return `
+      <div class="g2">
+        <div><label class="f" style="margin-top:0">目标网页 / 图片直链 URL（选填，留空则自动检索图库）</label><input type="text" data-wfc="${sid}:url" value="${esc(cfg.url || '')}" placeholder="https://...（自动拦截内网地址防 SSRF）" ${dis}></div>
+        <div><label class="f" style="margin-top:0">图库检索关键词（支持 {{topic}}）</label><input type="text" data-wfc="${sid}:search_query" value="${esc(cfg.search_query || '')}" placeholder="例如：white clay 3d pose model" ${dis}></div>
+      </div>
+      <div class="g2">
+        <div><label class="f" style="margin-top:0">自动读取哪一步的分镜检索词</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">最多下载图片数（1-6）</label><input type="number" min="1" max="6" data-wfc="${sid}:max_images:int" value="${cfg.max_images ?? 2}" ${dis}></div>
+      </div>
+      <div class="row" style="justify-content:space-between;align-items:flex-end;gap:8px">
+        <div style="flex:1"><label class="f">Agent 挑图标准（AI 按此标准筛选最契合的白模/参考图）</label>
+        <input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
+        <button type="button" class="btn sm" data-wf-upload="${sid}" title="网站抓图受限时可直接手动上传白模/参考图并跳过本步" ${dis}>${I('upload')}手动上传白模</button>
+      </div>`;
+  }
+  if (step.type === 'image_gen'){
+    const prevImgSteps = steps.slice(0, idx).filter(s => ['asset_input','web_asset_fetch','image_gen'].includes(s.type));
+    const chosenRefs = new Set(cfg.ref_sources || []);
+    const refChecks = prevImgSteps.length
+      ? prevImgSteps.map(s => `<label class="pchip ${chosenRefs.has(s.id)?'on':''}" style="cursor:pointer"><input type="checkbox" style="display:none" data-wfref="${sid}:${esc(s.id)}" ${chosenRefs.has(s.id)?'checked':''} ${dis}>${chosenRefs.has(s.id)?'✓ ':''}${esc(s.name)}</label>`).join('')
+      : '<span class="dim" style="font-size:12px">上游暂无图片步骤（将纯文生图）</span>';
+    return `
+      <div class="g2">
+        <div><label class="f" style="margin-top:0">分镜来源步骤</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">生图模型（内置名或 HF repo）</label><input type="text" data-wfc="${sid}:model" value="${esc(cfg.model || 'qwen-2.1-bf16')}" ${dis}></div>
+      </div>
+      <label class="f">合并哪些上游参考图（如：网页白模图 + 角色人设图）</label>
+      <div class="chips">${refChecks}</div>
+      <div class="g3" style="margin-top:6px">
+        <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
+        <div><label class="f" style="margin-top:0">步数 / CFG</label><div class="row"><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 35}" ${dis}><input type="number" step="0.5" min="1" max="12" data-wfc="${sid}:cfg:float" value="${cfg.cfg ?? 5.0}" ${dis}></div></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'A100')===g.id?'selected':''}>${g.id} (${g.vram}GB)</option>`).join('')}</select></div>
+      </div>
+      <label class="f">关键帧提示词模板（默认取分镜的 {{scene.keyframe_prompt}}）</label>
+      <input type="text" data-wfc="${sid}:prompt_template" value="${esc(cfg.prompt_template || '{{scene.keyframe_prompt}}')}" ${dis}>`;
+  }
+  if (step.type === 'h3_prompt'){
+    return `
+      <div class="g3">
+        <div><label class="f" style="margin-top:0">分镜来源</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">H3 模式</label><select data-wfc="${sid}:workflow" ${dis}>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va（首帧三段式）</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va（角色参考六段式）</option>
+          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va（文生视频）</option>
+        </select></div>
+      </div>
+      <div class="g2">
+        <div><label class="f" style="margin-top:0">单镜帧数（24fps）</label><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">导演补充要求</label><input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
+      </div>`;
+  }
+  if (step.type === 'video_gen'){
+    return `
+      <div class="g3">
+        <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">H3 提示词来源</label><select data-wfc="${sid}:prompts_from" ${dis}>${upstreamOptions(steps, idx, ['h3_prompt','llm_script'], cfg.prompts_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">H3 工作流</label><select data-wfc="${sid}:workflow" ${dis}>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va（首帧）</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va（多图参考）</option>
+          <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va（文生）</option>
+        </select></div>
+      </div>
+      <div class="g3" style="margin-top:6px">
+        <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
+        <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
+        <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${g.id} (${g.vram}GB)</option>`).join('')}</select></div>
+      </div>`;
+  }
+  if (step.type === 'video_stitch'){
+    return `
+      <div class="g3">
+        <div><label class="f" style="margin-top:0">片段来源步骤</label><select data-wfc="${sid}:clips_from" ${dis}>${upstreamOptions(steps, idx, ['video_gen'], cfg.clips_from || '')}</select></div>
+        <div><label class="f" style="margin-top:0">转场方式</label><select data-wfc="${sid}:transition" ${dis}>
+          <option value="fade" ${cfg.transition!=='cut'?'selected':''}>平滑交叉淡入淡出 (xfade)</option>
+          <option value="cut" ${cfg.transition==='cut'?'selected':''}>直接硬切 (concat)</option>
+        </select></div>
+        <div><label class="f" style="margin-top:0">转场时长 (秒)</label><input type="number" step="0.05" min="0.1" max="1.5" data-wfc="${sid}:fade_s:float" value="${cfg.fade_s ?? 0.35}" ${dis}></div>
+      </div>
+      <div class="g3" style="margin-top:6px">
+        <div><label class="f" style="margin-top:0">目标宽</label><input type="number" step="16" min="256" max="1920" data-wfc="${sid}:target_width:int" value="${cfg.target_width ?? 1280}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">目标高</label><input type="number" step="16" min="256" max="1920" data-wfc="${sid}:target_height:int" value="${cfg.target_height ?? 768}" ${dis}></div>
+        <div><label class="f" style="margin-top:0">手动指定作品 ID（逗号分隔，可覆盖）</label><input type="text" data-wfc="${sid}:clip_round_ids:csv" value="${esc((cfg.clip_round_ids||[]).join(','))}" placeholder="例如 012,013,014" ${dis}></div>
+      </div>`;
+  }
+  return '';
+}
+function renderStepOutputHTML(step, ss, run){
+  const out = (ss && ss.output) || {};
+  const dis = run.status === 'running' ? 'disabled' : '';
+  const sid = esc(step.id);
+  if (ss && ss.error){
+    return `<div class="wf-out"><div class="warnbox" style="margin-top:0">${I('alert')}<div>${esc(ss.error)}</div></div></div>`;
+  }
+  if (!out || !Object.keys(out).length) return '';
+  if (step.type === 'llm_script' && Array.isArray(out.scenes) && out.scenes.length){
+    return `<div class="wf-out">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:12.5px">分镜产出：${esc(out.title || '')}（共 ${out.scenes.length} 镜，可直接编辑后继续）</b>
+        <button type="button" class="btn sm" data-wf-save-scenes="${sid}" ${dis}>保存分镜修改</button>
+      </div>
+      ${out.style_bible ? `<div class="dim" style="font-size:11.5px">视觉基调：${esc(out.style_bible)}</div>` : ''}
+      <div class="wf-scenes" data-scenes-box="${sid}">
+        ${out.scenes.map((sc, i) => `<div class="wf-scene" data-sc-idx="${i}">
+          <b>镜头 #${sc.index || i + 1}</b>
+          <input type="text" data-sf="title" value="${esc(sc.title || '')}" placeholder="镜头标题" ${dis}>
+          <input type="text" data-sf="search_query" value="${esc(sc.search_query || '')}" placeholder="网页找图关键词" ${dis}>
+          <textarea data-sf="keyframe_prompt" placeholder="关键帧生图提示词" ${dis}>${esc(sc.keyframe_prompt || '')}</textarea>
+          <textarea data-sf="video_prompt" placeholder="视频动作与运镜" ${dis}>${esc(sc.video_prompt || '')}</textarea>
+          <input type="text" data-sf="audio_notes" value="${esc(sc.audio_notes || '')}" placeholder="声音与环境音" ${dis}>
+        </div>`).join('')}
+      </div></div>`;
+  }
+  if (step.type === 'web_asset_fetch' && Array.isArray(out.images)){
+    return `<div class="wf-out">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:12.5px">已下载参考图（${out.images.length} 张 · 可删除不满意的或手动补充上传）</b>
+        <button type="button" class="btn sm" data-wf-upload="${sid}" ${dis}>${I('upload')}手动补充上传</button>
+      </div>
+      <div class="wf-thumbs">
+        ${out.images.map(im => `<div class="wf-thumb">
+          <img src="api/workflows/runs/${esc(run.id)}/assets/${encodeURIComponent(im.filename)}" alt="" title="${esc(im.title || '')}">
+          <button type="button" class="rm" data-wf-rmasset="${esc(im.filename)}" title="删除此图" ${dis}>×</button>
+          <div class="cap" title="${esc(im.title || im.source_url || '')}">${esc(im.title || im.filename)}</div>
+        </div>`).join('')}
+      </div></div>`;
+  }
+  if (step.type === 'image_gen' && Array.isArray(out.items) && out.items.length){
+    return `<div class="wf-out">
+      <b style="font-size:12.5px">已生成关键帧（${out.items.length} 张）</b>
+      <div class="wf-thumbs">
+        ${out.items.map(it => `<div class="wf-thumb" data-wf-viewround="${esc(it.round_id)}">
+          <img src="api/rounds/${esc(it.round_id)}" alt="">
+          <div class="cap">#${+it.round_id} · ${esc(it.title || '')}</div>
+        </div>`).join('')}
+      </div></div>`;
+  }
+  if (step.type === 'h3_prompt' && Array.isArray(out.items) && out.items.length){
+    return `<div class="wf-out">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:12.5px">已生成 MiniMax-H3 视频提示词（${out.items.length} 镜，可编辑后继续）</b>
+        <button type="button" class="btn sm" data-wf-save-h3="${sid}" ${dis}>保存提示词修改</button>
+      </div>
+      <div class="wf-scenes" data-h3-box="${sid}">
+        ${out.items.map((it, i) => `<div class="wf-scene" data-h3-idx="${i}">
+          <b>镜头 #${it.scene_index || i + 1} · ${esc(it.title || '')} ${it.keyframe_round_id ? `(首帧 #${+it.keyframe_round_id})` : ''}</b>
+          <textarea style="min-height:110px" data-h3f="video_prompt" ${dis}>${esc(it.video_prompt || '')}</textarea>
+        </div>`).join('')}
+      </div></div>`;
+  }
+  if (step.type === 'video_gen' && Array.isArray(out.items) && out.items.length){
+    return `<div class="wf-out">
+      <b style="font-size:12.5px">已生成视频片段（${out.items.length} 段）</b>
+      <div class="wf-thumbs">
+        ${out.items.map(it => `<div class="wf-thumb" style="width:180px">
+          <video src="api/rounds/${esc(it.round_id)}" controls muted playsinline style="height:105px"></video>
+          <div class="cap">#${+it.round_id} · ${esc(it.title || '')}</div>
+        </div>`).join('')}
+      </div></div>`;
+  }
+  if (step.type === 'video_stitch' && out.final_round_id){
+    return `<div class="wf-out">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:13px;color:var(--ok)">🎉 长视频成品已合成（作品 #${+out.final_round_id} · ${out.clip_count} 段 · ${out.duration_s}s）</b>
+        <div class="row" style="gap:6px">
+          <a class="btn sm primary" href="api/rounds/${esc(out.final_round_id)}?download=1">${I('download')}下载 MP4</a>
+          <button type="button" class="btn sm" data-wf-viewround="${esc(out.final_round_id)}">在主舞台查看</button>
+        </div>
+      </div>
+      <video class="wf-final-video" src="api/rounds/${esc(out.final_round_id)}" controls playsinline></video>
+    </div>`;
+  }
+  return '';
+}
+function renderWorkflowCanvas({preserveInputs=false}={}){
+  const run = S.wfRun; if (!run) return;
+  const running = run.status === 'running';
+  const paused = run.status === 'paused';
+  if (!preserveInputs || document.activeElement !== $('#wfName')) $('#wfName').value = run.workflow.name || '';
+  if (!preserveInputs || document.activeElement !== $('#wfTopic')) $('#wfTopic').value = run.topic || '';
+  $('#wfName').disabled = running;
+  $('#wfTopic').disabled = running;
+  const pill = $('#wfStatusPill');
+  pill.textContent = WF_STATUS_ZH[run.status] || run.status;
+  pill.className = 'wf-st ' + (run.status || 'pending');
+  $('#wfStartBtn').classList.toggle('hide', running || paused);
+  $('#wfResumeBtn').classList.toggle('hide', !paused);
+  $('#wfCancelBtn').classList.toggle('hide', !running);
+  $('#wfPauseBanner').classList.toggle('hide', !paused);
+  $('#wfPauseText').textContent = run.pause_reason || '工作流已暂停，你可以检查或修改上方产出，确认无误后点击「继续下一步」。';
+
+  const steps = run.workflow.steps || [];
+  const states = run.step_states || {};
+  $('#wfNodes').innerHTML = steps.map((st, idx) => {
+    const ss = states[st.id] || {status:'pending', output:{}};
+    const cat = stepCatalogFor(st.type);
+    const arrow = idx > 0 ? '<div class="wf-arrow">↓</div>' : '';
+    const durTxt = ss.started_at && ss.finished_at ? ` · ${dur(ss.finished_at - ss.started_at)}` : '';
+    return `${arrow}<div class="wf-node ${esc(ss.status)} ${st.enabled === false ? 'disabled' : ''}" data-step="${esc(st.id)}">
+      <div class="wf-nh">
+        <span style="font-size:15px">${esc(cat.icon)}</span>
+        <span class="wf-type">${esc(cat.label)}</span>
+        <input type="text" data-wfst-name="${esc(st.id)}" value="${esc(st.name)}" style="flex:1;min-width:140px;height:28px;padding:3px 8px;font-weight:650" ${running?'disabled':''}>
+        <span class="wf-st ${esc(ss.status)}">${esc(WF_STATUS_ZH[ss.status] || ss.status)}${esc(durTxt)}</span>
+        ${ss.progress && ss.status === 'running' ? `<span class="dim" style="font-size:11.5px"><span class="sp"></span> ${esc(ss.progress)}</span>` : ''}
+        <label class="switch" style="margin:0;font-size:11.5px" title="该步骤完成后暂停，让你检查或编辑结果再继续">
+          <input type="checkbox" data-wfst-pause="${esc(st.id)}" ${st.pause_after ? 'checked' : ''} ${running?'disabled':''}><span class="tg"></span>暂停审核
+        </label>
+        <label class="switch" style="margin:0;font-size:11.5px" title="关闭则跳过该步骤">
+          <input type="checkbox" data-wfst-en="${esc(st.id)}" ${st.enabled !== false ? 'checked' : ''} ${running?'disabled':''}><span class="tg"></span>启用
+        </label>
+        <button type="button" class="iconbtn" style="width:26px;height:26px" data-wfst-up="${esc(st.id)}" title="上移" ${running||idx===0?'disabled':''}>${I('up')}</button>
+        <button type="button" class="iconbtn" style="width:26px;height:26px" data-wfst-dn="${esc(st.id)}" title="下移" ${running||idx===steps.length-1?'disabled':''}>${I('down')}</button>
+        <button type="button" class="btn sm" style="height:26px;padding:0 8px;font-size:11.5px" data-wfst-retry="${esc(st.id)}" title="仅重跑这一步（不影响前面已完成的结果）" ${running?'disabled':''}>重跑此步</button>
+        <button type="button" class="iconbtn" style="width:26px;height:26px" data-wfst-del="${esc(st.id)}" title="删除步骤" ${running||steps.length<=1?'disabled':''}>${I('x')}</button>
+      </div>
+      <div class="wf-nb">
+        ${renderStepConfigHTML(st, idx, steps, run)}
+        ${renderStepOutputHTML(st, ss, run)}
+      </div>
+    </div>`;
+  }).join('');
+  $('#wfLogsPre').textContent = (run.logs || []).join('\n');
+}
+function openGalleryPickerForWorkflow(stepId){
+  const imgs = S.gallery.filter(x => x.kind === 'image');
+  if (!imgs.length){ toast('作品库暂无图片，请先上传本地图片或去生图页生成', 'err'); return; }
+  const m = modal(`
+    <div class="mh">${I('image','lg')}<h3>从作品库挑选参考图</h3><div class="grow"></div><button class="iconbtn" data-close>${I('x')}</button></div>
+    <div class="mb"><div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr))">
+      ${imgs.slice(0, 60).map(it => `<div class="tile" data-pick="${it.id}"><img loading="lazy" src="${thumbUrl(it) || mediaUrl(it)}"><span class="id">#${+it.id}</span></div>`).join('')}
+    </div></div>`, {wide:true});
+  m.el.addEventListener('click', async e => {
+    const t = e.target.closest('[data-pick]'); if (!t || !S.wfRun) return;
+    const rid = t.dataset.pick;
+    const st = S.wfRun.workflow.steps.find(s => s.id === stepId);
+    if (st){
+      st.config.round_ids = [...new Set([...(st.config.round_ids || []), rid])];
+      await saveWorkflowRunNow();
+      renderWorkflowCanvas();
+      toast(`已绑定作品 #${+rid} 到「${st.name}」`, 'ok');
+    }
+    m.close();
+  });
+}
+
 /* ── settings ── */
 function openSettings(){
   const c = (S.status && S.status.colab) || {};
@@ -1942,8 +2712,364 @@ function openSettings(){
 
 /* ── wiring ── */
 function bind(){
+  $('#wsImage').onclick = () => setWorkspace('image');
+  $('#wsVideo').onclick = () => setWorkspace('video');
+  $('#wsWorkflow').onclick = () => setWorkspace('workflow');
   $('#mImage').onclick = () => setMode('image');
   $('#mVideo').onclick = () => setMode('video');
+  $('#studioPresetSel').addEventListener('change', e => {
+    const pid = e.target.value;
+    const isCustom = (S.studioPresets || []).some(p => p.id === pid);
+    $('#delStudioPresetBtn').classList.toggle('hide', !isCustom);
+    if (pid) applyStudioPreset(pid);
+  });
+  $('#saveStudioPresetBtn').onclick = () => {
+    const m = modal(`
+      <div class="mh">${I('sparkles','lg')}<h3>保存当前参数预设</h3><div class="grow"></div><button class="iconbtn" data-close>${I('x')}</button></div>
+      <div class="mb">
+        <label class="f" style="margin-top:0">预设名称</label>
+        <input type="text" id="spName" placeholder="例如：写实人像 2:3 · 35步" maxlength="60">
+        <div class="help">将保存当前模式（${S.mode==='video'?'生视频':'生图'}）的模型/引擎、画幅、步数、CFG、GPU 与 LoRA。</div>
+      </div>
+      <div class="mf"><button class="btn" data-close>取消</button><button class="btn primary" id="spOk">保存预设</button></div>`);
+    const inp = $('#spName', m.el); inp.focus();
+    const go = async () => {
+      const name = inp.value.trim(); if (!name) return toast('请填写预设名称', 'err');
+      try {
+        const p = buildPayload();
+        const r = await post('api/presets', {...p, name});
+        S.studioPresets = r.custom || [];
+        renderStudioPresets();
+        if (r.preset) $('#studioPresetSel').value = r.preset.id;
+        $('#delStudioPresetBtn').classList.remove('hide');
+        toast('已保存参数预设：' + name, 'ok');
+        m.close();
+      } catch(err){ toast(err.message, 'err'); }
+    };
+    $('#spOk', m.el).onclick = go;
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  };
+  $('#delStudioPresetBtn').onclick = async () => {
+    const pid = $('#studioPresetSel').value;
+    if (!pid || pid.startsWith('builtin:')) return;
+    try {
+      const r = await api('api/presets/' + encodeURIComponent(pid), {method:'DELETE'});
+      S.studioPresets = r.custom || [];
+      $('#studioPresetSel').value = '';
+      renderStudioPresets();
+      toast('已删除自定义预设', 'ok');
+    } catch(err){ toast(err.message, 'err'); }
+  };
+  $('#insertWildcardBtn').onclick = () => {
+    const ta = $('#prompt');
+    const snip = '{晨光柔和|赛博霓虹雨夜|黄昏逆光}';
+    const s = ta.selectionStart ?? ta.value.length, e = ta.selectionEnd ?? ta.value.length;
+    ta.value = ta.value.slice(0, s) + snip + ta.value.slice(e);
+    ta.focus(); ta.setSelectionRange(s + 1, s + snip.length - 1);
+    updateCount(); saveSoon();
+    toast('已插入抽签变体语法：把数量调为 2–4 张可一次抽多套变体', 'ok');
+  };
+  $('#promptHistBtn').onclick = () => {
+    const pop = $('#promptHistPop');
+    const show = pop.classList.contains('hide');
+    if (show) renderPromptHistory();
+    pop.classList.toggle('hide', !show);
+  };
+  $('#promptHistPop').onclick = e => {
+    const b = e.target.closest('[data-ph]'); if (!b) return;
+    const p = S.promptHist[+b.dataset.ph];
+    if (p){ $('#prompt').value = p; updateCount(); saveSoon(); }
+    $('#promptHistPop').classList.add('hide');
+  };
+  $('#swapWH').onclick = () => {
+    const w = +$('#width').value, h = +$('#height').value;
+    setNum('width', h); setNum('height', w); saveSoon();
+  };
+  $('#optWH').onclick = () => {
+    const w = +$('#width').value || 768, h = +$('#height').value || 1152;
+    const ratio = w / h;
+    const targetArea = S.mode === 'video' ? (1280 * 768) : (1024 * 1024);
+    const lim = S.cfg.limits;
+    const snap = v => Math.min(lim.size_max, Math.max(lim.size_min, Math.round(v / lim.size_step) * lim.size_step));
+    const nw = snap(Math.sqrt(targetArea * ratio));
+    const nh = snap(Math.sqrt(targetArea / ratio));
+    setNum('width', nw); setNum('height', nh); saveSoon();
+    toast(`已按当前比例优化为 ${nw}×${nh}`, 'ok');
+  };
+  $('#seedLast').onclick = () => {
+    const it = current() || S.gallery[0];
+    if (!it || it.seed === undefined || it.seed === null){ toast('暂无可锁定的历史种子', 'err'); return; }
+    $('#seed').value = it.seed; saveSoon();
+    toast(`已锁定作品 #${+it.id} 的种子：${it.seed}`, 'ok');
+  };
+  $('#aCompare').onclick = () => {
+    const imgs = S.gallery.filter(x => x.kind === 'image');
+    const cur = current();
+    const other = imgs.find(x => !cur || x.id !== cur.id);
+    openCompareModal(cur && cur.id, other && other.id);
+  };
+  $('#selCompare').onclick = () => {
+    const imgs = [...S.selected].filter(id => { const it = S.gallery.find(x => x.id === id); return it && it.kind === 'image'; });
+    openCompareModal(imgs[0], imgs[1]);
+  };
+
+  // Tab 3 Workflow Studio bindings
+  $('#wfNewBlankBtn').onclick = createBlankWorkflowRun;
+  $('#wfRefreshBtn').onclick = () => loadWorkflowData({keepRun:true});
+  $('#wfTemplateList').onclick = async e => {
+    const del = e.target.closest('[data-del-wftpl]');
+    if (del){
+      e.stopPropagation();
+      try {
+        await api('api/workflows/' + encodeURIComponent(del.dataset.delWftpl), {method:'DELETE'});
+        S.wfData = await api('api/workflows');
+        renderWorkflowSidebar();
+        toast('已删除模板', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    const item = e.target.closest('[data-wftpl]');
+    if (item) createRunFromTemplate(item.dataset.wftpl);
+  };
+  $('#wfRunList').onclick = async e => {
+    const del = e.target.closest('[data-del-wfrun]');
+    if (del){
+      e.stopPropagation();
+      const rid = del.dataset.delWfrun;
+      try {
+        await api('api/workflows/runs/' + encodeURIComponent(rid), {method:'DELETE'});
+        if (S.wfRun && S.wfRun.id === rid) S.wfRun = null;
+        await loadWorkflowData({keepRun:false});
+        toast('已删除运行记录', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    const item = e.target.closest('[data-wfrun]');
+    if (item) selectWorkflowRun(item.dataset.wfrun);
+  };
+  $('#wfName').addEventListener('input', () => { if (!S.wfRun) return; S.wfRun.workflow.name = $('#wfName').value; saveWorkflowRunSoon(); });
+  $('#wfTopic').addEventListener('input', () => { if (!S.wfRun) return; S.wfRun.topic = $('#wfTopic').value; saveWorkflowRunSoon(); });
+  $('#wfSaveTplBtn').onclick = async () => {
+    if (!S.wfRun) return;
+    const name = ($('#wfName').value || '').trim();
+    if (!name) return toast('请先填写工作流名称', 'err');
+    try {
+      await saveWorkflowRunNow();
+      await post('api/workflows', {
+        name,
+        description: S.wfRun.workflow.description || S.wfRun.topic.slice(0, 120),
+        default_topic: S.wfRun.topic,
+        steps: S.wfRun.workflow.steps,
+      });
+      S.wfData = await api('api/workflows');
+      renderWorkflowSidebar();
+      toast('已保存为自定义模板：' + name, 'ok');
+    } catch(err){ toast(err.message, 'err'); }
+  };
+  const startOrResume = async (ep) => {
+    if (!S.wfRun) return;
+    try {
+      await saveWorkflowRunNow();
+      const r = await post(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/${ep}`, {});
+      S.wfRun = r.run;
+      renderWorkflowCanvas();
+      refresh();
+      toast(ep === 'resume' ? '继续执行后续步骤…' : '工作流已启动', 'ok');
+    } catch(err){ toast(err.message, 'err'); }
+  };
+  $('#wfStartBtn').onclick = () => startOrResume('start');
+  $('#wfResumeBtn').onclick = $('#wfPauseResumeBtn').onclick = () => startOrResume('resume');
+  $('#wfCancelBtn').onclick = async () => {
+    if (!S.wfRun) return;
+    try {
+      const r = await post(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/cancel`, {});
+      S.wfRun = r.run;
+      renderWorkflowCanvas();
+      toast('已发送终止信号');
+    } catch(err){ toast(err.message, 'err'); }
+  };
+  $('#wfAddChips').onclick = async e => {
+    const b = e.target.closest('[data-wfadd]'); if (!b || !S.wfRun || S.wfRun.status === 'running') return;
+    const cat = stepCatalogFor(b.dataset.wfadd);
+    const steps = S.wfRun.workflow.steps;
+    const base = b.dataset.wfadd;
+    let id = base, n = 2;
+    while (steps.some(s => s.id === id)) id = `${base}_${n++}`;
+    steps.push({
+      id,
+      type: b.dataset.wfadd,
+      name: `${steps.length + 1}. ${cat.label}`,
+      enabled: true,
+      pause_after: false,
+      config: JSON.parse(JSON.stringify(cat.default_config || {})),
+    });
+    await saveWorkflowRunNow();
+    renderWorkflowCanvas();
+  };
+  $('#wfNodes').addEventListener('input', e => {
+    if (!S.wfRun || S.wfRun.status === 'running') return;
+    const nm = e.target.dataset.wfstName;
+    if (nm){
+      const st = S.wfRun.workflow.steps.find(s => s.id === nm);
+      if (st){ st.name = e.target.value; saveWorkflowRunSoon(); }
+      return;
+    }
+    const spec = e.target.dataset.wfc;
+    if (spec){
+      const [sid, key, kind] = spec.split(':');
+      const st = S.wfRun.workflow.steps.find(s => s.id === sid);
+      if (!st) return;
+      let val = e.target.value;
+      if (kind === 'int') val = parseInt(val, 10) || 0;
+      else if (kind === 'float') val = parseFloat(val) || 0;
+      else if (kind === 'csv') val = val.split(',').map(x => x.trim()).filter(Boolean);
+      st.config[key] = val;
+      if (key === 'gpu') st.config.gpu_pool = [val];
+      saveWorkflowRunSoon();
+    }
+  });
+  $('#wfNodes').addEventListener('change', e => {
+    if (!S.wfRun || S.wfRun.status === 'running') return;
+    const pId = e.target.dataset.wfstPause;
+    if (pId){ const st = S.wfRun.workflow.steps.find(s => s.id === pId); if (st){ st.pause_after = e.target.checked; saveWorkflowRunSoon(); } return; }
+    const eId = e.target.dataset.wfstEn;
+    if (eId){ const st = S.wfRun.workflow.steps.find(s => s.id === eId); if (st){ st.enabled = e.target.checked; saveWorkflowRunSoon(); renderWorkflowCanvas(); } return; }
+    const refSpec = e.target.dataset.wfref;
+    if (refSpec){
+      const [sid, srcId] = refSpec.split(':');
+      const st = S.wfRun.workflow.steps.find(s => s.id === sid);
+      if (st){
+        const list = new Set(st.config.ref_sources || []);
+        if (e.target.checked) list.add(srcId); else list.delete(srcId);
+        st.config.ref_sources = [...list];
+        saveWorkflowRunSoon(); renderWorkflowCanvas();
+      }
+      return;
+    }
+    if (e.target.dataset.wfc){
+      const [sid, key, kind] = e.target.dataset.wfc.split(':');
+      const st = S.wfRun.workflow.steps.find(s => s.id === sid);
+      if (st){
+        let val = e.target.value;
+        if (kind === 'int') val = parseInt(val, 10) || 0;
+        else if (kind === 'float') val = parseFloat(val) || 0;
+        else if (kind === 'csv') val = val.split(',').map(x => x.trim()).filter(Boolean);
+        st.config[key] = val;
+        if (key === 'gpu') st.config.gpu_pool = [val];
+        saveWorkflowRunSoon();
+      }
+    }
+  });
+  $('#wfNodes').addEventListener('click', async e => {
+    if (!S.wfRun) return;
+    const steps = S.wfRun.workflow.steps;
+    const viewR = e.target.closest('[data-wf-viewround]');
+    if (viewR){
+      const rid = viewR.dataset.wfViewround;
+      setWorkspace('image', {keep:true});
+      await loadGallery();
+      view(rid, false);
+      return;
+    }
+    const upBtn = e.target.closest('[data-wf-upload]');
+    if (upBtn){ S.wfAssetStep = upBtn.dataset.wfUpload; $('#wfAssetInput').click(); return; }
+    const pickBtn = e.target.closest('[data-wf-pickgal]');
+    if (pickBtn){ openGalleryPickerForWorkflow(pickBtn.dataset.wfPickgal); return; }
+    const rmAsset = e.target.closest('[data-wf-rmasset]');
+    if (rmAsset){
+      try {
+        await api(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/assets/${encodeURIComponent(rmAsset.dataset.wfRmasset)}`, {method:'DELETE'});
+        await selectWorkflowRun(S.wfRun.id);
+        toast('已移除图片', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    const rmRound = e.target.closest('[data-wf-rmround]');
+    if (rmRound){
+      const [sid, rid] = rmRound.dataset.wfRmround.split(':');
+      const st = steps.find(s => s.id === sid);
+      if (st){ st.config.round_ids = (st.config.round_ids || []).filter(x => x !== rid); await saveWorkflowRunNow(); renderWorkflowCanvas(); }
+      return;
+    }
+    const saveSc = e.target.closest('[data-wf-save-scenes]');
+    if (saveSc){
+      const sid = saveSc.dataset.wfSaveScenes;
+      const box = $(`[data-scenes-box="${sid}"]`, $('#wfNodes'));
+      const curOut = (S.wfRun.step_states[sid] && S.wfRun.step_states[sid].output) || {};
+      const orig = curOut.scenes || [];
+      const updated = $$('.wf-scene', box).map((card, i) => ({
+        ...(orig[i] || {index: i + 1, duration_s: 5}),
+        index: i + 1,
+        title: $('[data-sf="title"]', card).value.trim(),
+        search_query: $('[data-sf="search_query"]', card).value.trim(),
+        keyframe_prompt: $('[data-sf="keyframe_prompt"]', card).value.trim(),
+        video_prompt: $('[data-sf="video_prompt"]', card).value.trim(),
+        audio_notes: $('[data-sf="audio_notes"]', card).value.trim(),
+      }));
+      try {
+        const r = await post(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/steps/${encodeURIComponent(sid)}/output`, {output: {scenes: updated}});
+        S.wfRun = r.run; renderWorkflowCanvas(); toast('分镜修改已保存', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    const saveH3 = e.target.closest('[data-wf-save-h3]');
+    if (saveH3){
+      const sid = saveH3.dataset.wfSaveH3;
+      const box = $(`[data-h3-box="${sid}"]`, $('#wfNodes'));
+      const curOut = (S.wfRun.step_states[sid] && S.wfRun.step_states[sid].output) || {};
+      const orig = curOut.items || [];
+      const updated = $$('.wf-scene', box).map((card, i) => ({
+        ...(orig[i] || {scene_index: i + 1}),
+        video_prompt: $('[data-h3f="video_prompt"]', card).value.trim(),
+      }));
+      try {
+        const r = await post(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/steps/${encodeURIComponent(sid)}/output`, {output: {items: updated}});
+        S.wfRun = r.run; renderWorkflowCanvas(); toast('H3 视频提示词已保存', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+    const mvUp = e.target.closest('[data-wfst-up]');
+    if (mvUp){
+      const i = steps.findIndex(s => s.id === mvUp.dataset.wfstUp);
+      if (i > 0){ [steps[i-1], steps[i]] = [steps[i], steps[i-1]]; await saveWorkflowRunNow(); renderWorkflowCanvas(); }
+      return;
+    }
+    const mvDn = e.target.closest('[data-wfst-dn]');
+    if (mvDn){
+      const i = steps.findIndex(s => s.id === mvDn.dataset.wfstDn);
+      if (i >= 0 && i < steps.length - 1){ [steps[i], steps[i+1]] = [steps[i+1], steps[i]]; await saveWorkflowRunNow(); renderWorkflowCanvas(); }
+      return;
+    }
+    const delSt = e.target.closest('[data-wfst-del]');
+    if (delSt && steps.length > 1){
+      const i = steps.findIndex(s => s.id === delSt.dataset.wfstDel);
+      if (i >= 0){ steps.splice(i, 1); await saveWorkflowRunNow(); renderWorkflowCanvas(); }
+      return;
+    }
+    const retrySt = e.target.closest('[data-wfst-retry]');
+    if (retrySt){
+      try {
+        await saveWorkflowRunNow();
+        const r = await post(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/steps/${encodeURIComponent(retrySt.dataset.wfstRetry)}/retry`, {single_step: true});
+        S.wfRun = r.run; renderWorkflowCanvas(); refresh();
+        toast('正在单步重跑该节点…', 'ok');
+      } catch(err){ toast(err.message, 'err'); }
+      return;
+    }
+  });
+  $('#wfAssetInput').onchange = async e => {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length || !S.wfRun) return;
+    let ok = 0;
+    for (const f of files){
+      try {
+        await api(`api/workflows/runs/${encodeURIComponent(S.wfRun.id)}/assets?step_id=${encodeURIComponent(S.wfAssetStep || '')}`, {method:'POST', body:f});
+        ok++;
+      } catch(err){ toast('上传失败：' + err.message, 'err'); }
+    }
+    if (ok){ await selectWorkflowRun(S.wfRun.id); toast(`已上传 ${ok} 张资产图`, 'ok'); }
+  };
   $('#rewriteBtn').onclick = rewrite;
   $('#goBtn').onclick = generate;
   $('#stopBtn').onclick = $('#pCancel').onclick = async () => { await post('api/stop'); toast('已发送取消信号'); refresh(); };
@@ -2085,13 +3211,14 @@ function bind(){
   document.addEventListener('change', e => { if (e.target.closest('.panel')) saveSoon(); });
   $('#useRef').addEventListener('change', () => { if ($('#useRef').checked) $('#chain').checked = false; updateRewriteBadge(); });
   $('#chain').addEventListener('change', () => { if ($('#chain').checked) $('#useRef').checked = false; updateRewriteBadge(); });
-  [['steps','stepsR'],['cfg','cfgR']].forEach(([n, r]) => {
-    $('#'+r).addEventListener('input', () => $('#'+n).value = $('#'+r).value);
-    $('#'+n).addEventListener('input', () => $('#'+r).value = $('#'+n).value);
+  [['steps','stepsR'],['cfg','cfgR'],['width','widthR'],['height','heightR']].forEach(([n, r]) => {
+    $('#'+r).addEventListener('input', () => { $('#'+n).value = $('#'+r).value; if (n==='width'||n==='height'){ renderSizeChips(); updateResInfo(); } });
+    $('#'+n).addEventListener('input', () => { $('#'+r).value = $('#'+n).value; if (n==='width'||n==='height'){ renderSizeChips(); updateResInfo(); } });
   });
   ['width','height'].forEach(id => $('#'+id).addEventListener('change', () => {
     const lim = S.cfg.limits; let v = Math.round((+$('#'+id).value || lim.size_min) / lim.size_step) * lim.size_step;
-    $('#'+id).value = Math.min(lim.size_max, Math.max(lim.size_min, v)); renderSizeChips();
+    v = Math.min(lim.size_max, Math.max(lim.size_min, v));
+    $('#'+id).value = v; $('#'+id+'R').value = v; renderSizeChips(); updateResInfo();
   }));
   $('#sizeChips').onclick = e => { const b = e.target.closest('[data-w]'); if (!b) return; setNum('width', +b.dataset.w); setNum('height', +b.dataset.h); saveSoon(); };
   $('#gpuChips').onclick = e => {
@@ -2296,7 +3423,10 @@ function bind(){
   $('#trashBtn').onclick = openTrash;
 
   document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter'){ e.preventDefault(); generate(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
+      if (S.tab === 'workflow') return;
+      e.preventDefault(); generate(); return;
+    }
     if (e.target.matches('input,textarea,select') || $('#overlay').children.length) return;
     if (e.key === 'Escape'){ if (LB) closeLightbox(); else if (S.selecting) $('#selDone').click(); return; }
     if (e.key === 'ArrowLeft'){ const id = step(-1); if (LB) lbShow(id); }
@@ -2317,6 +3447,7 @@ async function init(){
   $('.go .kbd').textContent = mac ? '⌘↵' : 'Ctrl↵';
   const sh = $('#shortcutHint'); if (sh) sh.textContent = (mac ? '⌘' : 'Ctrl') + ' + Enter 生成';
   loadForm();
+  loadPromptHistory();
   try { S.cfg = await api('api/config'); } catch(e){ toast('加载配置失败：' + e.message, 'err'); return; }
   if (S.cfg && S.cfg.limits && S.cfg.limits.prompt_max) $('#promptMax').textContent = S.cfg.limits.prompt_max;
   const c = S.form.common || {};
@@ -2332,8 +3463,12 @@ async function init(){
   $('#count').textContent = c.count || 1;
   renderLoraRows(c.loras);
   S.mode = S.form.mode === 'video' ? 'video' : 'image';
+  S.tab = S.mode;
   $('#mImage').classList.toggle('on', S.mode === 'image'); $('#mVideo').classList.toggle('on', S.mode === 'video');
+  $('#wsImage').classList.toggle('on', S.mode === 'image'); $('#wsVideo').classList.toggle('on', S.mode === 'video');
   applyPerMode(S.mode);
+  updateResInfo();
+  renderStudioPresets();
   updateCount(); updateModeUI(); bind();
   if (collectLoras().length) $('#loraBlock').open = true;
   await refresh();
@@ -2344,7 +3479,7 @@ init();
 PAGE_HTML = (
     "<!doctype html>\n<html lang=\"zh\" data-theme=\"light\">\n<head>\n<meta charset=\"utf-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-    "<title>Colab Studio · 生图 · 改图 · 生视频</title>\n"
+    "<title>Colab Studio · 生图 · 生视频 · 长视频工作流</title>\n"
     "<script>(function(){try{var t=localStorage.getItem('colab-studio.theme')||'light';document.documentElement.dataset.theme=t;}catch(e){}})();</script>\n"
     "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='24' height='24' rx='6' fill='url(%23g)'/%3E%3Cpath d='M12 5l1.5 4 4 1.5-4 1.5L12 16l-1.5-4-4-1.5 4-1.5z' fill='white'/%3E%3C/svg%3E\">\n"
     "<style>" + _CSS + "</style>\n</head>\n<body>\n" + _BODY + "\n<script>" + _JS + "</script>\n</body>\n</html>\n"

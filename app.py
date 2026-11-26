@@ -29,6 +29,7 @@ from jobs import (
     GPUS,
     IMAGE_MODELS,
     LIMITS,
+    STUDIO_BUILTIN_PRESETS,
     VIDEO_WORKFLOWS,
     LogBuffer,
     Studio,
@@ -38,8 +39,9 @@ from jobs import (
 )
 from store import TRASH_DAYS, Store
 from ui import LOGIN_HTML, PAGE_HTML
+from workflows import STEP_CATALOG, WorkflowEngine, ffmpeg_available
 
-VERSION = "2.1"
+VERSION = "3.0"
 ROOT = Path(os.environ.get("QP_ROOT", str(Path(__file__).resolve().parent)))
 SECRET_PATH = Path(os.environ.get("QP_SECRET", ROOT / "secret.env"))
 OUT_DIR = ROOT / "out"
@@ -89,6 +91,7 @@ LOG = LogBuffer()
 COLAB = ColabBackend(ROOT, LOG)
 STORE = Store(OUT_DIR, LOG)
 STUDIO = Studio(ROOT, SECRET, COLAB, STORE, LOG, DEFAULT_IDLE_SECONDS)
+WORKFLOWS = WorkflowEngine(ROOT, STUDIO, STORE, LOG)
 
 _fail_lock = threading.Lock()
 _login_failures: dict[str, list[float]] = {}
@@ -144,6 +147,12 @@ def config_payload() -> dict:
             "builtin_presets": COMFY_BUILTIN_PRESETS,
             "presets": STUDIO.comfy_presets(),
         },
+        "studio_presets": {
+            "builtin": STUDIO_BUILTIN_PRESETS,
+            "custom": STUDIO.studio_presets(),
+        },
+        "workflow_step_catalog": STEP_CATALOG,
+        "ffmpeg_available": ffmpeg_available(),
         "proxy": STUDIO.proxy_report(),
         "limits": LIMITS,
         "defaults": DEFAULTS,
@@ -399,11 +408,37 @@ class Handler(BaseHTTPRequestHandler):
                 "references": STUDIO.refs_report(),
                 "recent_models": STUDIO.recent_models(),
                 "comfy_presets": STUDIO.comfy_presets(),
+                "studio_presets": STUDIO.studio_presets(),
+                "workflow_active": WORKFLOWS.active_summary(),
                 "proxy": STUDIO.proxy_report(),
                 "colab": colab_rep,
                 "server_time": int(time.time()),
             })
             return self.send_json(200, payload)
+
+        if head == "presets":
+            if len(seg) == 1:
+                if method == "GET":
+                    return self.send_json(200, {
+                        "builtin": STUDIO_BUILTIN_PRESETS,
+                        "custom": STUDIO.studio_presets(),
+                    })
+                if method == "POST":
+                    try:
+                        preset, all_presets = STUDIO.save_studio_preset(self.json_body(raw))
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    return self.send_json(200, {"ok": True, "preset": preset, "custom": all_presets})
+                raise ApiError(405, "method not allowed")
+            if len(seg) == 2 and method == "DELETE":
+                removed, all_presets = STUDIO.delete_studio_preset(seg[1])
+                if not removed:
+                    raise ApiError(404, "未找到该参数预设")
+                return self.send_json(200, {"ok": True, "custom": all_presets})
+            raise ApiError(404, "not found")
+
+        if head == "workflows":
+            return self.route_workflows(method, seg, q, raw)
 
         if head == "models" and seg[1:] == ["recent"]:
             if method == "GET":
@@ -630,6 +665,152 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, str(exc)) from exc
             return self.send_json(200, {"files": files})
 
+        raise ApiError(404, "not found")
+
+    def route_workflows(self, method: str, seg: list[str], q: dict, raw: bytes) -> None:
+        # /api/workflows
+        if len(seg) == 1:
+            if method == "GET":
+                return self.send_json(200, WORKFLOWS.list_workflows())
+            if method == "POST":
+                try:
+                    wf, custom = WORKFLOWS.save_workflow(self.json_body(raw))
+                except ValueError as exc:
+                    raise ApiError(400, str(exc)) from exc
+                return self.send_json(200, {"ok": True, "workflow": wf, "custom": custom})
+            raise ApiError(405, "method not allowed")
+
+        sub = seg[1]
+        # /api/workflows/runs...
+        if sub == "runs":
+            if len(seg) == 2:
+                if method == "GET":
+                    return self.send_json(200, {"runs": WORKFLOWS.list_runs()})
+                if method == "POST":
+                    try:
+                        run = WORKFLOWS.create_run(self.json_body(raw))
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    return self.send_json(201, {"ok": True, "run": run})
+                raise ApiError(405, "method not allowed")
+
+            run_id = seg[2]
+            tail = seg[3:]
+            if not tail:
+                if method == "GET":
+                    run = WORKFLOWS.get_run(run_id)
+                    if not run:
+                        raise ApiError(404, "工作流运行记录不存在")
+                    return self.send_json(200, {"run": run})
+                if method == "PATCH":
+                    try:
+                        run = WORKFLOWS.update_run_config(run_id, self.json_body(raw))
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    except RuntimeError as exc:
+                        raise ApiError(409, str(exc)) from exc
+                    return self.send_json(200, {"ok": True, "run": run})
+                if method == "DELETE":
+                    try:
+                        removed = WORKFLOWS.delete_run(run_id)
+                    except (ValueError, RuntimeError) as exc:
+                        raise ApiError(409, str(exc)) from exc
+                    if not removed:
+                        raise ApiError(404, "工作流运行记录不存在")
+                    return self.send_json(200, {"ok": True})
+                raise ApiError(405, "method not allowed")
+
+            action = tail[0]
+            if action in {"start", "resume"} and len(tail) == 1 and method == "POST":
+                body = self.json_body(raw)
+                try:
+                    run = WORKFLOWS.start_run(
+                        run_id,
+                        from_step_id=str(body.get("from_step_id") or "").strip() or None,
+                        single_step=_bool(body.get("single_step")),
+                    )
+                except ValueError as exc:
+                    raise ApiError(400, str(exc)) from exc
+                except RuntimeError as exc:
+                    raise ApiError(409, str(exc)) from exc
+                return self.send_json(202, {"ok": True, "run": run})
+
+            if action == "cancel" and len(tail) == 1 and method == "POST":
+                try:
+                    run = WORKFLOWS.cancel_run(run_id)
+                except ValueError as exc:
+                    raise ApiError(404, str(exc)) from exc
+                return self.send_json(200, {"ok": True, "run": run})
+
+            if action == "steps" and len(tail) == 3:
+                step_id, step_act = tail[1], tail[2]
+                if step_act == "retry" and method == "POST":
+                    body = self.json_body(raw)
+                    try:
+                        run = WORKFLOWS.start_run(
+                            run_id,
+                            from_step_id=step_id,
+                            single_step=_bool(body.get("single_step")),
+                        )
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    except RuntimeError as exc:
+                        raise ApiError(409, str(exc)) from exc
+                    return self.send_json(202, {"ok": True, "run": run})
+                if step_act == "output" and method in {"POST", "PATCH"}:
+                    body = self.json_body(raw)
+                    patch = body.get("output") if isinstance(body.get("output"), dict) else body
+                    try:
+                        run = WORKFLOWS.update_step_output(run_id, step_id, patch)
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    except RuntimeError as exc:
+                        raise ApiError(409, str(exc)) from exc
+                    return self.send_json(200, {"ok": True, "run": run})
+
+            if action == "assets":
+                if len(tail) == 1 and method == "POST":
+                    try:
+                        res = WORKFLOWS.upload_asset(
+                            run_id,
+                            raw,
+                            step_id=str(q.get("step_id") or "").strip(),
+                            label=str(q.get("label") or "upload").strip(),
+                        )
+                    except ValueError as exc:
+                        raise ApiError(400, str(exc)) from exc
+                    return self.send_json(200, {"ok": True, **res})
+                if len(tail) == 2:
+                    fname = tail[1]
+                    if method == "GET":
+                        p = WORKFLOWS.asset_path(run_id, fname)
+                        if not p:
+                            raise ApiError(404, "资产图片不存在")
+                        head_b = p.read_bytes()[:12]
+                        ctype = (
+                            "image/png" if head_b.startswith(b"\x89PNG")
+                            else "image/webp" if head_b.startswith(b"RIFF")
+                            else "image/jpeg"
+                        )
+                        return self.send_file(p, ctype, cache="private, max-age=86400")
+                    if method == "DELETE":
+                        try:
+                            assets = WORKFLOWS.delete_asset(run_id, fname)
+                        except ValueError as exc:
+                            raise ApiError(404, str(exc)) from exc
+                        return self.send_json(200, {"ok": True, "assets": assets})
+
+            raise ApiError(404, "not found")
+
+        # /api/workflows/<wf_id>
+        if len(seg) == 2 and method == "DELETE":
+            try:
+                removed, custom = WORKFLOWS.delete_workflow(sub)
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from exc
+            if not removed:
+                raise ApiError(404, "未找到该工作流模板")
+            return self.send_json(200, {"ok": True, "custom": custom})
         raise ApiError(404, "not found")
 
     def route_rounds(self, method: str, seg: list[str], q: dict, raw: bytes) -> None:

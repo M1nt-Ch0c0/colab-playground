@@ -28,9 +28,10 @@ ID_RE = re.compile(r"\d{3,7}")
 MEDIA_RE = re.compile(r"(\d{3,7})\.(png|mp4)")
 TRASH_DAYS = int(os.environ.get("QP_TRASH_DAYS", "7"))
 META_KEEP = (
-    "prompt", "negative", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
+    "prompt", "prompt_template", "negative", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
     "cfg", "seed", "num_frames", "loras", "has_image", "has_last_image", "chain",
-    "duration_s", "job_id", "idea", "chain_from",
+    "duration_s", "boot_s", "infer_s", "job_id", "idea", "chain_from",
+    "workflow_run_id", "workflow_step_id", "source_rounds", "transition",
 )
 
 
