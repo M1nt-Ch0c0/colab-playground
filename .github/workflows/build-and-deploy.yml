@@ -114,10 +114,15 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
 
       - name: Wait for idle before Dokploy deploy
-        if: steps.check_secrets.outputs.dokploy_ready == 'true' && inputs.force_deploy != true
+        if: steps.check_secrets.outputs.dokploy_ready == 'true'
         env:
           APP_HEALTH_URL: https://draw.m1ntch0c0.com/healthz
+          FORCE_DEPLOY: ${{ github.event.inputs.force_deploy }}
         run: |
+          if [ "${FORCE_DEPLOY}" = "true" ]; then
+            echo "force_deploy=true; skipping idle check."
+            exit 0
+          fi
           MAX_WAIT=1200
           INTERVAL=15
           ELAPSED=0
