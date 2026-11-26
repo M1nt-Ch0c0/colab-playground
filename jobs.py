@@ -2317,7 +2317,7 @@ class Studio:
 
             def fire() -> None:
                 with self._lock:
-                    busy = self._current is not None or bool(self._queue)
+                    busy = self._current is not None or bool(self._queue) or self._grabbing
                 if busy:
                     return
                 self.log(f"空闲 {sec // 60} 分钟，自动释放 Google Colab 运行时以停止消耗 Compute Units")
@@ -2654,6 +2654,9 @@ class Studio:
             self._cancel = False
             self.phase = "starting"
             self.error = ""
+            # A grab is not a queued job, so an armed idle timer would release the
+            # runtime (or the one we are about to assign) when it fires.
+            self.cancel_idle()
         threading.Thread(
             target=self._grab_worker,
             args=(list(gpu_pool), int(poll_rounds), bool(poll_all_proxies)),
@@ -2661,17 +2664,69 @@ class Studio:
             name="colab-grab",
         ).start()
 
+    def _rearm_idle_if_holding(self) -> None:
+        """Put the previous hold policy back after a grab that did not take a new card."""
+        with self._lock:
+            hold = (
+                bool(self.active_gpu)
+                and not self._cancel
+                and self.phase not in {"stopping", "idle"}
+                and self._current is None
+                and not self._queue
+            )
+            minutes = self.idle_seconds // 60
+        if not hold:
+            return
+        if minutes <= 0:
+            self.cancel_idle()
+            return
+        self.arm_idle()
+        self.log(f"抢卡未成功，原运行时仍按空闲 {minutes} 分钟后释放")
+
+    def _release_late_session(self) -> None:
+        """Unassign a runtime that landed after the user had already released compute."""
+        release = getattr(self.colab, "release_all", None)
+        if not callable(release):
+            self.log("抢卡已取消，但无法释放晚到的运行时")
+            return
+        try:
+            released = release(SESSION_NAME) or []
+            if not released:
+                released = release() or []
+        except TypeError:
+            try:
+                released = release() or []
+            except Exception as exc:
+                self.log(f"取消抢卡后释放新实例失败：{exc}")
+                return
+        except Exception as exc:
+            self.log(f"取消抢卡后释放新实例失败：{exc}")
+            return
+        if released:
+            self.log("抢卡已取消，已释放晚到的 Colab 运行时：" + "、".join(released))
+        else:
+            self.log("抢卡已取消")
+
     def _grab_worker(self, pool: list[str], rounds: int, all_proxies: bool) -> None:
         try:
             self.log(f"开始抢卡：{'/'.join(pool)}，{rounds} 轮" + ("，全部代理" if all_proxies else ""))
             session = self._acquire_session(pool, rounds, all_proxies)
             with self._lock:
-                if self._cancel or self.phase == "stopping":
-                    self.log("抢卡已取消")
-                    return
-                self.active_gpu = f"{session.accelerator} ({session.machine_shape})"
-                self.phase = "ready"
-                self.error = ""
+                aborted = self._cancel or self.phase in {"stopping", "idle"}
+            if aborted:
+                self._release_late_session()
+                return
+            with self._lock:
+                if self._cancel or self.phase in {"stopping", "idle"}:
+                    aborted = True
+                else:
+                    self.active_gpu = f"{session.accelerator} ({session.machine_shape})"
+                    self.phase = "ready"
+                    self.error = ""
+                    aborted = False
+            if aborted:
+                self._release_late_session()
+                return
             self.colab.invalidate_status()
             if self.idle_seconds <= 0:
                 self.cancel_idle()
@@ -2681,10 +2736,14 @@ class Studio:
                 self.log(f"已持有 {session.accelerator}，空闲 {self.idle_seconds // 60} 分钟后自动释放。")
         except Exception as exc:
             with self._lock:
-                aborted = self.phase == "stopping" or self._cancel
-            if not aborted:
+                aborted = self.phase in {"stopping", "idle"} or self._cancel
+            if aborted:
+                self.log("抢卡已取消：" + str(exc))
+                self._release_late_session()
+            else:
                 self.log("抢卡失败：" + str(exc))
                 self.set_phase("error", str(exc)[:400])
+                self._rearm_idle_if_holding()
         finally:
             with self._lock:
                 self._grabbing = False
