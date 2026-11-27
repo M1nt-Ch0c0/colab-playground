@@ -3,8 +3,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from selenium import webdriver
@@ -16,6 +19,7 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import create_app
+from draw_studio.generation.parameters import normalize_job
 from http_fixture import gateway, png, serving
 
 
@@ -27,6 +31,19 @@ def chrome():
     if binary:
         options.binary_location = binary
     return webdriver.Chrome(options=options, service=Service(shutil.which("chromedriver")))
+
+
+@contextmanager
+def signed_in_browser():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        secret = root / "secret.env"
+        secret.write_text("password=fixture\ntoken=browser-test\n")
+        app = create_app(root=root)
+        with patch.dict(os.environ, {"QP_SECRET": str(secret)}), serving(app) as url, chrome() as driver:
+            driver.get(url + "/healthz")
+            driver.add_cookie({"name": "qp_auth", "value": "browser-test", "path": "/"})
+            yield app.state.runtime, driver, url
 
 
 class BrowserTest(unittest.TestCase):
@@ -216,6 +233,135 @@ class BrowserTest(unittest.TestCase):
                     wait.until(lambda _: update.called and update.call_args.args[1]["workflow"]["steps"][1]["config"]["poll_all_proxies"] is True)
                     config = update.call_args.args[1]["workflow"]["steps"][1]["config"]
                 self.assertEqual((config["gpu"], config["gpu_pool"]), ("G4", ["G4"]))
+
+    def test_reuse_comfy_round_submits_stored_combination(self):
+        with signed_in_browser() as (rt, driver, url):
+            src = rt.root / "fixture.png"
+            src.write_bytes(png())
+            combo = {"template": "flux", "sampler": "heun", "scheduler": "karras", "clip_type": "flux2", "denoise": 0.65,
+                     "diffusion": "fixture/history :: diffusion.safetensors", "text_encoder": "fixture/history :: clip.safetensors",
+                     "vae": "fixture/history :: vae.safetensors"}
+            meta = normalize_job({"engine": "comfyui", "prompt": "saved combo", "comfy": combo, "steps": 22, "seed": 0})
+            # Cover parsed links with raw + url, older url-only objects, and plain strings.
+            url_only = meta["comfy"]["text_encoder"]["url"]
+            meta["comfy"]["text_encoder"] = {"url": url_only}
+            meta["comfy"]["vae"] = combo["vae"]
+            rt.store.save(src, "image", meta)
+            rt.store.save(src, "image", {"prompt": "missing combo", "engine": "comfyui"})
+            driver.execute_script("""localStorage.setItem('cs.libopen', 'true');
+                localStorage.setItem('cs.draft', JSON.stringify({comfyDiff: 'wrong', comfyTe: 'wrong', comfyVae: 'wrong'}))""")
+            # Accept the generation request locally and inspect exactly what the queue receives.
+            status = rt.colab.status_report()
+            with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "enqueue", return_value=[{"id": "fixture"}]) as enqueue:
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+
+                def reuse(title):
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, f'.tile[title="{title}"]'))).click()
+                    # A toast from the previous submit can temporarily cover the toolbar.
+                    wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='复用参数']"))).send_keys(Keys.ENTER)
+                    wait.until(lambda d: d.find_element(By.CSS_SELECTOR, 'textarea[rows="4"]').get_property("value") == title)
+
+                def generate():
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.go"))).click()
+
+                for count in (1, 2):
+                    reuse("saved combo")
+                    generate()
+                    wait.until(lambda _: enqueue.call_count == count)
+                    job = enqueue.call_args.args[0]
+                    self.assertEqual((job["engine"], job["steps"], job["seed"]), ("comfyui", 22, 0))
+                    for key in ("template", "sampler", "scheduler", "clip_type", "denoise"):
+                        self.assertEqual(job["comfy"][key], combo[key])
+                    self.assertEqual([job["comfy"][key]["raw"] for key in ("diffusion", "text_encoder", "vae")],
+                                     [combo["diffusion"], url_only, combo["vae"]])
+                    if count == 1:
+                        reuse("missing combo")
+                        generate()
+                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "填齐"))
+                        self.assertEqual(enqueue.call_count, 1)
+
+    def test_review_edits_finish_before_resume_and_retry(self):
+        cases = [("llm_script", "scenes", "keyframe_prompt", "image_gen", "关键帧提示词"),
+                 ("h3_prompt", "items", "video_prompt", "video_gen", "视频提示词")]
+        for source, group, field, downstream, label in cases:
+            with self.subTest(source=source), signed_in_browser() as (rt, driver, url):
+                engine = rt.workflows
+                is_retry = downstream == "video_gen"
+                run = engine.create_run({"topic": "fixture", "workflow": {"name": "审核保存", "steps": [
+                    {"id": "review", "name": "审核产出", "type": source, "pause_after": True},
+                    {"id": "generate", "name": "使用审核结果", "type": downstream,
+                     "config": {"scenes_from": "review", "prompts_from": "review", "ref_sources": [], "workflow": "t2va"}},
+                ]}})
+                rid = run["id"]
+                output = {group: [{"title": f"shot {n}", field: f"old {n}"} for n in (1, 2)]}
+                wait = WebDriverWait(driver, 12)
+                with patch.object(engine, "_run_step", return_value=output):
+                    engine.start_run(rid)
+                    wait.until(lambda _: engine.get_run(rid)["status"] == "paused")
+                driver.get(url)
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'工作流')]"))).click()
+
+                def open_step(name):
+                    row = wait.until(EC.presence_of_element_located((By.XPATH, f"//li[.//b[normalize-space(.)='{name}']]")))
+                    row.find_element(By.CSS_SELECTOR, ".step-h").click()
+                    wait.until(lambda _: row.find_elements(By.CSS_SELECTOR, ".step-cfg"))
+                    return row
+
+                if is_retry:
+                    target = open_step("使用审核结果")
+                    go = target.find_element(By.XPATH, ".//button[normalize-space(.)='只跑这一步']")
+                else:
+                    go = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='继续']")))
+                row = open_step("审核产出")
+                fields = row.find_elements(By.CSS_SELECTOR, f'textarea[aria-label="{label}"]')
+                began, release = threading.Event(), threading.Event()
+                save = engine.update_step_output
+
+                def delayed_write(*args):
+                    if not began.is_set():
+                        began.set()
+                        if not release.wait(12):
+                            raise RuntimeError("test save timed out")
+                        if is_retry:
+                            raise ValueError("模拟产出保存失败")
+                    return save(*args)
+
+                with patch.object(engine, "update_step_output", side_effect=delayed_write), \
+                     patch.object(engine, "start_run", wraps=engine.start_run) as start, \
+                     patch.object(rt.studio, "colab", SimpleNamespace(has_credentials=lambda: True)), \
+                     patch.object(rt.studio, "enqueue_with_refs", return_value=[{"id": "job"}]) as enqueue, \
+                     patch.object(rt.studio, "wait_for_job", return_value={"status": "done", "round_id": "001"}):
+                    try:
+                        fields[0].send_keys(Keys.CONTROL, "a", Keys.NULL, "edited 1")
+                        fields[1].click()  # blur starts the first save
+                        self.assertTrue(began.wait(3))
+                        if not is_retry:
+                            topic = driver.find_element(By.CSS_SELECTOR, ".run-head textarea")
+                            topic.send_keys(Keys.CONTROL, "a", Keys.NULL, "edited topic")
+                        fields[1].send_keys(Keys.CONTROL, "a", Keys.NULL, "edited 2")
+                        go.click()
+                        wait.until(lambda d: d.find_element(By.CSS_SELECTOR, ".run").get_property("inert"))
+                        self.assertFalse(start.called)
+                    finally:
+                        release.set()
+                    if is_retry:
+                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "模拟产出保存失败"))
+                        wait.until(lambda d: not d.find_element(By.CSS_SELECTOR, ".run").get_property("inert"))
+                        self.assertFalse(start.called)
+                        self.assertFalse(enqueue.called)
+                        self.assertEqual(engine.get_run(rid)["status"], "paused")
+                        self.assertEqual([box.get_property("value") for box in fields], ["edited 1", "edited 2"])
+                        go.click()  # retry the save and execution without having to retype either edit
+                    wait.until(lambda _: engine.get_run(rid)["status"] == "done")
+                    self.assertEqual(start.call_count, 1)
+                    self.assertEqual([call.args[0]["prompt"] for call in enqueue.call_args_list], ["edited 1", "edited 2"])
+                    finished = engine.get_run(rid)
+                    if not is_retry:
+                        self.assertEqual(finished["topic"], "edited topic")
+                    saved = finished["step_states"]["review"]["output"][group]
+                    self.assertEqual([item[field] for item in saved], ["edited 1", "edited 2"])
 
 
 if __name__ == "__main__":

@@ -24,9 +24,13 @@ export interface ComfyTemplate {
   defaults: { diffusion: string; text_encoder: string; vae: string; sampler: string; scheduler: string; steps: number; cfg: number; width: number; height: number }
 }
 export interface Lora { repo_id: string; weight_name: string; scale: number }
-export interface ComfyPreset {
-  id: string; name: string; builtin?: boolean; template: string
-  diffusion: string; text_encoder: string; vae: string; sampler: string; scheduler: string
+export interface ComfyConfig<Link = string> {
+  template: string; diffusion: Link; text_encoder: Link; vae: Link; sampler: string; scheduler: string
+  clip_type?: string; denoise?: number
+}
+export type SavedModelLink = string | (Partial<LinkSpec> & { raw?: string }) | null
+export interface ComfyPreset extends ComfyConfig {
+  id: string; name: string; builtin?: boolean
   steps: number; cfg: number; width: number; height: number; loras: Lora[]
 }
 export interface StudioPreset {
@@ -110,7 +114,7 @@ export interface Round {
   negative?: string; workflow?: string | null; gpu?: string; width?: number; height?: number
   steps?: number; cfg?: number; seed?: number; num_frames?: number | null; loras?: Lora[]
   has_image?: boolean; chain?: boolean; duration_s?: number; job_id?: string; idea?: string
-  engine?: Engine; comfy?: Record<string, unknown>; offload_mode?: OffloadMode
+  engine?: Engine; comfy?: Partial<ComfyConfig<SavedModelLink>> | null; offload_mode?: OffloadMode
   deleted_at?: number; purge_at?: number
 }
 export interface RoundsStats { count: number; images: number; videos: number; starred: number; bytes: number }
@@ -132,7 +136,7 @@ export interface GeneratePayload {
   width: number; height: number; steps: number; cfg: number; seed: number; count: number; loras: Lora[]
   has_image: boolean
   engine?: Engine; model?: string; chain?: boolean
-  comfy?: { template: string; diffusion: string; text_encoder: string; vae: string; sampler: string; scheduler: string }
+  comfy?: ComfyConfig
   custom_transformer_repo?: string; custom_transformer_file?: string
   workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean; has_last_image?: boolean
 }

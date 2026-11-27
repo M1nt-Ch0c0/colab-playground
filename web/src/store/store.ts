@@ -2,7 +2,7 @@
 import { create } from 'zustand'
 import { api, ApiError } from '../api/client'
 import type {
-  Config, GeneratePayload, LlmState, Lora, References, Round, Status, Storage, StudioPreset, WfRun, WorkflowsResponse,
+  ComfyConfig, Config, GeneratePayload, LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, WfRun, WorkflowsResponse,
 } from '../api/types'
 import { lsGet, lsSet, now, setClockSkew } from '../lib/util'
 
@@ -14,6 +14,7 @@ export interface Draft {
   engine: 'diffusers' | 'comfyui'
   model: string; ggufRepo: string; ggufFile: string
   comfyTemplate: string; comfyDiff: string; comfyTe: string; comfyVae: string; comfySampler: string; comfyScheduler: string
+  comfyClipType?: string; comfyDenoise?: number
   workflow: 't2va' | 'fl2va' | 'ref2va'; frames: number; offload: 'auto' | 'component' | 'group' | 'none'
   idea: string; prompt: string; negative: string
   width: number; height: number; steps: number; cfg: number; seed: string
@@ -29,6 +30,26 @@ const EMPTY_DRAFT: Draft = {
   idea: '', prompt: '', negative: 'blurry, lowres, jpeg artifacts, deformed, bad anatomy, watermark, text, logo, signature',
   width: 768, height: 1152, steps: 35, cfg: 5, seed: '-1',
   count: 1, useRef: false, chain: false, loras: [], gpu: 'A100',
+}
+
+function modelLink(link: SavedModelLink | undefined): string {
+  return typeof link === 'string' ? link.trim() : link?.raw?.trim() || link?.url?.trim() || ''
+}
+
+export function comfyDraftFields(comfy: Round['comfy']) {
+  return {
+    comfyTemplate: comfy?.template || EMPTY_DRAFT.comfyTemplate,
+    comfyDiff: modelLink(comfy?.diffusion), comfyTe: modelLink(comfy?.text_encoder), comfyVae: modelLink(comfy?.vae),
+    comfySampler: comfy?.sampler || EMPTY_DRAFT.comfySampler, comfyScheduler: comfy?.scheduler || EMPTY_DRAFT.comfyScheduler,
+    comfyClipType: comfy?.clip_type, comfyDenoise: comfy?.denoise,
+  }
+}
+
+export function comfyPayload(draft: Draft): ComfyConfig {
+  return {
+    template: draft.comfyTemplate, diffusion: draft.comfyDiff.trim(), text_encoder: draft.comfyTe.trim(), vae: draft.comfyVae.trim(),
+    sampler: draft.comfySampler, scheduler: draft.comfyScheduler, clip_type: draft.comfyClipType, denoise: draft.comfyDenoise,
+  }
 }
 
 interface Store {
@@ -177,7 +198,7 @@ export const useStore = create<Store>((set, get) => ({
       p.has_image = draft.workflow !== 't2va'; p.has_last_image = draft.workflow === 'fl2va' && !!refs?.last.set
     } else {
       p.engine = draft.engine; p.chain = draft.chain; p.has_image = draft.useRef && !draft.chain
-      if (draft.engine === 'comfyui') p.comfy = { template: draft.comfyTemplate, diffusion: draft.comfyDiff.trim(), text_encoder: draft.comfyTe.trim(), vae: draft.comfyVae.trim(), sampler: draft.comfySampler, scheduler: draft.comfyScheduler }
+      if (draft.engine === 'comfyui') p.comfy = comfyPayload(draft)
       else { p.model = draft.model.trim(); p.custom_transformer_repo = draft.ggufRepo.trim(); p.custom_transformer_file = draft.ggufFile.trim() }
     }
     try {
@@ -196,10 +217,7 @@ export const useStore = create<Store>((set, get) => ({
     else {
       d.engine = p.engine || 'diffusers'
       d.model = p.model || get().draft.model
-      if (d.engine === 'comfyui' && p.comfy) Object.assign(d, {
-        comfyTemplate: p.comfy.template, comfyDiff: p.comfy.diffusion, comfyTe: p.comfy.text_encoder,
-        comfyVae: p.comfy.vae, comfySampler: p.comfy.sampler, comfyScheduler: p.comfy.scheduler,
-      })
+      if (d.engine === 'comfyui') Object.assign(d, comfyDraftFields(p.comfy))
       set({ workspace: 'image' })
     }
     get().patchDraft(d); get().toast(`已套用「${p.name}」`, 'ok')

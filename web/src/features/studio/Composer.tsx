@@ -4,7 +4,7 @@ import { ChevronDown, Dices, ImagePlus, Link2, Lock, Minus, Plus, RefreshCw, Sav
 import { api, media } from '../../api/client'
 import type { ComfyPreset, LlmKind, Lora, StudioPreset } from '../../api/types'
 import { cx, mp, parseHfLink, ratio } from '../../lib/util'
-import { useStore } from '../../store/store'
+import { comfyDraftFields, comfyPayload, useStore } from '../../store/store'
 import { Field, Seg, Slider, Toggle } from '../../ui/Overlay'
 import { NamePrompt } from '../../ui/NamePrompt'
 import type { Draft } from '../../store/store'
@@ -57,8 +57,7 @@ export function Composer() {
         name, mode: video ? 'video' : 'image', gpu: draft.gpu, width: draft.width, height: draft.height,
         steps: draft.steps, cfg: draft.cfg, loras: draft.loras.filter(l => l.repo_id),
         ...(video ? { workflow: draft.workflow, num_frames: draft.frames, offload_mode: draft.offload } : draft.engine === 'comfyui' ? {
-          engine: draft.engine, comfy: { template: draft.comfyTemplate, diffusion: draft.comfyDiff, text_encoder: draft.comfyTe,
-            vae: draft.comfyVae, sampler: draft.comfySampler, scheduler: draft.comfyScheduler },
+          engine: draft.engine, comfy: comfyPayload(draft),
         } : { engine: draft.engine, model: draft.model }),
       })
       if (status) useStore.setState({ status: { ...status, studio_presets: r.custom } })
@@ -300,14 +299,14 @@ function ComfyBox() {
   const status = useStore(s => s.status)
   const toast = useStore(s => s.toast)
   const [saving, setSaving] = useState(false)
-  const apply = (p: ComfyPreset) => patch({ comfyTemplate: p.template, comfyDiff: p.diffusion, comfyTe: p.text_encoder, comfyVae: p.vae, comfySampler: p.sampler, comfyScheduler: p.scheduler, steps: p.steps, cfg: p.cfg, width: p.width, height: p.height, loras: p.loras || [] })
+  const apply = (p: ComfyPreset) => patch({ ...comfyDraftFields(p), steps: p.steps, cfg: p.cfg, width: p.width, height: p.height, loras: p.loras || [] })
   const onTemplate = (id: string) => {
     const t = cfg.comfy.templates.find(x => x.id === id); if (!t) return
-    patch({ comfyTemplate: id, comfySampler: t.defaults.sampler, comfyScheduler: t.defaults.scheduler })
+    patch({ comfyTemplate: id, comfySampler: t.defaults.sampler, comfyScheduler: t.defaults.scheduler, comfyClipType: undefined, comfyDenoise: undefined })
   }
   const save = async (name: string) => {
     try {
-      const r = await api.comfy.savePreset({ name, template: draft.comfyTemplate, diffusion: draft.comfyDiff, text_encoder: draft.comfyTe, vae: draft.comfyVae, sampler: draft.comfySampler, scheduler: draft.comfyScheduler, steps: draft.steps, cfg: draft.cfg, width: draft.width, height: draft.height, loras: draft.loras })
+      const r = await api.comfy.savePreset({ name, ...comfyPayload(draft), steps: draft.steps, cfg: draft.cfg, width: draft.width, height: draft.height, loras: draft.loras })
       if (status) useStore.setState({ status: { ...status, comfy_presets: r.presets } })
       toast('已保存组合方案', 'ok')
     } catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }

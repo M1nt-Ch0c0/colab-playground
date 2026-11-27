@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, Copy, Download, Expand, Film, GitCompare, Im
 import { api, media } from '../../api/client'
 import type { Job, Round } from '../../api/types'
 import { ago, clock, cx, now, rid } from '../../lib/util'
-import { useStore } from '../../store/store'
+import { comfyDraftFields, useStore } from '../../store/store'
 import { useConfirm, useTick } from '../../ui/Overlay'
 
 const STAGES: [Job['stage'], string][] = [['provisioning', '申请实例'], ['uploading', '上传参数'], ['generating', '采样'], ['downloading', '回传']]
@@ -134,16 +134,19 @@ function ActionBar({ round }: { round: Round }) {
   }
   const reuse = () => {
     const m = round
+    const comfy = m.kind === 'image' && m.engine === 'comfyui' ? comfyDraftFields(m.comfy) : null
     if (m.kind === 'video') setWs('video'); else setWs('image')
     patch({
       prompt: m.prompt, negative: m.negative || '', width: m.width || 768, height: m.height || 1152,
       steps: m.steps || 35, cfg: m.cfg || 5, seed: m.seed != null ? String(m.seed) : '-1', gpu: m.gpu || 'A100',
       ...(m.kind === 'video'
         ? { workflow: (m.workflow as 't2va') || 't2va', frames: m.num_frames || 124, offload: m.offload_mode || 'auto' }
-        : m.engine === 'comfyui' ? { engine: 'comfyui' } : { engine: 'diffusers', model: m.model }),
+        : comfy ? { engine: 'comfyui', ...comfy } : { engine: 'diffusers', model: m.model }),
       loras: m.loras || [],
     })
-    toast(`已填回 ${rid(round.id)} 的参数`, 'ok')
+    if (comfy && (!comfy.comfyDiff || !comfy.comfyTe || !comfy.comfyVae)) {
+      toast('已填回可用参数，请补齐历史记录中缺少的模型链接', 'err')
+    } else toast(`已填回 ${rid(round.id)} 的参数`, 'ok')
   }
   const asRef = async (slot: 'first' | 'last') => {
     try {

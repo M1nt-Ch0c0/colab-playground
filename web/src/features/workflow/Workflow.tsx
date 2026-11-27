@@ -100,6 +100,10 @@ export function WorkflowWorkspace() {
 
 type DraftFiles = { files: File[]; change: (next: File[]) => void }
 type RunAction = (fn: () => Promise<{ run: WfRun }>, msg?: string) => void
+interface OutputEditor {
+  change: (stepId: string, list: 'scenes' | 'items', index: number, text: string) => void
+  flush: () => Promise<boolean>
+}
 
 function LocalImage({ file, remove }: { file: File; remove: () => void }) {
   const [url, setUrl] = useState('')
@@ -259,38 +263,75 @@ function RunCanvas({ run }: { run: WfRun }) {
   const [savingTpl, setSavingTpl] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const timer = useRef(0)
-  const pending = useRef<Pick<WfRun, 'topic' | 'workflow'> | null>(null)
-  const writing = useRef<Promise<unknown> | null>(null)
+  const pending = useRef(new Map<string, () => Promise<unknown>>())
+  const writing = useRef<Promise<boolean> | null>(null)
   const [acting, setActing] = useState(false)
   const running = run.status === 'running'
   useEffect(() => { if (!running) setTopic(run.topic) }, [run.topic]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const flush = async () => {
     clearTimeout(timer.current)
-    if (writing.current) await writing.current
-    const change = pending.current
-    if (!change) return
-    const write = api.wf.update(run.id, change)
-    writing.current = write
-    try {
-      await write
-      if (pending.current === change) pending.current = null
-    } finally {
-      if (writing.current === write) writing.current = null
+    // Blur, autosave and execution actions share the same in-flight request.
+    // Keep a failed or superseded edit until its latest value is acknowledged.
+    while (pending.current.size || writing.current) {
+      if (!writing.current) {
+        const [key, write] = pending.current.entries().next().value!
+        writing.current = write().then(() => {
+          if (pending.current.get(key) === write) pending.current.delete(key)
+          return true
+        }, error => {
+          toast(error instanceof Error ? error.message : '保存修改失败', 'err')
+          return false
+        }).finally(() => { writing.current = null })
+      }
+      if (!(await writing.current)) return false
     }
+    return true
+  }
+  const scheduleSave = () => {
+    clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => { void flush() }, 450)
   }
   const save = (next: Partial<Pick<WfRun, 'topic' | 'workflow'>>) => {
-    const merged = { ...run, ...next }
-    pending.current = { topic: merged.topic, workflow: merged.workflow }
+    const current = useStore.getState().wfRun
+    if (current?.id !== run.id) return
+    const merged = { ...current, ...next }
+    if (next.workflow) {
+      for (const s of current.workflow.steps) {
+        if (!merged.workflow.steps.some(step => step.id === s.id)) pending.current.delete('output:' + s.id)
+      }
+    }
+    pending.current.set('config', () => api.wf.update(run.id, { topic: merged.topic, workflow: merged.workflow }))
     setRun(merged)
-    clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => { flush().catch(e => toast(e.message, 'err')) }, 450)
+    scheduleSave()
+  }
+  const editOutput: OutputEditor['change'] = (stepId, list, index, text) => {
+    const current = useStore.getState().wfRun
+    if (current?.id !== run.id) return
+    const state = current.step_states[stepId]
+    const rows = state?.output[list]
+    const field = list === 'scenes' ? 'keyframe_prompt' : 'video_prompt'
+    if (!Array.isArray(rows) || !rows[index] || rows[index][field] === text) return
+    const edited = rows.slice()
+    edited[index] = { ...rows[index], [field]: text }
+    const output = { ...state.output, [list]: edited }
+    pending.current.set('output:' + stepId, async () => {
+      const { run: saved } = await api.wf.saveOutput(run.id, stepId, { [list]: edited })
+      const latest = useStore.getState().wfRun
+      if (latest?.id === run.id && latest.step_states[stepId]?.output === output) {
+        setRun({ ...latest, updated_at: saved.updated_at, logs: saved.logs,
+          step_states: { ...latest.step_states, [stepId]: saved.step_states[stepId] } })
+        toast('已保存修改', 'ok')
+      }
+    })
+    setRun({ ...current, step_states: { ...current.step_states, [stepId]: { ...state, output } } })
+    scheduleSave()
   }
   const setSteps = (steps: WfStep[]) => save({ workflow: { ...run.workflow, steps } })
   const act: RunAction = async (fn, msg) => {
     setActing(true)
     try {
-      await flush()
+      if (!running && !(await flush())) return
       const r = await fn()
       if (useStore.getState().wfRun?.id === run.id) setRun(r.run)
       await loadWf()
@@ -339,7 +380,7 @@ function RunCanvas({ run }: { run: WfRun }) {
           <StepCard key={s.id} run={run} step={s} idx={i} state={run.step_states[s.id]} onChange={st => setSteps(run.workflow.steps.map(x => x.id === s.id ? st : x))}
             onMove={d => { const a = [...run.workflow.steps]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; setSteps(a) }}
             onRemove={() => setSteps(run.workflow.steps.filter(x => x.id !== s.id))}
-            onAct={act} />
+            onAct={act} outputEditor={{ change: editOutput, flush }} />
         ))}
       </ol>
       {!running && (
@@ -368,10 +409,10 @@ function FinalCut({ id }: { id: string }) {
   )
 }
 
-function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, draft, local }: {
+function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, outputEditor, draft, local }: {
   run?: WfRun; step: WfStep; idx: number; state?: StepState
   onChange: (s: WfStep) => void; onMove: (d: number) => void; onRemove: () => void
-  onAct?: RunAction; local?: DraftFiles
+  onAct?: RunAction; outputEditor?: OutputEditor; local?: DraftFiles
   draft?: { steps: WfStep[] }
 }) {
   const catIcon = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.icon)
@@ -405,7 +446,7 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, dr
                   <Toggle on={step.pause_after} onChange={v => onChange({ ...step, pause_after: v })}>完成后暂停</Toggle>
                 </div>
                 <StepConfig run={run} steps={steps} step={step} idx={idx} disabled={running} onChange={onChange} local={local} onAct={onAct} />
-                {run && hasOut && <StepOutput run={run} step={step} state={state!} disabled={running} />}
+                {run && hasOut && outputEditor && <StepOutput run={run} step={step} state={state!} disabled={running} editor={outputEditor} />}
                 <div className="row wrap step-actions">
                   {run && <><button className="btn sm" disabled={running} onClick={() => onAct!(() => api.wf.retry(run.id, step.id, true), '只跑这一步')}><RotateCcw size={13} />只跑这一步</button>
                   <button className="btn sm" disabled={running} onClick={() => onAct!(() => api.wf.retry(run.id, step.id, false), '从这一步往后跑')}><Play size={13} />从这里往后跑</button></>}
@@ -521,14 +562,11 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
   )
 }
 
-function StepOutput({ run, step, state, disabled }: { run: WfRun; step: WfStep; state: StepState; disabled: boolean }) {
+function StepOutput({ run, step, state, disabled, editor }: {
+  run: WfRun; step: WfStep; state: StepState; disabled: boolean; editor: OutputEditor
+}) {
   const rounds = useStore(s => s.rounds)
-  const setRun = useStore(s => s.setWfRun)
-  const toast = useStore(s => s.toast)
   const out = state.output
-  const saveOut = async (patch: Record<string, unknown>) => {
-    try { const r = await api.wf.saveOutput(run.id, step.id, patch); setRun(r.run); toast('已保存修改', 'ok') } catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }
-  }
   const thumbs = (ids: string[]) => (
     <div className="out-grid">{ids.map(id => { const r = rounds.find(x => x.id === id); return r ? <figure key={id}><img src={media.thumb(r)} alt="" /><figcaption>{rid(id)}</figcaption></figure> : <figure key={id} className="missing"><figcaption>{rid(id)}</figcaption></figure> })}</div>
   )
@@ -541,7 +579,8 @@ function StepOutput({ run, step, state, disabled }: { run: WfRun; step: WfStep; 
           <div className="scenes">{(out.scenes as Record<string, string>[]).map((s, i) => (
             <div key={i} className="scene">
               <b>{i + 1}. {s.title}</b>
-              <textarea rows={2} disabled={disabled} defaultValue={s.keyframe_prompt} onBlur={e => { if (e.target.value !== s.keyframe_prompt) { const scenes = [...out.scenes]; scenes[i] = { ...s, keyframe_prompt: e.target.value }; saveOut({ scenes }) } }} aria-label="关键帧提示词" />
+              <textarea rows={2} disabled={disabled} value={s.keyframe_prompt || ''} aria-label="关键帧提示词"
+                onChange={e => editor.change(step.id, 'scenes', i, e.target.value)} onBlur={() => void editor.flush()} />
               <small className="dim">{s.video_prompt} · {s.audio_notes}</small>
             </div>
           ))}</div>
@@ -555,7 +594,8 @@ function StepOutput({ run, step, state, disabled }: { run: WfRun; step: WfStep; 
       {step.type === 'h3_prompt' && Array.isArray(out.items) && (
         <div className="scenes">{(out.items as { title: string; video_prompt: string }[]).map((it, i) => (
           <div key={i} className="scene"><b>{i + 1}. {it.title}</b>
-            <textarea rows={3} disabled={disabled} defaultValue={it.video_prompt} onBlur={e => { if (e.target.value !== it.video_prompt) { const items = [...out.items]; items[i] = { ...it, video_prompt: e.target.value }; saveOut({ items }) } }} aria-label="视频提示词" /></div>
+            <textarea rows={3} disabled={disabled} value={it.video_prompt || ''} aria-label="视频提示词"
+              onChange={e => editor.change(step.id, 'items', i, e.target.value)} onBlur={() => void editor.flush()} /></div>
         ))}</div>
       )}
       {step.type === 'video_stitch' && out.final_round_id && <p className="help">已合成 {out.clip_count} 段，约 {out.duration_s} 秒，成片 {rid(out.final_round_id)}。</p>}

@@ -348,7 +348,7 @@ function finish(j: Job) {
     kind: j.mode, prompt: j.prompt, model: j.model, width: j.width, height: j.height, gpu: j.gpu, steps: j.steps,
     cfg: p?.cfg, seed: j.seed, negative: p?.negative, workflow: j.workflow, num_frames: p?.num_frames,
     loras: p?.loras, has_image: p?.has_image, chain: p?.chain, idea: p?.idea, engine: p?.engine,
-    comfy: p?.comfy as Record<string, unknown> | undefined, offload_mode: p?.offload_mode,
+    comfy: p?.comfy, offload_mode: p?.offload_mode,
     duration_s: j.mode === 'video' ? Math.round(((p?.num_frames || 124) / 24) * 10) / 10 : undefined, job_id: j.id,
   })
   j.status = 'done'; j.stage = 'done'; j.round_id = r.id; j.finished_at = sec(); j.progress = { label: '完成', pct: 100, detail: '', rate: '' }
