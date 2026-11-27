@@ -43,3 +43,13 @@ python3 .github/scripts/pr_policy.py 123
 ```
 
 若评论已更新但检查状态未刷新，可在 Actions 中手动运行「PR policy」，输入 PR 编号复核。如果需要修复检查本身，仓库管理员可在 Settings → Rules → Rulesets 临时停用这条规则，验证修复后恢复 Active。
+
+## 本地开发入口
+
+按[部署与运维](docs/deployment.md#不使用-docker)安装本地依赖。修改前端、暂时不连接 Colab 时，可用模拟数据预览界面：
+
+```bash
+npm --prefix web run dev:mock
+```
+
+模拟预览不会申请 GPU，也不能验证真实生成。不同模块的入口和状态归属见[后端设计](docs/backend-redesign.md)，接口见 [HTTP API](docs/API.md)。维护者的发布变量和部署配置见[发布说明](docs/deployment.md#github-自动发布维护者)。
