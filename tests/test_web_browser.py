@@ -186,11 +186,19 @@ class BrowserTest(unittest.TestCase):
                 def open_step(name):
                     row = wait.until(EC.presence_of_element_located((By.XPATH, f"//li[.//b[normalize-space(.)='{name}']]")))
                     row.find_element(By.CSS_SELECTOR, ".step-h").click()
-                    wait.until(lambda _: row.find_elements(By.CSS_SELECTOR, ".step-cfg"))
+                    def expanded(d):
+                        panels = row.find_elements(By.CSS_SELECTOR, ".step-b")
+                        return panels and d.execute_script("""
+                            const panel = arguments[0];
+                            return Number(getComputedStyle(panel).opacity) === 1
+                                && panel.clientHeight >= panel.scrollHeight - 1;
+                        """, panels[0])
+                    wait.until(expanded, f"Step panel did not finish expanding: {name}")
                     return row
 
                 def dropdown(row, label):
-                    return Select(row.find_element(By.XPATH, f".//label[span[normalize-space(.)='{label}']]/select"))
+                    locator = (By.XPATH, f".//label[span[normalize-space(.)='{label}']]/select")
+                    return Select(wait.until(lambda _: EC.element_to_be_clickable(locator)(row)))
 
                 def toggle(row, label):
                     return row.find_element(By.XPATH, f".//button[@role='switch' and normalize-space(.)='{label}']")
@@ -242,6 +250,41 @@ class BrowserTest(unittest.TestCase):
                     wait.until(lambda _: update.called and update.call_args.args[1]["workflow"]["steps"][1]["config"]["poll_all_proxies"] is True)
                     config = update.call_args.args[1]["workflow"]["steps"][1]["config"]
                 self.assertEqual((config["gpu"], config["gpu_pool"]), ("G4", ["G4"]))
+
+    def test_cleanup_refreshes_preview_in_both_clients(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), signed_in_browser() as (rt, driver, url):
+                src = rt.root / "cleanup-fixture.png"
+                src.write_bytes(png())
+                rid = rt.store.save(src, "image", {"prompt": "cleanup fixture"})
+                driver.get(url + ("/legacy" if legacy else "/"))
+                wait = WebDriverWait(driver, 12)
+                if legacy:
+                    wait.until(EC.element_to_be_clickable((By.ID, "galleryToggleBtn"))).click()
+                    trigger = (By.ID, "cleanBtn")
+                    selector = ".modal #cGo"
+                    age = (By.ID, "cDays")
+                    kind = (By.ID, "cKind")
+                else:
+                    driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+                    driver.refresh()
+                    trigger = (By.CSS_SELECTOR, 'button[title="清理旧作品"]')
+                    selector = '[role=dialog][aria-label="清理旧作品"] button.solid-danger'
+                    age = (By.CSS_SELECTOR, '[role=dialog][aria-label="清理旧作品"] input[type=number]')
+                    kind = (By.CSS_SELECTOR, '[role=dialog][aria-label="清理旧作品"] select')
+                wait.until(EC.element_to_be_clickable(trigger)).click()
+                wait.until(EC.element_to_be_clickable(age)).send_keys(Keys.CONTROL, "a", Keys.NULL, "0")
+                button = (By.CSS_SELECTOR, selector)
+                wait.until(EC.element_to_be_clickable(button))
+                Select(driver.find_element(*kind)).select_by_value("video")
+                self.assertFalse(driver.find_element(*button).is_enabled())
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".modal .preview-box"), "没有符合条件"))
+                self.assertIsNotNone(rt.store.media_path(rid))
+                Select(driver.find_element(*kind)).select_by_value("image")
+                wait.until(EC.element_to_be_clickable(button)).click()
+                wait.until(lambda _: bool(rt.store.trash_list()["count"]))
+                self.assertIsNone(rt.store.media_path(rid))
+                self.assertEqual(rt.store.trash_list()["items"][0]["id"], rid)
 
     def test_reuse_comfy_round_submits_stored_combination(self):
         with signed_in_browser() as (rt, driver, url):
@@ -315,7 +358,14 @@ class BrowserTest(unittest.TestCase):
                 def open_step(name):
                     row = wait.until(EC.presence_of_element_located((By.XPATH, f"//li[.//b[normalize-space(.)='{name}']]")))
                     row.find_element(By.CSS_SELECTOR, ".step-h").click()
-                    wait.until(lambda _: row.find_elements(By.CSS_SELECTOR, ".step-cfg"))
+                    def expanded(d):
+                        panels = row.find_elements(By.CSS_SELECTOR, ".step-b")
+                        return panels and d.execute_script("""
+                            const panel = arguments[0];
+                            return Number(getComputedStyle(panel).opacity) === 1
+                                && panel.clientHeight >= panel.scrollHeight - 1;
+                        """, panels[0])
+                    wait.until(expanded, f"Step panel did not finish expanding: {name}")
                     return row
 
                 if is_retry:

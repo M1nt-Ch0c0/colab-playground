@@ -2,8 +2,8 @@
 import { motion } from 'motion/react'
 import { ChevronLeft, ChevronRight, Download, Film, GitCompare, ImagePlus, RotateCcw, Star, Trash2, Wind, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, media } from '../../api/client'
-import type { CleanupResult, Round, TrashResponse } from '../../api/types'
+import { api, ApiError, media } from '../../api/client'
+import type { CleanupBody, CleanupResult, Round, TrashResponse } from '../../api/types'
 import { ago, cx, fmtBytes, now, rid } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Drawer, Modal, Scrim, Toggle, useConfirm } from '../../ui/Overlay'
@@ -25,34 +25,49 @@ export function CleanupSheet() {
   const [mbOn, setMbOn] = useState(false); const [mb, setMb] = useState(2048)
   const [kind, setKind] = useState<'' | 'image' | 'video'>('')
   const [starred, setStarred] = useState(false); const [perm, setPerm] = useState(false)
-  const [plan, setPlan] = useState<CleanupResult | null>(null); const [err, setErr] = useState('')
+  const [preview, setPreview] = useState<{ key: string; result?: CleanupResult; error?: string } | null>(null)
+  const [revision, refresh] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const inFlight = useRef(false)
   const body = { older_than_days: daysOn ? days : null, keep_latest: keepOn ? keep : null, max_mb: mbOn ? mb : null, kind, include_starred: starred, permanent: perm }
-  const key = JSON.stringify(body)
+  const serialized = JSON.stringify(body)
+  const key = revision + ':' + serialized
+  const plan = preview?.key === key ? preview.result : undefined
+  const err = !daysOn && !keepOn && !mbOn ? '至少勾选一个条件' : preview?.key === key ? preview.error : undefined
   useEffect(() => {
-    if (!daysOn && !keepOn && !mbOn) { setPlan(null); setErr('至少勾选一个条件'); return }
-    const t = setTimeout(() => api.cleanup({ ...body, dry_run: true }).then(p => { setPlan(p); setErr('') }).catch(e => setErr(e.message)), 250)
-    return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+    const filters: CleanupBody = JSON.parse(serialized)
+    if (filters.older_than_days == null && filters.keep_latest == null && filters.max_mb == null) return
+    let active = true
+    const t = setTimeout(() => api.cleanup({ ...filters, dry_run: true })
+      .then(result => { if (active) setPreview({ key, result }) })
+      .catch(e => { if (active) setPreview({ key, error: e instanceof Error ? e.message : '预览失败' }) }), 250)
+    return () => { active = false; clearTimeout(t) }
+  }, [key, serialized])
   const go = async () => {
-    if (!plan?.count) return
-    if (perm && !(await ask({ title: `永久删除 ${plan.count} 个作品？`, body: '文件会立刻删除，无法恢复。', ok: '永久删除', danger: true }))) return
+    if (!plan?.count || inFlight.current) return
+    inFlight.current = true
+    setBusy(true)
+    const expected_ids = [...plan.matched]
     try {
-      const r = await api.cleanup({ ...body, dry_run: false })
+      if (body.permanent && !(await ask({ title: `永久删除 ${expected_ids.length} 个作品？`, body: '文件会立刻删除，无法恢复。', ok: '永久删除', danger: true }))) return
+      const r = await api.cleanup({ ...body, expected_ids, dry_run: false })
       close(); await load()
-      toast(`已清理 ${(r.deleted || []).length} 个，释放 ${fmtBytes(r.bytes)}`, 'ok', perm ? undefined : { label: '撤销', fn: async () => { await api.restore(r.deleted || []); await load() } })
-    } catch (e) { toast(e instanceof Error ? e.message : '清理失败', 'err') }
+      toast(`已清理 ${(r.deleted || []).length} 个，释放 ${fmtBytes(r.bytes)}`, 'ok', body.permanent ? undefined : { label: '撤销', fn: async () => { await api.restore(r.deleted || []); await load() } })
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) refresh(n => n + 1)
+      toast(e instanceof Error ? e.message : '清理失败', 'err')
+    } finally { inFlight.current = false; setBusy(false) }
   }
   return (
     <Modal title="清理旧作品" icon={<Wind size={16} />} onClose={close}
-      foot={<><button className="btn" onClick={close}>取消</button><button className="btn solid-danger" disabled={!plan?.count} onClick={go}><Trash2 size={14} />{plan?.count ? `删除 ${plan.count} 个` : '删除'}</button></>}>
-      <label className="opt"><input type="checkbox" checked={daysOn} onChange={e => setDaysOn(e.target.checked)} />删除 <input className="inl" type="number" min={0} value={days} onChange={e => setDays(+e.target.value)} /> 天前生成的作品</label>
-      <label className="opt"><input type="checkbox" checked={keepOn} onChange={e => setKeepOn(e.target.checked)} />只保留最近 <input className="inl" type="number" min={0} value={keep} onChange={e => setKeep(+e.target.value)} /> 个</label>
-      <label className="opt"><input type="checkbox" checked={mbOn} onChange={e => setMbOn(e.target.checked)} />总占用压到 <input className="inl" type="number" min={0} value={mb} onChange={e => setMb(+e.target.value)} /> MB 以内</label>
+      foot={<><button className="btn" onClick={close}>取消</button><button className="btn solid-danger" disabled={busy || !plan?.count} onClick={go}><Trash2 size={14} />{plan?.count ? `删除 ${plan.count} 个` : '删除'}</button></>}>
+      <label className="opt"><input type="checkbox" checked={daysOn} onChange={e => { setDaysOn(e.target.checked); setMbOn(false); refresh(n => n + 1) }} />删除 <input className="inl" type="number" min={0} value={days} onChange={e => { setDays(+e.target.value); refresh(n => n + 1) }} /> 天前生成的作品</label>
+      <label className="opt"><input type="checkbox" checked={keepOn} onChange={e => { setKeepOn(e.target.checked); setMbOn(false); refresh(n => n + 1) }} />只保留最近 <input className="inl" type="number" min={0} value={keep} onChange={e => { setKeep(+e.target.value); refresh(n => n + 1) }} /> 个</label>
+      <label className="opt"><input type="checkbox" checked={mbOn} onChange={e => { setMbOn(e.target.checked); if (e.target.checked) { setDaysOn(false); setKeepOn(false) } refresh(n => n + 1) }} />总占用压到 <input className="inl" type="number" min={0} value={mb} onChange={e => { setMb(+e.target.value); refresh(n => n + 1) }} /> MB 以内</label>
       <div className="row wrap">
-        <select value={kind} onChange={e => setKind(e.target.value as typeof kind)} style={{ width: 'auto' }}><option value="">图片和视频</option><option value="image">只清理图片</option><option value="video">只清理视频</option></select>
-        <Toggle on={starred} onChange={setStarred}>包括收藏的</Toggle>
-        <Toggle on={perm} onChange={setPerm}>跳过回收站</Toggle>
+        <select value={kind} onChange={e => { setKind(e.target.value as typeof kind); refresh(n => n + 1) }} style={{ width: 'auto' }}><option value="">图片和视频</option><option value="image">只清理图片</option><option value="video">只清理视频</option></select>
+        <Toggle on={starred} onChange={v => { setStarred(v); refresh(n => n + 1) }}>包括收藏的</Toggle>
+        <Toggle on={perm} onChange={v => { setPerm(v); refresh(n => n + 1) }}>跳过回收站</Toggle>
       </div>
       <div className="preview-box">
         {err ? <span className="dim">{err}</span> : !plan ? <span className="spinner" /> : plan.count ? (

@@ -126,7 +126,7 @@ export interface Storage {
 export interface TrashResponse { items: Round[]; count: number; bytes: number; retention_days: number; now: number }
 export interface CleanupBody {
   older_than_days?: number | null; keep_latest?: number | null; max_mb?: number | null
-  kind?: '' | Mode; include_starred?: boolean; dry_run?: boolean; permanent?: boolean
+  kind?: '' | Mode; include_starred?: boolean; dry_run?: boolean; permanent?: boolean; expected_ids?: string[]
 }
 export interface CleanupResult { matched: string[]; count: number; bytes: number; deleted?: string[] }
 

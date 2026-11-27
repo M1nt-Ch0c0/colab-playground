@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .errors import StateConflict
+
 ID_RE = re.compile(r"\d{3,7}")
 MEDIA_RE = re.compile(r"(\d{3,7})\.(png|mp4)")
 TRASH_DAYS = int(os.environ.get("QP_TRASH_DAYS", "7"))
@@ -405,6 +407,17 @@ class Store:
                 continue
             plan.append(it)
         return plan
+
+    def apply_cleanup(
+        self, expected_ids: list[str], *, older_than_days: float | None, keep_latest: int | None,
+        kind: str, include_starred: bool, max_mb: float | None, permanent: bool,
+    ) -> tuple[list[dict], dict]:
+        # Revalidate and apply under the same lock as saves, stars and deletes.
+        with self._lock:
+            plan = self.cleanup_plan(older_than_days, keep_latest, kind, include_starred, max_mb)
+            if sorted(item["id"] for item in plan) != sorted(expected_ids):
+                raise StateConflict("作品列表已变化，请重新预览后再清理")
+            return plan, self.delete((item["id"] for item in plan), permanent=permanent)
 
     # ── trash ─────────────────────────────────────────────────────────
 

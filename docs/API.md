@@ -307,8 +307,11 @@ H="Authorization: Bearer $QP_TOKEN"
 | `include_starred` | 默认 `false`，收藏的作品不动 |
 | `dry_run` | `true` 只返回会删哪些，不真删 |
 | `permanent` | `true` 跳过回收站 |
+| `expected_ids` | 执行清理必填：同一组条件预览返回的 `matched` 数组 |
 
 `older_than_days`、`keep_latest`、`max_mb` 至少要填一个。`older_than_days` 和 `keep_latest` 同时填时，要**同时满足**才删：不在最新 N 个里，而且早于 N 天。
+
+`max_mb` 不能与日期或保留数量条件共用。先预览，再用同一组条件和预览的作品编号执行；如果命中的编号变化，服务端返回 HTTP 409，且不会删除任何作品。
 
 ### 回收站
 
