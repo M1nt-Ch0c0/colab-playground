@@ -134,6 +134,10 @@ python3 app.py
 
 ---
 
+## 参与开发
+
+提交 PR 时按类型和改动范围填写标题，并附具体验证结果。工作流、评审和合并要求见[贡献指南](CONTRIBUTING.md)。
+
 ## GitHub 自动发布
 
 推送 `v*` 标签或手动运行 `Build, Push to GCP Artifact Registry & Deploy` 会执行测试。镜像发布目标由 GitHub 仓库的 **Settings → Secrets and variables → Actions** 提供。
