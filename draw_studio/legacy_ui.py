@@ -2158,39 +2158,56 @@ function openCleanup(){
       <div class="warnbox hide" id="cWarn">${I('alert')}<div>永久删除不经过回收站，无法恢复。</div></div>
     </div>
     <div class="mf"><button class="btn" data-close>取消</button><button class="btn solid-danger" id="cGo" disabled>${I('trash')}删除</button></div>`);
-  const el = m.el; let plan = null; let t;
+  const el = m.el; let plan = null; let t; let request = 0; let busy = false;
   const body = () => ({
     older_than_days: $('#cDaysOn', el).checked ? +$('#cDays', el).value : null,
     keep_latest: $('#cKeepOn', el).checked ? +$('#cKeep', el).value : null,
     kind: $('#cKind', el).value, include_starred: $('#cStar', el).checked, permanent: $('#cPerm', el).checked,
   });
-  const preview = async () => {
-    const b = body();
+  const preview = async (seq, b) => {
+    if (seq !== request || !el.isConnected) return;
     $('#cWarn', el).classList.toggle('hide', !b.permanent);
     if (b.older_than_days === null && b.keep_latest === null){ $('#cPrev', el).textContent = '请至少勾选一个条件'; $('#cGo', el).disabled = true; return; }
     try {
-      plan = await post('api/rounds/cleanup', {...b, dry_run:true});
-      const thumbs = plan.matched.slice(0, 14).map(id => { const it = S.gallery.find(x => x.id === id); const u = it && thumbUrl(it);
+      const result = await post('api/rounds/cleanup', {...b, dry_run:true});
+      if (seq !== request || !el.isConnected) return;
+      plan = {body:b, result};
+      const thumbs = result.matched.slice(0, 14).map(id => { const it = S.gallery.find(x => x.id === id); const u = it && thumbUrl(it);
         return u ? `<img src="${u}" title="#${+id}">` : `<div class="mv">${I('play')}</div>`; }).join('');
-      $('#cPrev', el).innerHTML = plan.count
-        ? `将${b.permanent ? '<b style="color:#fca5a5">永久</b>' : '移入回收站并'}删除 <b>${plan.count}</b> 个作品，释放 <b>${fmtBytes(plan.bytes)}</b>${b.include_starred ? '' : '（收藏的作品不受影响）'}<div class="mini">${thumbs}${plan.count > 14 ? `<div class="mv">+${plan.count-14}</div>` : ''}</div>`
+      $('#cPrev', el).innerHTML = result.count
+        ? `将${b.permanent ? '<b style="color:#fca5a5">永久</b>' : '移入回收站并'}删除 <b>${result.count}</b> 个作品，释放 <b>${fmtBytes(result.bytes)}</b>${b.include_starred ? '' : '（收藏的作品不受影响）'}<div class="mini">${thumbs}${result.count > 14 ? `<div class="mv">+${result.count-14}</div>` : ''}</div>`
         : '没有符合条件的作品 🎉';
-      $('#cGo', el).disabled = !plan.count;
-      $('#cGo', el).innerHTML = I('trash') + (plan.count ? `删除 ${plan.count} 个` : '删除');
-    } catch(e){ $('#cPrev', el).textContent = e.message; $('#cGo', el).disabled = true; }
+      $('#cGo', el).disabled = busy || !result.count;
+      $('#cGo', el).innerHTML = I('trash') + (result.count ? `删除 ${result.count} 个` : '删除');
+    } catch(e){ if (seq !== request || !el.isConnected) return; $('#cPrev', el).textContent = e.message; $('#cGo', el).disabled = true; }
   };
-  $$('input,select', el).forEach(i => i.addEventListener('input', () => { clearTimeout(t); t = setTimeout(preview, 250); }));
+  const schedulePreview = (delay = 250) => {
+    const seq = ++request; const b = body();
+    clearTimeout(t);
+    plan = null;
+    $('#cGo', el).disabled = true;
+    $('#cGo', el).innerHTML = I('trash') + '删除';
+    $('#cPrev', el).textContent = '计算中…';
+    t = setTimeout(() => preview(seq, b), delay);
+  };
+  $$('input,select', el).forEach(i => i.addEventListener(i.type === 'number' ? 'input' : 'change', () => schedulePreview()));
   $('#cGo', el).onclick = async () => {
-    const b = body();
-    if (b.permanent && !(await confirmBox({title:`永久删除 ${plan.count} 个作品？`, body:'这些文件会被立即删除，无法恢复。', ok:'永久删除', danger:true}))) return;
+    if (busy || !plan?.result.count) return;
+    const {body:b, result} = plan;
+    if (JSON.stringify(b) !== JSON.stringify(body())) { schedulePreview(0); return; }
+    const expected_ids = [...result.matched];
+    busy = true;
+    $('#cGo', el).disabled = true;
     try {
-      const r = await post('api/rounds/cleanup', {...b, dry_run:false});
+      if (b.permanent && !(await confirmBox({title:`永久删除 ${expected_ids.length} 个作品？`, body:'这些文件会被立即删除，无法恢复。', ok:'永久删除', danger:true}))) return;
+      const r = await post('api/rounds/cleanup', {...b, expected_ids, dry_run:false});
       m.close();
       toast(`已清理 ${(r.deleted||[]).length} 个作品，释放 ${fmtBytes(r.bytes)}`, 'ok', b.permanent ? null : {label:'撤销', fn: () => restoreRounds(r.deleted)});
       await loadGallery();
-    } catch(e){ toast(e.message, 'err'); }
+    } catch(e){ toast(e.message, 'err'); schedulePreview(0); }
+    finally { busy = false; $('#cGo', el).disabled = !plan?.result.count; }
   };
-  preview();
+  schedulePreview(0);
 }
 
 /* ── trash ── */

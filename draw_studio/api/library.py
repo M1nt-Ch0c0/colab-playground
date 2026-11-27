@@ -49,15 +49,22 @@ def cleanup(body: dict, s: State):
     values = [v for v in (days, keep, mb) if v is not None]
     if not values or any(v < 0 or not math.isfinite(v) for v in values):
         raise ValueError("至少指定一个有效的非负清理条件")
-    plan = s.store.cleanup_plan(days, keep, kind=body.get("kind") or "",
-                                include_starred=flag(body.get("include_starred")), max_mb=mb)
-    matched = [item["id"] for item in plan]
-    result = {"dry_run": flag(body.get("dry_run")), "matched": matched, "count": len(plan),
-              "bytes": sum(item["bytes"] for item in plan)}
-    if not result["dry_run"] and matched:
-        deleted = s.store.delete(matched, permanent=flag(body.get("permanent")))
-        result.update(deleted=deleted["deleted"], permanent=deleted["permanent"])
-    return result
+    if mb is not None and (days is not None or keep is not None):
+        raise ValueError("空间上限不能和时间或保留数量条件同时使用")
+    filters = dict(older_than_days=days, keep_latest=keep, kind=body.get("kind") or "",
+                   include_starred=flag(body.get("include_starred")), max_mb=mb)
+    dry_run = flag(body.get("dry_run"))
+    if dry_run:
+        plan = s.store.cleanup_plan(**filters)
+        deleted = {}
+    else:
+        expected = body.get("expected_ids")
+        if not isinstance(expected, list) or not all(isinstance(i, str) and s.store.valid_id(i) for i in expected):
+            raise ValueError("请先预览，并提交预览返回的 expected_ids")
+        plan, applied = s.store.apply_cleanup(expected, **filters, permanent=flag(body.get("permanent")))
+        deleted = {"deleted": applied["deleted"], "permanent": applied["permanent"]}
+    return {"dry_run": dry_run, "matched": [item["id"] for item in plan], "count": len(plan),
+            "bytes": sum(item["bytes"] for item in plan), **deleted}
 
 
 def serve_round(request: Request, found: tuple[str, Path] | None, **options):

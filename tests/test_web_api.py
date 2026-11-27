@@ -81,6 +81,33 @@ class WebTests(unittest.TestCase):
         self.assertIn("ProviderInput", spec["components"]["schemas"])
         self.assertIn({"cookie": []}, spec["paths"]["/api/llm"]["get"]["security"])
 
+    def test_bulk_cleanup_rejects_a_changed_preview_without_deleting(self):
+        source = self.root / "cleanup.png"
+        source.write_bytes(png())
+        original = self.s.store.save(source, "image", {"prompt": "original"})
+        replacement = self.s.store.save(source, "image", {"prompt": "replacement"})
+        self.s.store.set_star(replacement, True)
+        path = "/api/rounds/cleanup"
+        criteria = {"max_mb": 0, "permanent": True}
+        self.req("POST", path, json={**criteria, "keep_latest": 0, "dry_run": True}, expected=400)
+        preview = self.req("POST", path, json={**criteria, "dry_run": True}).json()
+        self.assertEqual(preview["matched"], [original])
+        self.req("POST", path, json=criteria, expected=400)
+        self.s.store.set_star(original, True)
+        self.s.store.set_star(replacement, False)
+        self.req("POST", path, json={**criteria, "expected_ids": preview["matched"]}, expected=409)
+        for rid in (original, replacement):
+            self.assertEqual(self.req("GET", "/api/rounds/" + rid).content, source.read_bytes())
+        self.assertEqual(self.req("GET", "/api/trash").json()["count"], 0)
+
+        soft = {"max_mb": 0, "permanent": False}
+        fresh = self.req("POST", path, json={**soft, "dry_run": True}).json()
+        self.assertEqual(fresh["matched"], [replacement])
+        applied = self.req("POST", path, json={**soft, "expected_ids": fresh["matched"]}).json()
+        self.assertEqual(applied["deleted"], [replacement])
+        self.req("GET", "/api/rounds/" + original)
+        self.req("GET", "/api/trash/" + replacement)
+
     def test_existing_clients_and_media_contract(self):
         preset = self.req("POST", "/api/presets", json={"mode": "image", "name": "我的预设", "model": "qwen-2.1-bf16"}).json()
         self.assertEqual(preset["custom"], [preset["preset"]])

@@ -539,17 +539,26 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       bumpRev(); return ok({ ok: true, updated, starred: b.starred })
     }
     if (seg[1] === 'cleanup' && method === 'POST') {
-      const b = body<{ older_than_days?: number | null; keep_latest?: number | null; kind?: string; include_starred?: boolean; dry_run?: boolean; permanent?: boolean }>(raw)
-      if (b.older_than_days == null && b.keep_latest == null) return err(400, '至少填写一个条件')
-      const sorted = [...S.rounds].sort((a, c) => c.created_at - a.created_at)
-      const keep = new Set(b.keep_latest != null ? sorted.slice(0, b.keep_latest).map(r => r.id) : [])
-      const matched = S.rounds.filter(r => {
-        if (b.kind && r.kind !== b.kind) return false
+      const b = body<{ older_than_days?: number | null; keep_latest?: number | null; max_mb?: number | null; kind?: string; include_starred?: boolean; dry_run?: boolean; permanent?: boolean; expected_ids?: string[] }>(raw)
+      if (b.older_than_days == null && b.keep_latest == null && b.max_mb == null) return err(400, '至少填写一个条件')
+      if (b.max_mb != null && (b.older_than_days != null || b.keep_latest != null)) return err(400, '空间上限不能和时间或保留数量条件同时使用')
+      const sorted = S.rounds.filter(r => !b.kind || r.kind === b.kind).sort((a, c) => c.created_at - a.created_at)
+      const keep = new Set(sorted.slice(0, b.keep_latest ?? 0).map(r => r.id))
+      const cap = b.max_mb == null ? null : b.max_mb * 1048576
+      let used = b.include_starred ? 0 : sorted.filter(r => r.starred).reduce((n, r) => n + r.bytes, 0)
+      const matched = sorted.filter(r => {
         if (!b.include_starred && r.starred) return false
-        const old = b.older_than_days != null ? sec() - r.created_at > b.older_than_days * 86400 : true
-        const extra = b.keep_latest != null ? !keep.has(r.id) : true
-        return (b.older_than_days != null && b.keep_latest != null) ? old && extra : (b.older_than_days != null ? old : extra)
+        if (cap != null) {
+          if (used + r.bytes > cap) return true
+          used += r.bytes
+          return false
+        }
+        return !keep.has(r.id) && (b.older_than_days == null || sec() - r.created_at > b.older_than_days * 86400)
       }).map(r => r.id)
+      if (!b.dry_run) {
+        if (!Array.isArray(b.expected_ids)) return err(400, '请先预览，并提交预览返回的 expected_ids')
+        if (JSON.stringify([...b.expected_ids].sort()) !== JSON.stringify([...matched].sort())) return err(409, '作品列表已变化，请重新预览后再清理')
+      }
       const bytes = matched.reduce((a, id) => a + (S.rounds.find(r => r.id === id)?.bytes || 0), 0)
       if (!b.dry_run) {
         for (const id of matched) {
