@@ -11,10 +11,6 @@ on:
     types:
       - created
 
-concurrency:
-  group: '${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}'
-  cancel-in-progress: true
-
 defaults:
   run:
     shell: bash
@@ -32,6 +28,9 @@ jobs:
         startsWith(github.event.comment.body, '@gemini-cli /review') &&
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
       )
+    concurrency:
+      group: '${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 7
     permissions:
@@ -118,11 +117,28 @@ jobs:
                 }
               },
               "tools": {
-                "core": []
+                "exclude": [
+                  "run_shell_command",
+                  "write_file",
+                  "replace"
+                ]
               }
             }
           extensions: |
             [
               "${{ runner.temp }}/gemini-code-review"
             ]
-          prompt: '/pr-code-review'
+          prompt: '/pr-code-review Review GitHub PR #${{ github.event.pull_request.number || github.event.issue.number }} in repository ${{ github.repository }}. Read .gemini/context.json for any additional_context instructions. You MUST submit the review on GitHub using the GitHub MCP tools (pull_request_read, pull_request_review_write, add_comment_to_pending_review).'
+
+      - name: Log Gemini CLI summary
+        if: always()
+        env:
+          GEMINI_SUMMARY: '${{ steps.gemini_pr_review.outputs.summary }}'
+          GEMINI_ERROR: '${{ steps.gemini_pr_review.outputs.error }}'
+        run: |-
+          echo "=== Gemini Summary ==="
+          printf '%s\n' "${GEMINI_SUMMARY}"
+          if [[ -n "${GEMINI_ERROR}" ]]; then
+            echo "=== Gemini Error ==="
+            printf '%s\n' "${GEMINI_ERROR}"
+          fi
