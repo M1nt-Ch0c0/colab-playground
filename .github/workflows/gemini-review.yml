@@ -110,6 +110,7 @@ jobs:
           ADDITIONAL_CONTEXT: '${{ steps.pr_context.outputs.additional_context }}'
         with:
           gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || false) }}'
           gemini_model: '${{ vars.GEMINI_MODEL }}'
           workflow_name: 'gemini-review'
           github_pr_number: '${{ github.event.pull_request.number || github.event.issue.number }}'
@@ -156,10 +157,7 @@ jobs:
             [
               "${{ runner.temp }}/gemini-code-review"
             ]
-          prompt: |-
-            /pr-code-review Review GitHub PR #${{ github.event.pull_request.number || github.event.issue.number }} in repository ${{ github.repository }}.
-            Additional review instructions (if any): ${{ steps.pr_context.outputs.additional_context }}
-            You MUST submit the review on GitHub using the GitHub MCP tools (pull_request_read, pull_request_review_write, add_comment_to_pending_review).
+          prompt: '/pr-code-review Review GitHub PR #${{ github.event.pull_request.number || github.event.issue.number }} in repository ${{ github.repository }}. Additional review instructions (if any): ${{ steps.pr_context.outputs.additional_context }}. You MUST submit the review on GitHub using the GitHub MCP tools (pull_request_read, pull_request_review_write, add_comment_to_pending_review).'
 
       - name: Log Gemini CLI summary
         if: always() && steps.pr_context.outputs.should_run == 'true'
