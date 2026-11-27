@@ -47,6 +47,60 @@ def signed_in_browser():
 
 
 class BrowserTest(unittest.TestCase):
+    def test_grab_failure_is_reported_once_per_attempt(self):
+        with signed_in_browser() as (rt, driver, url):
+            message = "A100 暂无空闲库存（HTTP 503），可换卡、换出口或稍后重试。"
+            status = {**rt.colab.status_report(), "authed": True}
+            rt.studio.set_phase("error", message)
+            posting, accept = threading.Event(), threading.Event()
+            grab_card = rt.studio.grab_card
+
+            def delayed_post(**spec):
+                posting.set()
+                if not accept.wait(10):
+                    raise RuntimeError("test grab request timed out")
+                return grab_card(**spec)
+
+            with patch.object(rt.colab, "status_report", return_value=status), \
+                 patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "grab_card", side_effect=delayed_post), \
+                 patch.object(rt.studio, "_acquire_session", side_effect=RuntimeError(message)) as acquire:
+                wait = WebDriverWait(driver, 10)
+                error = (By.CSS_SELECTOR, ".toast.err")
+                settings = (By.CSS_SELECTOR, 'button[title="设置"]')
+                driver.get(url)
+                first = wait.until(EC.visibility_of_element_located(error))
+                self.assertEqual(first.text, message)
+                wait.until(EC.staleness_of(first))  # allow the notification to expire naturally
+                wait.until(EC.element_to_be_clickable(settings)).click()
+                idle = (By.XPATH, "//button[normalize-space(.)='20 分钟']")
+                wait.until(EC.element_to_be_clickable(idle)).click()
+                wait.until(lambda d: "on" in d.find_element(*idle).get_attribute("class").split())
+                self.assertFalse(driver.find_elements(*error), "A new status poll replayed the old error")
+
+                driver.refresh()
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'.status-pill[title="{message}"]')))
+                self.assertFalse(driver.find_elements(*error), "Reload replayed the same failure")
+                wait.until(EC.element_to_be_clickable(settings)).click()
+                retry = (By.XPATH, "//button[normalize-space(.)='开始抢卡']")
+                button = wait.until(EC.element_to_be_clickable(retry))
+                try:
+                    button.click()
+                    self.assertTrue(posting.wait(3))
+                    self.assertFalse(button.is_enabled())
+                    self.assertIn("正在抢卡", button.text)
+                finally:
+                    accept.set()
+                second = wait.until(EC.visibility_of_element_located(error))
+                self.assertEqual(second.text, message)
+                self.assertEqual(acquire.call_count, 1)
+                second.find_element(By.CSS_SELECTOR, 'button[aria-label="关闭提示"]').click()
+                wait.until(EC.staleness_of(second))
+                idle = (By.XPATH, "//button[normalize-space(.)='30 分钟']")
+                driver.find_element(*idle).click()
+                wait.until(lambda d: "on" in d.find_element(*idle).get_attribute("class").split())
+                self.assertFalse(driver.find_elements(*error), "A dismissed error returned")
+
     def test_grab_order_moves_persists_and_reaches_the_backend(self):
         with signed_in_browser() as (rt, driver, url):
             status = {**rt.colab.status_report(), "authed": True}

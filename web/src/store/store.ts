@@ -95,7 +95,20 @@ interface Store {
 let toastSeq = 1
 let saveTimer = 0
 let booting: Promise<void> | null = null
+let statusRequest = 0
 const initialTheme = document.documentElement.dataset.theme
+
+function shouldNotifyError(st: Status, previous: Status | null) {
+  if (st.phase !== 'error' || !st.error) return false
+  if (previous?.phase === 'error' && previous.error_id === st.error_id && previous.error === st.error) return false
+  if (st.error_id) {
+    try {
+      if (sessionStorage.getItem('cs.lastStatusError') === st.error_id) return false
+      sessionStorage.setItem('cs.lastStatusError', st.error_id)
+    } catch { /* 存储不可用时仍按当前页面收到的状态去重 */ }
+  }
+  return true
+}
 
 export const useStore = create<Store>((set, get) => ({
   booted: false, bootError: '', statusError: '',
@@ -137,16 +150,19 @@ export const useStore = create<Store>((set, get) => ({
     return booting
   },
   refresh: async () => {
+    const request = ++statusRequest
     try {
       const st = await api.status(get().logSeq)
+      if (request !== statusRequest) return
+      const notifyError = shouldNotifyError(st, get().status)
       setClockSkew(st.server_time)
       const logs = st.logs.length ? [...get().logs, ...st.logs].slice(-600) : get().logs
       const patch: Partial<Store> = { status: st, logs, logSeq: st.log_seq }
       if (st.gallery_rev !== get().roundsRev && get().booted) get().loadRounds()
       set({ ...patch, bootError: '', statusError: '' })
-      if (st.phase === 'error' && st.error && get().toasts.every(t => t.text !== st.error)) get().toast(st.error, 'err')
+      if (notifyError) get().toast(st.error, 'err')
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return
+      if (request !== statusRequest || (e instanceof ApiError && e.status === 401)) return
       const message = e instanceof Error ? e.message : '无法读取工作台状态'
       set(get().status ? { statusError: message } : { bootError: message })
     }
@@ -166,8 +182,10 @@ export const useStore = create<Store>((set, get) => ({
   openSheet: (s, args = {}) => set({ sheet: s, sheetArgs: args }),
   closeSheet: () => set({ sheet: null, sheetArgs: {} }),
   toast: (text, kind = '', undo) => {
+    const toasts = get().toasts
+    if (kind === 'err' && !undo && toasts.some(t => t.kind === 'err' && t.text === text && !t.undo)) return
     const id = toastSeq++
-    set({ toasts: [...get().toasts, { id, text, kind, undo }].slice(-4) })
+    set({ toasts: [...toasts, { id, text, kind, undo }].slice(-4) })
     setTimeout(() => get().dismissToast(id), undo ? 6000 : 3200)
   },
   dismissToast: id => set({ toasts: get().toasts.filter(t => t.id !== id) }),
@@ -239,9 +257,10 @@ export const useStore = create<Store>((set, get) => ({
   setWfRun: r => set({ wfRun: r }),
 }))
 
-export function busy() {
-  const st = useStore.getState().status
-  return !!(st && (st.current || st.queue.length || st.phase === 'stopping' || st.phase === 'starting' || st.workflow_active?.status === 'running'))
+export function selectPollInterval({ status }: Store) {
+  if (status?.phase === 'starting' && !status.current) return 750
+  if (status && (status.current || status.queue.length || status.phase === 'stopping' || status.workflow_active?.status === 'running')) return 1300
+  return 5000
 }
 
 export const selectRefs = (s: Store): References | null => s.status?.references || null

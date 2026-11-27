@@ -13,6 +13,7 @@ import threading
 import time
 import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SRC_DIR))
@@ -332,6 +333,7 @@ def test_gpu_shape_and_retry_cancel() -> None:
         # Test cancel during 503 retry backoff
         class Resp503:
             status_code = 503
+            text = "<html>Error 503 (Service Unavailable)!!1</html>"
 
         class Client503(FakeClient):
             def _post_assignment(self, nbh, tok, variant, acc, shape):
@@ -353,6 +355,17 @@ def test_gpu_shape_and_retry_cancel() -> None:
             assert "取消" in str(exc), str(exc)
         assert time.time() - t0 < 2.0, "cancel took too long"
         assert any("503" in ln for ln in logs), logs
+
+        with patch.dict(os.environ, {"COLAB_CLI_ASSIGN_RETRIES": "0"}):
+            for gpu in ("A100", "H100"):  # High-RAM fallback and single-shape allocation
+                logs.clear()
+                try:
+                    backend.ensure_session(gpu=gpu, high_mem=True, session_name="s-no-stock-" + gpu)
+                except RuntimeError as exc:
+                    assert str(exc) == f"{gpu} 暂无空闲库存（HTTP 503），可换卡、换出口或稍后重试。", str(exc)
+                else:
+                    raise AssertionError("expected allocation to fail")
+                assert any("Service Unavailable" in line for line in logs), logs
 
         # Test auto-fallback: A100 returns 503, L4 succeeds immediately, gpu_health records both!
         class FallbackClient(FakeClient):

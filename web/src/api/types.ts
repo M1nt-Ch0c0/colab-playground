@@ -101,7 +101,7 @@ export interface WorkflowActive {
 }
 
 export interface Status {
-  phase: Phase; error: string; active_gpu: string; idle_minutes: number; idle_deadline: number | null
+  phase: Phase; error: string; error_id?: string | null; active_gpu: string; idle_minutes: number; idle_deadline: number | null
   current: Job | null; queue: Job[]; history: Job[]
   logs: string[]; log_seq: number; gallery_rev: number; latest: Round | null
   references: References; recent_models: string[]; comfy_presets: ComfyPreset[]; studio_presets: StudioPreset[]

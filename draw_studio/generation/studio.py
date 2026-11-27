@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
+from uuid import uuid4
 
 from ..colab import WORKER_SCRIPT
 from ..colab.client import ColabBackend
@@ -137,6 +138,7 @@ class Studio:
         self._lock = threading.RLock()
         self.phase = "idle"  # idle | starting | ready | generating | stopping | error
         self.error = ""
+        self._error_id: str | None = None
         self.active_gpu = ""
         self.idle_seconds = idle_seconds
         self.idle_deadline = 0.0
@@ -1171,6 +1173,8 @@ class Studio:
         with self._lock:
             self.phase = phase
             self.error = error
+            if phase == "error":
+                self._error_id = uuid4().hex
 
     def cancel_idle(self) -> None:
         with self._lock:
@@ -1799,6 +1803,7 @@ class Studio:
             return {
                 "phase": self.phase,
                 "error": self.error,
+                "error_id": self._error_id if self.phase == "error" else None,
                 "active_gpu": self.active_gpu,
                 "idle_minutes": 0 if self.idle_seconds <= 0 else self.idle_seconds // 60,
                 "idle_deadline": int(self.idle_deadline) if self.idle_deadline else None,
