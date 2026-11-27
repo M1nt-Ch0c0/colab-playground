@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from selenium import webdriver
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -20,7 +21,9 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import create_app
 from draw_studio.generation.parameters import normalize_job
-from http_fixture import gateway, png, serving
+from http_fixture import gateway, mp4, png, serving
+
+SHORTCUT = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
 
 
 def chrome():
@@ -85,14 +88,15 @@ class BrowserTest(unittest.TestCase):
                     wait.until(lambda d: "http://***@127.0.0.1:19080" in css(box).text)
                     self.assertNotIn("fixture-pass", css(box).text)
                     click(box+' button[title="编辑线路"]')
-                    css("#proxy-label").send_keys(Keys.CONTROL, "a", Keys.NULL, "代理已改名")
+                    css("#proxy-label").send_keys(SHORTCUT, "a", Keys.NULL, "代理已改名")
                     self.assertEqual(css("#proxy-url").get_attribute("value"), "")
                     text_click("button", "保存线路")
                     wait.until(lambda d: "代理已改名" in css(box).text)
                     text_click("button", "使用系统网络")
+                    wait.until(lambda _: "当前使用系统网络" in css(box).text)
                     driver.refresh()
                     click('button[title="设置"]')
-                    self.assertIn("代理已改名", css(box).text)
+                    wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, box), "代理已改名"))
                     self.assertIn("当前使用系统网络", css(box).text)
                     text_click("button", "使用")
                     wait.until(lambda d: "使用中" in css(box).text)
@@ -101,7 +105,7 @@ class BrowserTest(unittest.TestCase):
                     wait.until(lambda d: "代理已改名" not in css(box).text and "当前使用系统网络" in css(box).text)
                     text_click("button", "添加服务商")
                     css("#llm-name").send_keys("测试网关")
-                    css("#llm-base").send_keys(Keys.CONTROL, "a", Keys.NULL, upstream+"/open/v1")
+                    css("#llm-base").send_keys(SHORTCUT, "a", Keys.NULL, upstream+"/open/v1")
                     css("#llm-key").send_keys(key)
                     switch = css('.llm-form button[role="switch"]')
                     self.assertEqual(switch.get_attribute("aria-checked"), "false")
@@ -148,7 +152,7 @@ class BrowserTest(unittest.TestCase):
                     wait.until(lambda d: "兼容页面线路" in css("#proxyChips").text)
                     Select(css("#proxyEditTarget")).select_by_visible_text("兼容页面线路")
                     self.assertEqual(css("#customProxyUrl").get_attribute("value"), "")
-                    css("#proxyLabel").send_keys(Keys.CONTROL, "a", Keys.NULL, "已编辑线路")
+                    css("#proxyLabel").send_keys(SHORTCUT, "a", Keys.NULL, "已编辑线路")
                     click("#saveCustomProxyBtn")
                     wait.until(lambda d: "已编辑线路" in css("#proxyChips").text)
                     Select(css("#proxyEditTarget")).select_by_visible_text("已编辑线路")
@@ -169,10 +173,12 @@ class BrowserTest(unittest.TestCase):
             app = create_app(root=root)
             with patch.dict(os.environ, {"QP_SECRET": str(secret)}), serving(app) as url, chrome() as driver:
                 engine = app.state.runtime.workflows
+                source = app.state.runtime.store.save(mp4(root / "blocking.mp4"), "video", {"prompt": "white model"})
                 engine.save_workflow({"name": "表单参数测试", "steps": [
                     {"id": "gate", "type": "asset_input", "pause_after": True},
                     {"id": "image", "name": "测试生图", "type": "image_gen"},
                     {"id": "video", "name": "测试视频", "type": "video_gen"},
+                    {"id": "next", "name": "后续镜头", "type": "video_gen"},
                     {"id": "join", "name": "测试拼接", "type": "video_stitch"},
                 ]})
                 driver.get(url + "/healthz")
@@ -214,17 +220,26 @@ class BrowserTest(unittest.TestCase):
                 toggle(image, "每轮使用全部代理").click()
                 toggle(image, "每轮使用全部代理").click()
                 clip = open_step("测试视频")
+                dropdown(clip, "视频模式").select_by_value("ref2va")
+                click_text("button", "从作品库选视频")
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.trash-tile[title="white model"]'))).click()
+                wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, '[role="dialog"]')))
+                dropdown(clip, "参考视频用途").select_by_value("motion")
                 dropdown(clip, "首选 GPU").select_by_value("T4")
                 toggle(clip, "每轮使用全部代理").click()
                 toggle(clip, "自动显存卸载").click()
+                follow = open_step("后续镜头")
+                dropdown(follow, "视频模式").select_by_value("ref2va")
+                dropdown(follow, "上游参考视频").select_by_value("video")
+                dropdown(follow, "参考视频用途").select_by_value("continue")
                 join = open_step("测试拼接")
                 ids = join.find_element(By.XPATH, ".//label[span[normalize-space(.)='追加作品编号']]/input")
                 ids.send_keys("001,")
                 self.assertEqual(ids.get_property("value"), "001,")
                 ids.send_keys("002，003 004")
-                ids.send_keys(Keys.CONTROL, "a", Keys.NULL, Keys.CONTROL, "x", Keys.NULL)
+                ids.send_keys(SHORTCUT, "a", Keys.NULL, SHORTCUT, "x", Keys.NULL)
                 self.assertEqual(ids.get_property("value"), "")
-                ids.send_keys(Keys.CONTROL, "v", Keys.NULL)
+                ids.send_keys(SHORTCUT, "v", Keys.NULL)
                 wait.until(lambda _: ids.get_property("value") == "001,002，003 004")
                 transition = dropdown(join, "转场")
                 transition.select_by_visible_text("硬切")
@@ -239,6 +254,8 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual((configs["video"]["gpu"], configs["video"]["gpu_pool"]), ("T4", ["T4"]))
                 self.assertIs(configs["video"]["poll_all_proxies"], True)
                 self.assertIs(configs["video"]["auto_offload"], False)
+                self.assertEqual((configs["video"]["video_round_id"], configs["video"]["video_task"]), (source, "motion"))
+                self.assertEqual((configs["next"]["video_from"], configs["next"]["video_task"]), ("video", "continue"))
                 self.assertEqual(configs["join"]["transition"], "cut")
                 self.assertEqual(configs["join"]["clip_round_ids"], ["001", "002", "003", "004"])
                 wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".run-head .tag"), "待审核"))
@@ -273,7 +290,7 @@ class BrowserTest(unittest.TestCase):
                     age = (By.CSS_SELECTOR, '[role=dialog][aria-label="清理旧作品"] input[type=number]')
                     kind = (By.CSS_SELECTOR, '[role=dialog][aria-label="清理旧作品"] select')
                 wait.until(EC.element_to_be_clickable(trigger)).click()
-                wait.until(EC.element_to_be_clickable(age)).send_keys(Keys.CONTROL, "a", Keys.NULL, "0")
+                wait.until(EC.element_to_be_clickable(age)).send_keys(SHORTCUT, "a", Keys.NULL, "0")
                 button = (By.CSS_SELECTOR, selector)
                 wait.until(EC.element_to_be_clickable(button))
                 Select(driver.find_element(*kind)).select_by_value("video")
@@ -285,6 +302,46 @@ class BrowserTest(unittest.TestCase):
                 wait.until(lambda _: bool(rt.store.trash_list()["count"]))
                 self.assertIsNone(rt.store.media_path(rid))
                 self.assertEqual(rt.store.trash_list()["items"][0]["id"], rid)
+
+    def test_video_edit_continuation_and_motion_reference(self):
+        with signed_in_browser() as (rt, driver, url):
+            previous = mp4(rt.root / "previous.mp4", 3, audio=True)
+            rid = rt.store.save(previous, "video", {"prompt": "previous shot", "width": 768, "height": 512})
+            character = rt.root / "character.png"
+            character.write_bytes(png())
+            rt.studio.set_ref("first", character.read_bytes(), "upload")
+            driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+            status = rt.colab.status_report()
+            with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "enqueue", return_value=[{"id": "fixture"}]) as enqueue:
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+                def button(label):
+                    return wait.until(EC.element_to_be_clickable((By.XPATH, f"//button[normalize-space(.)='{label}']")))
+                def submit(n):
+                    driver.find_element(By.CSS_SELECTOR, "button.go").click()
+                    wait.until(lambda _: enqueue.call_count == n)
+                    return enqueue.call_args.args[0]
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.tile[title="previous shot"]'))).click()
+                button("翻修视频").send_keys(Keys.ENTER)
+                wait.until(lambda d: d.find_element(By.CSS_SELECTOR, "video.ref-video").get_property("duration") == 3)
+                driver.find_element(By.CSS_SELECTOR, 'textarea[rows="4"]').send_keys("keep the camera movement")
+                edit = submit(1)
+                self.assertEqual((edit["video_task"], edit["has_image"]), ("edit", False))
+                button("续拍下一段").click()
+                self.assertEqual(submit(2)["video_reference_id"], edit["video_reference_id"])
+                self.assertEqual(enqueue.call_args.args[0]["video_task"], "continue")
+                button("白模 + 人设").click()
+                driver.find_element(By.CSS_SELECTOR, 'input[accept^="video/mp4"]').send_keys(str(mp4(rt.root / "blocking.mp4")))
+                wait.until(lambda d: d.find_element(By.CSS_SELECTOR, "video.ref-video").get_property("duration") == 2)
+                motion = submit(3)
+                self.assertNotEqual(motion["video_reference_id"], edit["video_reference_id"])
+                self.assertEqual((motion["video_task"], motion["has_image"]), ("motion", True))
+                button("从作品库选视频").click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.trash-tile[title="previous shot"]'))).click()
+                wait.until(lambda _: rt.studio.refs_report()["video"]["source"] == "round:" + rid)
+                button("参考图").click()
+                self.assertNotIn("video_reference_id", submit(4))
 
     def test_reuse_comfy_round_submits_stored_combination(self):
         with signed_in_browser() as (rt, driver, url):
@@ -333,6 +390,105 @@ class BrowserTest(unittest.TestCase):
                         generate()
                         wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "填齐"))
                         self.assertEqual(enqueue.call_count, 1)
+
+    def test_import_mask_retry_and_video_tools(self):
+        with signed_in_browser() as (rt, driver, url):
+            held = {"gpu": "A100", "name": "local fixture", "shape": "test", "endpoint": ""}
+            self.enterContext(patch.object(rt.colab, "status_report", return_value={
+                **rt.colab.status_report(), "authed": True, "ok": True, "sessions": [held],
+            }))
+            picture = rt.root / "painting.png"
+            picture.write_bytes(png((640, 480)))
+            clip = mp4(rt.root / "movement.mp4", 3, audio=True)
+            driver.execute_script("localStorage.setItem('cs.libopen','true')")
+            driver.get(url)
+            wait = WebDriverWait(driver, 12)
+            def css(selector):
+                return wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+            def button(label):
+                return wait.until(EC.element_to_be_clickable((By.XPATH, f"//button[normalize-space(.)='{label}']")))
+            css('input[aria-label="选择本地素材"]').send_keys(str(picture))
+            button("局部改图").click()
+            canvas = css(".mask-canvas")
+            ActionChains(driver).move_to_element(canvas).click_and_hold().move_by_offset(20, 10).release().perform()
+            button("使用这个选区").click()
+            button("调整选区")
+            css('textarea[rows="4"]').send_keys("red dot")
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_acquire_session", side_effect=RuntimeError("fixture offline")):
+                button("开始生成").click()
+                retry = button("重试")
+                original = rt.studio.snapshot()["history"][0]["id"]
+                with patch.object(rt.studio, "_run_loop"):
+                    retry.send_keys(Keys.ENTER)
+                    wait.until(lambda _: rt.studio.find_job(original)["retried_as"])
+                    mask = rt.studio._queue[0]["payload"]["edit_mask"]
+                    self.assertEqual(mask["source_id"], "001")
+                    self.assertGreaterEqual(len(mask["strokes"][0]["points"]), 2)
+                rt.studio.clear_queue()
+            css('input[aria-label="选择本地素材"]').send_keys(str(clip))
+            button("取帧与裁段").click()
+            wait.until(lambda _: css("video.clip-preview").get_property("duration") == 3)
+            button("裁段").click()
+            end = css('input[type="number"][max="3"][value="3"]')
+            end.send_keys(SHORTCUT, "a", Keys.NULL, "2")
+            css('.edit-toolbar input[type="checkbox"]').click()
+            button("保存片段 · 2 秒").click()
+            wait.until(lambda _: rt.store.latest()["prompt"].endswith("0–2 秒"))
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".clip-preview")))
+            self.assertTrue(rt.store.latest()["muted"])
+            driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
+            css('button[aria-label="收起作品库"]').click()
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".lib-dock")))
+            button("取帧与裁段").click()
+            css("video.clip-preview")
+            self.assertTrue(driver.execute_script("const b=document.querySelector('.modal').getBoundingClientRect();return innerWidth===390 && b.left>=0 && b.right<=innerWidth"))
+            button("提取尾帧").click()
+            wait.until(lambda _: rt.store.latest()["media_operation"] == "frame")
+            self.assertEqual(rt.store.latest()["source_rounds"], ["003"])
+            button("设为尾帧").send_keys(Keys.ENTER)
+            wait.until(lambda _: rt.studio.refs_report()["last"]["set"])
+            wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'img[alt="尾帧"]')))
+            button("从作品库选首帧").send_keys(Keys.ENTER)
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.trash-tile[title="painting.png"]'))).click()
+            wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'img[alt="首帧"]')))
+            css('button[aria-label="本次不用首帧"]').send_keys(Keys.ENTER)
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, 'img[alt="首帧"]')))
+            self.assertEqual(rt.studio.refs_report()["first"]["source"], "round:001")
+            with patch.object(rt.colab, "has_credentials", return_value=True), patch.object(rt.studio, "_run_loop"):
+                button("开始生成").click()
+                wait.until(lambda _: len(rt.studio.snapshot()["queue"]) == 1)
+                payload = rt.studio._queue[0]["payload"]
+                self.assertEqual((payload["workflow"], payload["has_image"], payload["has_last_image"]), ("fl2va", False, True))
+
+    def test_crop_with_desktop_preset_and_touch_selection(self):
+        with signed_in_browser() as (rt, driver, url):
+            source = rt.root / "character.png"
+            source.write_bytes(png((800, 400)))
+            rid = rt.store.save(source, "image", {"prompt": "人设三视图"})
+            driver.get(f"{url}/?tool=crop&round={rid}")
+            wait = WebDriverWait(driver, 8)
+            def button(label):
+                return wait.until(EC.element_to_be_clickable((By.XPATH, f"//*[@role='dialog']//button[normalize-space(.)='{label}']")))
+            button("1:1").click()
+            wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, 'output[aria-label="选区尺寸"]'), "400 × 400"))
+            button("重选").click()
+            driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
+            driver.execute_cdp_cmd("Emulation.setTouchEmulationEnabled", {"enabled": True})
+            canvas = driver.find_element(By.CSS_SELECTOR, ".crop-canvas")
+            bounds = driver.execute_script("const r=arguments[0].getBoundingClientRect();return [r.x,r.y,r.width,r.height]", canvas)
+            x, y, width, height = bounds
+            self.assertGreaterEqual(x, 0)
+            self.assertLessEqual(x + width, 390)
+            for event, fraction in [("touchStart", .2), ("touchMove", .7), ("touchEnd", None)]:
+                points = [{"x": x + width * fraction, "y": y + height * fraction}] if fraction else []
+                driver.execute_cdp_cmd("Input.dispatchTouchEvent", {"type": event, "touchPoints": points})
+            button("保存裁图").click()
+            wait.until(lambda _: rt.store.latest()["id"] != rid)
+            result = rt.store.latest()
+            self.assertEqual((result["media_operation"], result["source_rounds"]), ("crop", [rid]))
+            self.assertAlmostEqual(result["width"], 400, delta=2)
+            self.assertAlmostEqual(result["height"], 200, delta=2)
 
     def test_review_edits_finish_before_resume_and_retry(self):
         cases = [("llm_script", "scenes", "keyframe_prompt", "image_gen", "关键帧提示词"),
@@ -393,13 +549,13 @@ class BrowserTest(unittest.TestCase):
                      patch.object(rt.studio, "enqueue_with_refs", return_value=[{"id": "job"}]) as enqueue, \
                      patch.object(rt.studio, "wait_for_job", return_value={"status": "done", "round_id": "001"}):
                     try:
-                        fields[0].send_keys(Keys.CONTROL, "a", Keys.NULL, "edited 1")
+                        fields[0].send_keys(SHORTCUT, "a", Keys.NULL, "edited 1")
                         fields[1].click()  # blur starts the first save
                         self.assertTrue(began.wait(3))
                         if not is_retry:
                             topic = driver.find_element(By.CSS_SELECTOR, ".run-head textarea")
-                            topic.send_keys(Keys.CONTROL, "a", Keys.NULL, "edited topic")
-                        fields[1].send_keys(Keys.CONTROL, "a", Keys.NULL, "edited 2")
+                            topic.send_keys(SHORTCUT, "a", Keys.NULL, "edited topic")
+                        fields[1].send_keys(SHORTCUT, "a", Keys.NULL, "edited 2")
                         go.click()
                         wait.until(lambda d: d.find_element(By.CSS_SELECTOR, ".run").get_property("inert"))
                         self.assertFalse(start.called)

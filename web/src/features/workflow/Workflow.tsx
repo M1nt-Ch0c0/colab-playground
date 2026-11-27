@@ -20,6 +20,7 @@ const LABELS: Record<string, string> = {
   max_images: '最多张数', scenes_from: '分镜来源', ref_sources: '引用上游参考图', prompt_template: '提示词模板', model: '模型', gpu: '首选 GPU',
   gpu_pool: '候补 GPU（按选择顺序）', poll_rounds: '轮询轮数', poll_all_proxies: '每轮使用全部代理', auto_offload: '自动显存卸载',
   width: '宽', height: '高', steps: '步数', cfg: 'CFG', max_scenes: '最多镜头', keyframe_from: '关键帧来源', workflow: '视频模式',
+  extra_ref_sources: '上游参考图（按选择顺序）', video_from: '上游参考视频', video_round_id: '参考视频', video_task: '参考视频用途',
   num_frames: '帧数', prompts_from: '提示词来源', offload_mode: '显存卸载', clips_from: '片段来源', transition: '转场', fade_s: '转场秒数',
   target_width: '成片宽', target_height: '成片高', fps: '帧率', clip_round_ids: '追加作品编号', round_ids: '画廊作品编号',
 }
@@ -424,7 +425,7 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, ou
   const steps = run?.workflow.steps || draft?.steps || []
   useEffect(() => { if (run?.current_step_id === step.id) setOpen(true) }, [run?.current_step_id, step.id])
   return (
-    <motion.li layout className={cx('step', `s-${st}`, !step.enabled && 'off')}>
+    <motion.li layout="position" className={cx('step', `s-${st}`, !step.enabled && 'off')}>
       <span className="step-node">{st === 'running' ? <span className="spinner" /> : st === 'done' ? '✓' : idx + 1}</span>
       <div className="step-card glass">
         <div className="step-h" role="button" tabIndex={0} onClick={() => setOpen(v => !v)} onKeyDown={e => { if (e.key === 'Enter') setOpen(v => !v) }}>
@@ -490,6 +491,8 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
   const set = (k: string, v: unknown) => onChange({ ...step, config: { ...step.config, [k]: v } })
   const setPool = (pool: string[]) => onChange({ ...step, config: { ...step.config, gpu: pool[0], gpu_pool: pool } })
   const defaults = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.default_config)
+  const videoStep = step.type === 'h3_prompt' || step.type === 'video_gen'
+  const fields = videoStep ? { ...defaults, ...step.config } : step.config
   const upload = (files: File[]) => {
     if (!files.length) return
     if (files.some(f => !['image/png', 'image/jpeg', 'image/webp'].includes(f.type) || f.size > (cfg?.limits.upload_max_mb || 12) * 1048576)) {
@@ -506,6 +509,32 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
   }
   const field = (k: string, v: unknown) => {
     const label = LABELS[k] || k
+    if (k === 'last_frame_round_id') return fields.workflow === 'fl2va' && <div key={k} className="field"><span className="fl">尾帧</span>
+      <div className="row wrap"><button className="btn sm" disabled={disabled} onClick={() => open('picker', { onPick: (r: { id: string }) => set(k, r.id) })}>
+        {v ? `更换尾帧 ${rid(String(v))}` : '从作品库选尾帧'}</button>
+        {!!v && <button className="btn sm ghost" disabled={disabled} onClick={() => set(k, '')}>移除</button>}</div>
+    </div>
+    if (k === 'video_from') {
+      const sources = prev.filter(s => s.type === 'video_gen' || s.type === 'video_stitch')
+      if (fields.workflow !== 'ref2va' || (!sources.length && !v)) return null
+      return <label className="field" key={k}><span className="fl">{label}</span>
+        <select disabled={disabled} value={String(v || '')} onChange={e => onChange({ ...step, config: { ...step.config, video_from: e.target.value, video_round_id: '' } })}>
+          <option value="">手选作品或沿用提示词步骤</option>
+          {!!v && !sources.some(s => s.id === v) && <option value={String(v)}>来源步骤已移除</option>}
+          {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select></label>
+    }
+    if (k === 'video_round_id') return fields.workflow === 'ref2va' && !fields.video_from && <div key={k} className="field wide"><span className="fl">{label}</span>
+      <div className="row wrap"><button className="btn sm" disabled={disabled} onClick={() => open('picker', { slot: 'video', onPick: (r: { id: string }) => set(k, r.id) })}>
+        {v ? `更换视频 ${rid(String(v))}` : '从作品库选视频'}</button>
+        {!!v && <button className="btn sm ghost" disabled={disabled} onClick={() => set(k, '')}>移除</button>}</div>
+      {!v && step.type === 'video_gen' && fields.prompts_from && <small className="dim">可沿用上游 H3 提示词步骤选定的视频。</small>}
+    </div>
+    if (k === 'video_task') return fields.workflow === 'ref2va' && !!(fields.video_round_id || fields.video_from) && <label className="field" key={k}><span className="fl">{label}</span>
+      <select disabled={disabled} value={String(v || 'edit')} onChange={e => set(k, e.target.value)}>
+        <option value="edit">翻修原片</option><option value="continue">续拍下一段</option><option value="motion">白模 + 人设</option>
+      </select></label>
+    if (k === 'extra_ref_sources' && fields.workflow !== 'ref2va') return null
     if (UPSTREAM[k]) return (
       <label className="field" key={k}><span className="fl">{label}</span>
         <select value={String(v || '')} disabled={disabled} onChange={e => set(k, e.target.value)}>
@@ -513,7 +542,7 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
           {prev.filter(s => UPSTREAM[k].includes(s.type)).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select></label>
     )
-    if (k === 'ref_sources') return (
+    if (k === 'ref_sources' || k === 'extra_ref_sources') return (
       <div className="field wide" key={k}><span className="fl">{label}</span>
         <div className="chips">{prev.filter(s => ['asset_input', 'web_asset_fetch', 'image_gen'].includes(s.type)).map(s => {
           const on = (v as string[] || []).includes(s.id)
@@ -571,7 +600,7 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={e => { if (e.target.files) upload([...e.target.files]); e.target.value = '' }} />
         </div>
       )}
-      {Object.entries(step.config).filter(([k]) => !HIDDEN.has(k)).map(([k, v]) => field(k, v))}
+      {Object.entries(fields).filter(([k]) => !HIDDEN.has(k)).map(([k, v]) => field(k, v))}
     </div>
   )
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import collections
+import errno
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -35,6 +37,9 @@ from .parameters import (
     REPO_RE, as_float, as_int, clamp, comfy_template_by_id, expand_prompt_wildcards, normalize_comfy_config,
     normalize_idle_minutes, normalize_loras, normalize_video_offload_mode, snap_size, validate_image_model,
 )
+from .video_reference import VIDEO_TASKS, probe_reference_video, reference_prompt
+from .masked_edit import MaskedEdit, source_image
+from ..media import image_thumbnail
 
 
 # Existing installations may have a provider-specific rewrite template.
@@ -300,6 +305,11 @@ class Studio:
         if mode == "video":
             wf = str(body.get("workflow") or "t2va")
             entry["workflow"] = wf if wf in {w["id"] for w in VIDEO_WORKFLOWS} else "t2va"
+            if wf == "ref2va" and body.get("video_task"):
+                task = str(body["video_task"])
+                if task not in VIDEO_TASKS:
+                    raise ValueError("不支持的视频参考用途")
+                entry["video_task"] = task
             try:
                 frames = as_int(body.get("num_frames"), d["num_frames"])
             except (TypeError, ValueError) as exc:
@@ -351,8 +361,16 @@ class Studio:
     def _ref_snapshot_path(self, job_id: str, slot: str) -> Path:
         return self.queue_refs_dir / f"{job_id}_{slot}.bin"
 
-    def _write_job_refs(self, job: dict) -> None:
+    def _write_job_refs(self, job: dict, video_path: Path | None = None) -> None:
         self.queue_refs_dir.mkdir(parents=True, exist_ok=True)
+        if video_path:
+            snapshot = self._ref_snapshot_path(job["id"], "video")
+            try:
+                os.link(video_path, snapshot)
+            except OSError as exc:
+                if exc.errno not in (errno.EXDEV, errno.EPERM, errno.ENOTSUP):
+                    raise
+                shutil.copyfile(video_path, snapshot)
         refs = job.get("ref_blobs") or ([job["first_ref"]] if job.get("first_ref") else [])
         if refs:
             p = self._ref_snapshot_path(job["id"], "first")
@@ -372,7 +390,7 @@ class Studio:
             os.replace(ltmp, lp)
 
     def _cleanup_job_refs(self, job_id: str) -> None:
-        for slot in ("first", "last"):
+        for slot in ("first", "last", "video"):
             self._ref_snapshot_path(job_id, slot).unlink(missing_ok=True)
         if self.queue_refs_dir.exists():
             for p in self.queue_refs_dir.glob(f"{job_id}_ref_*.bin"):
@@ -393,8 +411,15 @@ class Studio:
             "has_first_blob": bool(refs),
             "ref_blob_count": len(refs),
             "has_last_blob": bool(job.get("last_ref")),
+            "retryable": bool(job.get("retryable")),
+            "retried_as": job.get("retried_as"),
         }
         return out
+
+    def _remember_job(self, job: dict) -> None:
+        if len(self._history) == self._history.maxlen:
+            self._cleanup_job_refs(self._history[-1]["id"])
+        self._history.appendleft(job)
 
     def _save_state_locked(self) -> None:
         try:
@@ -484,8 +509,9 @@ class Studio:
                 prev_cur["error"] = "服务重启，任务已中断"
                 prev_cur["finished_at"] = int(time.time())
                 prev_cur["progress"] = None
-                self._cleanup_job_refs(prev_cur["id"])
-                self._history.appendleft(prev_cur)
+                payload = prev_cur["payload"]
+                prev_cur["retryable"] = not payload.get("workflow_run_id") and (not payload.get("chain") or payload.get("chain_resolved", False))
+                self._remember_job(prev_cur)
                 interrupted_id = prev_cur["id"]
 
             # Restore queued jobs and their reference snapshots
@@ -507,6 +533,7 @@ class Studio:
                     "last_ref": None,
                 }
                 missing_ref = False
+                missing_video = bool(job["payload"].get("video_task")) and not self._ref_snapshot_path(jid, "video").is_file()
                 ref_blob_count = int(item.get("ref_blob_count") or (1 if item.get("has_first_blob") else 0))
                 if item.get("has_first_blob") or ref_blob_count > 0:
                     fp = self._ref_snapshot_path(jid, "first")
@@ -518,6 +545,8 @@ class Studio:
                             ep = self._ref_snapshot_path(jid, f"ref_{ridx}")
                             if ep.exists():
                                 blobs.append(ep.read_bytes())
+                            else:
+                                missing_ref = True
                         job["ref_blobs"] = blobs
                     else:
                         missing_ref = True
@@ -526,19 +555,20 @@ class Studio:
                     if lp.exists():
                         job["last_ref"] = lp.read_bytes()
                     else:
-                        job["payload"]["has_last_image"] = False
-                if missing_ref:
+                        missing_ref = True
+                if missing_ref or missing_video:
                     job["status"] = "error"
-                    job["error"] = "服务重启后参考图快照丢失"
+                    job["error"] = "服务重启后参考视频快照丢失" if missing_video else "服务重启后参考图快照丢失"
                     job["finished_at"] = int(time.time())
                     self._cleanup_job_refs(jid)
-                    self._history.appendleft(job)
+                    self._remember_job(job)
                     continue
                 self._queue.append(job)
                 active_ids.add(jid)
                 recovered_queued += 1
 
             # Prune orphan ref blobs
+            active_ids.update(h["id"] for h in self._history if h.get("retryable") and not h.get("retried_as"))
             if self.queue_refs_dir.exists():
                 for p in self.queue_refs_dir.iterdir():
                     if not p.is_file():
@@ -719,8 +749,51 @@ class Studio:
                     "updated_at": int(last_info.get("updated_at") or (last_f.stat().st_mtime if last_f.exists() else 0)),
                 },
                 "items": items,
+                "video": meta.get("video"),
                 "max": LIMITS["refs_max"],
             }
+
+    def video_ref_file(self, ref_id: str) -> Path | None:
+        with self._lock:
+            entry = self._refs_meta().get("video")
+            if not entry or entry["id"] != ref_id:
+                return None
+            return self.refs_dir / f"{ref_id}.mp4"
+
+    def set_video_ref(self, data: bytes | Path, source: str) -> None:
+        size = len(data) if isinstance(data, bytes) else data.stat().st_size
+        if not 0 < size <= LIMITS["video_upload_max_mb"] * 1048576:
+            raise ValueError(f"参考视频为空或超过 {LIMITS['video_upload_max_mb']} MB")
+        self.refs_dir.mkdir(parents=True, exist_ok=True)
+        ref_id = "v" + uuid.uuid4().hex
+        path = self.refs_dir / f"{ref_id}.mp4"
+        try:
+            if isinstance(data, bytes):
+                path.write_bytes(data)
+            else:
+                shutil.copyfile(data, path)
+            duration = probe_reference_video(path)
+            with self._lock:
+                meta = self._refs_meta()
+                previous = meta.get("video")
+                meta["video"] = {"id": ref_id, "source": source, "bytes": size, "duration_s": duration}
+                self._save_refs_meta_locked(meta)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        if previous:
+            (self.refs_dir / f"{previous['id']}.mp4").unlink(missing_ok=True)
+
+    def clear_video_ref(self, ref_id: str) -> None:
+        with self._lock:
+            meta = self._refs_meta()
+            entry = meta.get("video")
+            if entry:
+                if entry["id"] != ref_id:
+                    raise StateConflict("参考视频已更换，请刷新后重试")
+                del meta["video"]
+                self._save_refs_meta_locked(meta)
+                (self.refs_dir / f"{ref_id}.mp4").unlink(missing_ok=True)
 
     def add_ref(self, data: bytes, source: str) -> dict:
         now = int(time.time())
@@ -832,6 +905,14 @@ class Studio:
 
     def use_round(self, rid: str, slot: str = "first", append: bool = False) -> None:
         found = self.store.media_path(rid)
+        if slot == "video":
+            if not found or found[0] != "video":
+                raise ValueError("请选择视频作品作为参考视频")
+            try:
+                self.set_video_ref(found[1], f"round:{rid}")
+            except FileNotFoundError as exc:
+                raise ValueError("视频作品已移除，请重新选择") from exc
+            return
         if not found or found[0] != "image":
             raise RuntimeError("只能把图片作品设为参考图或首尾帧")
         data = found[1].read_bytes()
@@ -931,6 +1012,7 @@ class Studio:
         editing: bool,
         chain: bool,
         has_last_image: bool,
+        has_image: bool = True,
     ) -> list[tuple[str, bytes]]:
         images: list[tuple[str, bytes]] = []
         if mode == "video":
@@ -938,13 +1020,14 @@ class Studio:
                 for idx, blob in enumerate(self.ref_blobs()[: LIMITS["refs_max"]], start=1):
                     images.append((f"<Picture {idx}>", blob))
             elif workflow == "fl2va":
-                blobs = self.ref_blobs()
+                blobs = self.ref_blobs() if has_image else []
                 if blobs:
                     images.append(("<Picture 1> (First Frame at 0.00s)", blobs[0]))
                 if has_last_image:
                     lf = self.ref_file("last")
-                    if lf.exists():
-                        images.append(("<Picture 2> (Last Frame at end)", lf.read_bytes()))
+                    if not lf.is_file():
+                        raise ValueError("已选择的尾帧不存在，请重新设置尾帧")
+                    images.append((f"<Picture {len(images) + 1}> (Last Frame at end)", lf.read_bytes()))
         else:
             if chain:
                 latest = self.store.latest("image")
@@ -977,18 +1060,23 @@ class Studio:
         *,
         provider_id: str | None = None,
         model: str | None = None,
+        video_task: str | None = None,
+        has_image: bool = True,
     ) -> dict[str, Any]:
         if _minor_sexual_request(text):
             raise RuntimeError("不能改写涉及未成年人的性内容")
         provider, model = self.llm.resolve(provider_id, model)
         wf = workflow if workflow in {"t2va", "fl2va", "ref2va"} else "t2va"
         frames = int(clamp(num_frames or DEFAULTS["video"]["num_frames"], LIMITS["frames_min"], LIMITS["frames_max"]))
+        frames += (5 - frames) % 17
         duration_s = round(frames / 24.0, 2)
 
         if override_images is not None:
             attached = list(override_images[: LIMITS["refs_max"]])
+        elif mode == "video" and wf == "ref2va" and video_task in ("edit", "continue") and not ref_count:
+            attached = []
         else:
-            attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image)
+            attached = self._collect_prompt_images(mode, wf, editing, chain, has_last_image, has_image)
         eff_refs = len(attached) if attached else max(0, int(ref_count or 0))
 
         if mode == "video":
@@ -1008,8 +1096,15 @@ class Studio:
                 pic_note = (
                     f"Attached reference images: {', '.join(f'<Picture {i}>' for i in range(1, len(attached) + 1))}."
                     if attached
-                    else f"Number of reference images expected: {eff_refs or 1} (refer to them as <Picture 1>..)."
+                    else f"Number of reference images: {eff_refs}."
                 )
+                if video_task:
+                    label, role = VIDEO_TASKS[video_task]
+                    pic_note += (
+                        f"\nThe generator receives <Video 1>. Task: [{label}]. {role} "
+                        "The clip itself is not attached to this rewrite. Use the user's description of it. "
+                        "Only label pictures that are provided."
+                    )
                 user_text = (
                     f"Task: MiniMax-H3 Ref2VA (Full-Reference Video + Audio)\n"
                     f"Target duration: {duration_s:.2f} seconds ({frames} frames at 24 fps)\n"
@@ -1027,6 +1122,13 @@ class Studio:
                         f"(Replace N with the actual final shot index, usually 1 for smooth interpolation.)"
                     )
                     fmt_label = "H3 三段式 (FL2VA · 看首尾帧)"
+                elif wf == "fl2va" and has_last_image and len(attached) == 1:
+                    subtask = "L2VA"
+                    align_hint = (
+                        "Use the exact last-frame alignment line, replacing N with the final shot index:\n"
+                        f"How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the {duration_s:.2f}-second mark of the target video."
+                    )
+                    fmt_label = "H3 三段式 (L2VA · 看尾帧)"
                 elif wf == "fl2va" and (len(attached) == 1 or eff_refs >= 1):
                     subtask = "I2VA"
                     align_hint = (
@@ -1250,26 +1352,39 @@ class Studio:
             "boot_s": job.get("boot_s"),
             "infer_s": job.get("infer_s"),
             "error": job.get("error", ""),
+            "retryable": bool(job.get("retryable") and not job.get("retried_as")),
+            "retried_as": job.get("retried_as"),
         }
 
     # ── queue API ─────────────────────────────────────────────────────
 
     def enqueue(self, payload: dict) -> list[dict]:
-        first_ref = last_ref = None
+        last_ref = None
         ref_blobs: list[bytes] = []
         if payload["has_image"] and not payload.get("chain"):
-            refs = self.ref_blobs()
+            mask = payload.get("edit_mask")
+            if mask:
+                refs = [source_image(self.store, mask["source_id"])]
+            elif ids := payload.get("reference_round_ids"):
+                refs = [source_image(self.store, rid) for rid in ids]
+            else:
+                refs = self.ref_blobs()
             if not refs:
+                if payload.get("video_task") == "motion":
+                    raise ValueError("白模动作参考需要一张人设图，请先上传或从作品库选择")
                 raise ValueError("当前没有参考图 / 首帧，请先上传或从作品中选择")
             if payload["mode"] == "video" and payload.get("workflow") == "fl2va":
                 refs = refs[:1]
             ref_blobs = refs
-            first_ref = refs[0]
             payload["ref_count"] = len(refs)
         if payload.get("has_last_image"):
-            f = self.ref_file("last")
-            last_ref = f.read_bytes() if f.exists() else None
-            payload["has_last_image"] = last_ref is not None
+            if rid := payload.get("last_frame_round_id"):
+                last_ref = source_image(self.store, rid)
+            else:
+                f = self.ref_file("last")
+                last_ref = f.read_bytes() if f.exists() else None
+            if last_ref is None:
+                raise ValueError("已选择的尾帧不存在，请重新设置尾帧")
         return self._enqueue_internal(payload, ref_blobs=ref_blobs, last_ref=last_ref)
 
     def enqueue_with_refs(
@@ -1302,24 +1417,45 @@ class Studio:
         *,
         ref_blobs: list[bytes],
         last_ref: bytes | None,
+        video_snapshot: Path | None = None,
+        retrying: dict | None = None,
     ) -> list[dict]:
         count = payload.pop("count", 1)
         base_seed = payload["seed"]
         if base_seed is None or base_seed < 0:
             base_seed = random.randint(0, 2**31 - 2)
         first_ref = ref_blobs[0] if ref_blobs else None
-        created = []
+        if not first_ref and payload.get("video_task") == "motion":
+            raise ValueError("白模动作参考需要一张人设图")
+        if len(ref_blobs) > 1 and payload.get("engine") == "comfyui" and payload["comfy"]["template"] != "qwen-image-2.1":
+            raise ValueError("这个 ComfyUI 模板只接收一张改图底图，多图参考可选择 Qwen-Image 2.1")
+        pending = []
         with self._lock:
             if self._grabbing:
                 raise StateConflict("正在抢卡，请等算力就绪后再提交任务")
             if len(self._queue) + count > QUEUE_MAX:
                 raise StateConflict(f"队列已满（最多 {QUEUE_MAX} 个任务），请稍后再提交")
+            video_path = video_snapshot
+            if not video_path and (video_round := payload.get("video_round_id")):
+                found = self.store.media_path(video_round)
+                if not found or found[0] != "video":
+                    raise ValueError(f"视频作品 #{video_round} 不存在或已移除")
+                video_path = found[1]
+                if video_path.stat().st_size > LIMITS["video_upload_max_mb"] * 1048576:
+                    raise ValueError("参考视频超过上传上限，请先裁段")
+                probe_reference_video(video_path)
+                payload["video_reference_source"] = f"round:{video_round}"
+            elif not video_path and (video_id := payload.get("video_reference_id")):
+                video_path = self.video_ref_file(video_id)
+                if not video_path or not video_path.is_file():
+                    raise StateConflict("参考视频已移除或更换，请重新选择")
+                payload["video_reference_source"] = self._refs_meta()["video"]["source"]
             for i in range(count):
                 self._job_seq += 1
                 p = dict(payload)
                 p["seed"] = (base_seed + i) % (2**31 - 1)
                 orig_prompt = str(p.get("prompt") or "")
-                expanded_prompt = expand_prompt_wildcards(orig_prompt, p["seed"])
+                expanded_prompt = orig_prompt if retrying else expand_prompt_wildcards(orig_prompt, p["seed"])
                 if expanded_prompt != orig_prompt:
                     p["prompt_template"] = orig_prompt
                     p["prompt"] = expanded_prompt[: LIMITS["prompt_max"]]
@@ -1334,9 +1470,18 @@ class Studio:
                     "created_at": int(time.time()),
                     "progress": None,
                 }
-                self._write_job_refs(job)
-                self._queue.append(job)
-                created.append(self._job_public(job))
+                pending.append(job)
+            try:
+                for job in pending:
+                    self._write_job_refs(job, video_path)
+            except Exception:
+                for job in pending:
+                    self._cleanup_job_refs(job["id"])
+                raise
+            self._queue.extend(pending)
+            if retrying:
+                retrying["retried_as"] = pending[0]["id"]
+            created = [self._job_public(job) for job in pending]
             if payload.get("mode") == "image" and payload.get("engine", "diffusers") == "diffusers" and payload.get("model"):
                 m = str(payload["model"])
                 self._recent_models = [x for x in self._recent_models if x != m]
@@ -1358,6 +1503,29 @@ class Studio:
             f" × {count}，GPU={pool_txt}{poll_suffix}，{payload['width']}x{payload['height']}，steps={payload['steps']}"
         )
         return created
+
+    def retry_job(self, job_id: str) -> str:
+        with self._lock:
+            job = next((j for j in self._history if j["id"] == job_id), None)
+            if not job:
+                raise ValueError("找不到这次失败的任务")
+            if job.get("retried_as"):
+                return job["retried_as"]
+            if job["status"] != "error" or not job.get("retryable"):
+                raise StateConflict("这条历史记录没有可重试的素材快照")
+            p = dict(job["payload"], retry_of=job_id, count=1)
+            slots = ["first", *(f"ref_{i}" for i in range(1, p.get("ref_count", 1)))] if p.get("has_image") else []
+            clip = self._ref_snapshot_path(job_id, "video") if p.get("video_task") else None
+            try:
+                refs = [self._ref_snapshot_path(job_id, slot).read_bytes() for slot in slots]
+                last = self._ref_snapshot_path(job_id, "last").read_bytes() if p.get("has_last_image") else None
+                if clip and not clip.is_file():
+                    raise FileNotFoundError
+                created = self._enqueue_internal(p, ref_blobs=refs, last_ref=last, video_snapshot=clip, retrying=job)
+            except FileNotFoundError as exc:
+                raise StateConflict("这次任务的素材快照已丢失，请重新选择素材") from exc
+            self._cleanup_job_refs(job_id)
+            return created[0]["id"]
 
     def find_job(self, job_id: str) -> dict | None:
         with self._lock:
@@ -1407,7 +1575,7 @@ class Studio:
                     job.pop("ref_blobs", None)
                     job.pop("last_ref", None)
                     self._cleanup_job_refs(job_id)
-                    self._history.appendleft(job)
+                    self._remember_job(job)
                     self._save_state_locked()
                     self.log(f"已从队列移除任务 {job_id}")
                     return True
@@ -1421,9 +1589,10 @@ class Studio:
                 job["status"] = "canceled"
                 job["finished_at"] = int(time.time())
                 job.pop("first_ref", None)
+                job.pop("ref_blobs", None)
                 job.pop("last_ref", None)
                 self._cleanup_job_refs(job["id"])
-                self._history.appendleft(job)
+                self._remember_job(job)
             if n:
                 self._save_state_locked()
         if n:
@@ -1466,20 +1635,20 @@ class Studio:
             with self._lock:
                 if not self._queue:
                     self._current = None
+                    self._runner = None
                     self._save_state_locked()
-                    break
+                    if self.active_gpu and self.phase not in {"stopping", "idle"}:
+                        self.arm_idle()
+                    return
                 job = self._queue.popleft()
                 self._current = job
                 self._cancel = False
                 self._save_state_locked()
             self._run_job(job)
             with self._lock:
-                self._history.appendleft(job)
+                self._remember_job(job)
                 self._current = None
                 self._save_state_locked()
-        if self.active_gpu and self.phase not in {"stopping", "idle"}:
-            self.arm_idle()
-
     def _stage(self, job: dict, stage: str) -> None:
         job["stage"] = stage
         job["progress"] = None
@@ -1627,6 +1796,16 @@ class Studio:
         tmpdir = Path(tempfile.mkdtemp(prefix="qp-job-"))
         try:
             self.cancel_idle()
+            if p.get("chain") and not p.get("chain_resolved"):
+                latest = self.store.latest("image")
+                refs = [source_image(self.store, latest["id"])] if latest else []
+                with self._lock:
+                    job["ref_blobs"] = refs
+                    self._write_job_refs(job)
+                    p.update(chain_resolved=True, chain_from=latest["id"] if latest else None,
+                             has_image=bool(refs), ref_count=len(refs))
+                    self._save_state_locked()
+                self.log(f"接着改：以第 {int(latest['id'])} 号作品为参考图" if latest else "接着改：暂无历史图片，改为文生图")
             if "idle_minutes" in p:
                 with self._lock:
                     self.idle_seconds = max(0, int(p["idle_minutes"])) * 60
@@ -1665,15 +1844,14 @@ class Studio:
             refs_to_upload: list[bytes] = list(job.get("ref_blobs") or [])
             if not refs_to_upload and job.get("first_ref"):
                 refs_to_upload = [job["first_ref"]]
-            if p.get("chain"):
-                latest = self.store.latest("image")
-                if latest:
-                    refs_to_upload = [(self.store.rounds / f"{latest['id']}.png").read_bytes()]
-                    remote["chain_from"] = latest["id"]
-                    self.log(f"接着改：以第 {int(latest['id'])} 号作品为参考图")
-                else:
-                    refs_to_upload = []
-                    self.log("接着改：暂无历史图片，改为文生图")
+            edit = None
+            if p.get("edit_mask"):
+                edit = MaskedEdit(refs_to_upload[0], p["edit_mask"])
+                refs_to_upload[0] = edit.reference()
+                cw, ch = edit.crop.size
+                scale = max(p["width"], p["height"]) / max(cw, ch)
+                remote.update(width=snap_size(round(cw * scale)), height=snap_size(round(ch * scale)))
+                remote.pop("edit_mask", None)
             if remote.get("has_image") and refs_to_upload:
                 total_kb = sum(len(b) for b in refs_to_upload) // 1024
                 if len(refs_to_upload) == 1:
@@ -1699,6 +1877,11 @@ class Studio:
                 self.colab.upload_file(session, f, "content/last_frame.bin")
             else:
                 remote["has_last_image"] = False
+            if p.get("video_task"):
+                clip = self._ref_snapshot_path(job["id"], "video")
+                self.log(f"上传参考视频（{clip.stat().st_size // 1024} KB）…")
+                self.colab.upload_file(session, clip, "content/reference_video.mp4")
+                remote["prompt"] = reference_prompt(remote["prompt"], p["video_task"], remote["ref_count"])
             job_file = tmpdir / "job.json"
             job_file.write_text(json.dumps(remote, ensure_ascii=False), encoding="utf-8")
             self.colab.upload_file(session, job_file, "content/job.json")
@@ -1749,16 +1932,32 @@ class Studio:
                 "prompt", "prompt_template", "negative", "idea", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
                 "cfg", "seed", "num_frames", "loras", "has_image", "has_last_image", "chain",
                 "custom_transformer_repo", "custom_transformer_file", "auto_offload", "offload_mode",
-                "workflow_run_id", "workflow_step_id",
+                "workflow_run_id", "workflow_step_id", "video_task", "video_reference_source",
             )}
             if video:
                 meta["model"] = "MiniMaxAI/MiniMax-H3"
-            meta["chain_from"] = remote.get("chain_from")
+            source = p.get("video_reference_source", "")
+            meta["chain_from"] = source.removeprefix("round:") if source.startswith("round:") else remote.get("chain_from")
+            sources = [*p.get("reference_round_ids", []), p.get("last_frame_round_id"), meta["chain_from"]]
+            if any(sources):
+                meta["source_rounds"] = list(dict.fromkeys(rid for rid in sources if rid))
             meta["ref_count"] = remote.get("ref_count", 1 if remote.get("has_image") else 0)
             meta["job_id"] = job["id"]
             meta["boot_s"] = job.get("boot_s")
             meta["infer_s"] = job.get("infer_s")
             meta["duration_s"] = round(time.time() - t0, 1)
+            if edit:
+                from PIL import Image
+
+                with Image.open(out) as generated:
+                    result = edit.composite(generated)
+                result.save(out)
+                thumb = tmpdir / "thumb.jpg"
+                image_thumbnail(result, thumb)
+                source_id = p["edit_mask"]["source_id"]
+                meta.update(width=result.width, height=result.height, edit_source_id=source_id, source_rounds=[source_id],
+                            media_operation="masked_edit", edit_mask=p["edit_mask"],
+                            sampling_width=p["width"], sampling_height=p["height"])
             rid = self.store.save(out, "video" if video else "image", meta, thumb)
             job["round_id"] = rid
             job["status"] = "done"
@@ -1786,10 +1985,13 @@ class Studio:
                 self.set_phase("ready" if canceled and self.active_gpu else ("idle" if canceled else "error"), "" if canceled else str(exc))
         finally:
             job["finished_at"] = int(time.time())
+            job["retryable"] = (job["status"] == "error" and not p.get("workflow_run_id")
+                                and (not p.get("chain") or p.get("chain_resolved", False)))
             job.pop("first_ref", None)
             job.pop("ref_blobs", None)
             job.pop("last_ref", None)
-            self._cleanup_job_refs(job["id"])
+            if not job["retryable"]:
+                self._cleanup_job_refs(job["id"])
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     # ── snapshot ──────────────────────────────────────────────────────

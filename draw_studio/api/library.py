@@ -1,9 +1,12 @@
 import math
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from ..generation.catalog import LIMITS
+from ..media import image_crop, import_media, video_clip, video_frame
 from .core import IMAGE_BODY, IMMUTABLE, Raw, State, flag, image_type, media_file, media_route, readable
 
 router = APIRouter(prefix="/api", tags=["作品库与参考图"])
@@ -26,6 +29,58 @@ def rounds(s: State, kind: str = "", starred: bool | None = None, q: str = "", o
            offset: int = 0, limit: int = 0):
     return s.store.list(kind=kind, starred=starred, q=q.strip(), order=order,
                         offset=max(0, offset), limit=max(0, min(1000, limit)))
+
+
+class FrameRequest(BaseModel):
+    position: Literal["first", "last", "time"] = "first"
+    time_s: float = 0
+
+
+class ClipRequest(BaseModel):
+    start_s: float
+    end_s: float
+    mute: bool = False
+
+
+class CropRequest(BaseModel):
+    x: int = Field(ge=0, strict=True)
+    y: int = Field(ge=0, strict=True)
+    width: int = Field(gt=0, strict=True)
+    height: int = Field(gt=0, strict=True)
+
+
+@router.post("/rounds/import", openapi_extra={"requestBody": {"required": True, "content": {
+    mime: {"schema": {"type": "string", "format": "binary"}} for mime in ("image/png", "image/jpeg", "image/webp", "video/mp4")
+}}})
+def import_round(raw: Raw, s: State, kind: Literal["image", "video"], name: str = ""):
+    limit = LIMITS["video_upload_max_mb" if kind == "video" else "upload_max_mb"]
+    if not raw or len(raw) > limit * 1048576:
+        raise HTTPException(413, f"素材为空或超过 {limit} MB")
+    return {"id": import_media(s.store, raw, kind, name)}
+
+
+def source_media(s, rid: str, kind: Literal["image", "video"]) -> Path:
+    found = s.store.media_path(rid)
+    if not found:
+        raise HTTPException(404, "原素材已移除")
+    if found[0] != kind:
+        raise ValueError("请选择一个图片作品" if kind == "image" else "请选择一个视频作品")
+    return found[1]
+
+
+@router.post("/rounds/{rid}/crop")
+def crop_round(rid: str, body: CropRequest, s: State):
+    return {"id": image_crop(s.store, rid, source_media(s, rid, "image"), **body.model_dump())}
+
+
+@router.post("/rounds/{rid}/frame")
+def extract_frame(rid: str, body: FrameRequest, s: State):
+    return {"id": video_frame(s.store, rid, source_media(s, rid, "video"), body.position, body.time_s)}
+
+
+@router.post("/rounds/{rid}/clip")
+def extract_clip(rid: str, body: ClipRequest, s: State):
+    return {"id": video_clip(s.store, rid, source_media(s, rid, "video"), body.start_s, body.end_s, body.mute)}
 
 
 @router.post("/rounds/delete")
@@ -116,7 +171,9 @@ def star_round(rid: str, s: State, body: dict = Body(default_factory=dict)):
 
 @router.post("/rounds/{rid}/use")
 def use_round(rid: str, s: State, slot: str = "first", body: dict = Body(default_factory=dict)):
-    target = "last" if body.get("slot") == "last" or slot == "last" else "first"
+    target = body.get("slot") or slot
+    if target not in ("first", "last", "video"):
+        raise ValueError("未知的参考素材位置")
     try:
         s.studio.use_round(rid, target, append=flag(body.get("append")))
     except RuntimeError as exc:
@@ -151,6 +208,25 @@ def trash_media(rid: str, request: Request, s: State):
 
 def target_slot(request: Request, slot: str) -> str:
     return "last" if slot == "last" or request.url.path.endswith("/last-frame") else "first"
+
+
+@media_route(router, "/video-reference", "video/mp4")
+def video_reference(id: str, request: Request, s: State):
+    return media_file(request, s.studio.video_ref_file(id), "video/mp4")
+
+
+@router.post("/video-reference", openapi_extra={"requestBody": {"required": True, "content": {
+    "video/mp4": {"schema": {"type": "string", "format": "binary"}},
+}}})
+def set_video_reference(raw: Raw, s: State):
+    s.studio.set_video_ref(raw, "upload")
+    return {"ok": True, "references": s.studio.refs_report()}
+
+
+@router.delete("/video-reference")
+def clear_video_reference(id: str, s: State):
+    s.studio.clear_video_ref(id)
+    return {"ok": True, "references": s.studio.refs_report()}
 
 
 @media_route(router, "/reference", "image/png", "image/jpeg", "image/webp")

@@ -198,25 +198,31 @@ export function PickerSheet() {
   const toast = useStore(s => s.toast)
   const patch = useStore(s => s.patchDraft)
   const onPick = args.onPick as ((r: Round) => void) | undefined
-  const imgs = useMemo(() => rounds.filter(r => r.kind === 'image'), [rounds])
+  const videos = args.slot === 'video'
+  const items = useMemo(() => rounds.filter(r => r.kind === (videos ? 'video' : 'image')), [rounds, videos])
+  const setVideoRef = useStore(s => s.setVideoRef)
+  const videoRefBusy = useStore(s => s.videoRefBusy)
   const pick = async (r: Round) => {
-    if (onPick) { onPick(r); close(); return }
+    if (onPick) { close(); onPick(r); return }
+    if (videos) { if (await setVideoRef(r.id)) close(); return }
     try {
       const slot = (args.slot as 'first' | 'last') || 'first'
       const st0 = useStore.getState().status
-      const res = await api.useRound(r.id, slot, slot === 'first' && !!st0?.references.items.length)
+      const keyframe = slot === 'first' && args.keyframe === true
+      const res = await api.useRound(r.id, slot, slot === 'first' && !keyframe && !!st0?.references.items.length)
       const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: res.references } })
-      if (slot === 'first') patch({ useRef: true, chain: false })
-      toast(`已把 ${rid(r.id)} 放进参考图`, 'ok'); close()
+      if (slot === 'first' && useStore.getState().workspace === 'image') patch({ useRef: true, chain: false })
+      if (keyframe) patch({ useFirstFrame: true })
+      toast(`已将 ${rid(r.id)} 设为${slot === 'last' ? '尾帧' : keyframe ? '首帧' : '参考图'}`, 'ok'); close()
     } catch (e) { toast(e instanceof Error ? e.message : '设置失败', 'err') }
   }
   return (
-    <Modal title="从作品库挑选" icon={<ImagePlus size={16} />} onClose={close} wide>
-      {!imgs.length ? <div className="empty"><b>作品库里还没有图片</b></div> : (
+    <Modal title={videos ? '从作品库选视频' : '从作品库挑选'} icon={videos ? <Film size={16} /> : <ImagePlus size={16} />} onClose={close} wide>
+      {!items.length ? <div className="empty"><b>{videos ? '作品库里还没有视频' : '作品库里还没有图片'}</b></div> : (
         <div className="trash-grid">
-          {imgs.map(r => (
-            <button key={r.id} className="trash-tile" onClick={() => pick(r)} title={r.prompt}>
-              <img src={media.thumb(r)} alt="" /><span className="tile-id">{rid(r.id)}</span>
+          {items.map(r => (
+            <button key={r.id} className="trash-tile" disabled={videos && videoRefBusy} onClick={() => pick(r)} title={r.prompt}>
+              {videos && !r.has_thumb ? <Film size={24} /> : <img src={media.thumb(r)} alt="" />}<span className="tile-id">{rid(r.id)}</span>
               {r.starred && <span className="tile-star"><Star size={11} fill="currentColor" /></span>}
             </button>
           ))}

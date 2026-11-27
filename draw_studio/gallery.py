@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .errors import StateConflict
+from .media import video_info
 
 ID_RE = re.compile(r"\d{3,7}")
 MEDIA_RE = re.compile(r"(\d{3,7})\.(png|mp4)")
@@ -33,7 +34,8 @@ META_KEEP = (
     "prompt", "prompt_template", "negative", "engine", "model", "comfy", "workflow", "gpu", "width", "height", "steps",
     "cfg", "seed", "num_frames", "loras", "has_image", "has_last_image", "chain",
     "offload_mode", "duration_s", "boot_s", "infer_s", "job_id", "idea", "chain_from",
-    "workflow_run_id", "workflow_step_id", "source_rounds", "transition",
+    "workflow_run_id", "workflow_step_id", "source_rounds", "transition", "video_task", "video_reference_source",
+    "media_duration_s", "media_operation", "source_range_s", "source_time_s", "muted", "edit_source_id",
 )
 
 
@@ -109,7 +111,7 @@ class Store:
 
     @staticmethod
     def valid_id(rid: str) -> bool:
-        return bool(ID_RE.fullmatch(rid or ""))
+        return isinstance(rid, str) and bool(ID_RE.fullmatch(rid))
 
     def _bump(self) -> None:
         self.rev += 1
@@ -166,6 +168,12 @@ class Store:
         for key in META_KEEP:
             if key in meta and key not in item:
                 item[key] = meta[key]
+        if kind == "video" and "media_duration_s" not in item:
+            if meta.get("workflow") == "stitch" and meta.get("duration_s"):
+                item["media_duration_s"] = meta["duration_s"]
+            elif isinstance(meta.get("num_frames"), int) and meta["num_frames"] > 0:
+                n = meta["num_frames"]
+                item["media_duration_s"] = round((n + (5 - n) % 17) / 24, 3)
         if kind == "image" and (not item.get("width") or not item.get("height")):
             pw, ph = probe_image_dimensions(media)
             if pw and ph:
@@ -291,6 +299,11 @@ class Store:
     # ── mutations ─────────────────────────────────────────────────────
 
     def save(self, src: Path, kind: str, meta: dict, thumb: Path | None = None) -> str:
+        if kind == "video" and not meta.get("media_duration_s"):
+            try:
+                meta = {**meta, **video_info(src)}
+            except ValueError:
+                pass  # Keep generated media when the local FFmpeg installation is unavailable.
         with self._lock:
             rid = self._next_id()
             ext = ".mp4" if kind == "video" else ".png"

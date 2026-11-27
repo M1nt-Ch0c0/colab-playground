@@ -6,6 +6,7 @@ import { ConfirmHost } from './ui/Overlay'
 import { Composer } from './features/studio/Composer'
 import { Stage } from './features/studio/Stage'
 import { Library } from './features/library/Library'
+import { MediaEditor } from './features/library/MediaEditor'
 import { CleanupSheet, CompareSheet, LibrarySheet, Lightbox, PickerSheet, TrashSheet } from './features/library/Sheets'
 import { SettingsSheet } from './features/settings/Settings'
 import { LogsSheet } from './features/console/Logs'
@@ -29,8 +30,23 @@ function Studio() {
   const sheet = useStore(s => s.sheet)
   const theme = useStore(s => s.theme)
   const libOpen = useStore(s => s.libraryOpen)
+  const roundsReady = useStore(s => s.roundsRev >= 0)
 
   useEffect(() => { boot() }, [boot])
+  useEffect(() => {
+    if (!roundsReady) return
+    const url = new URL(location.href)
+    const tool = url.searchParams.get('tool'), id = url.searchParams.get('round')
+    if ((tool !== 'mask' && tool !== 'crop' && tool !== 'clip') || !id) return
+    const s = useStore.getState()
+    const kind = tool === 'clip' ? 'video' : 'image'
+    if (s.rounds.some(r => r.id === id && r.kind === kind)) {
+      s.setWorkspace(kind)
+      s.setViewing(id); s.openSheet(tool, { id })
+    } else s.toast('素材已移除或类型不匹配', 'err')
+    url.searchParams.delete('tool'); url.searchParams.delete('round')
+    history.replaceState(history.state, '', url)
+  }, [roundsReady])
   useEffect(() => {
     if (!booted) return
     let active = true
@@ -82,6 +98,7 @@ function Studio() {
         {sheet === 'compare' && <CompareSheet key="compare" />}
         {sheet === 'picker' && <PickerSheet key="picker" />}
         {sheet === 'lightbox' && <Lightbox key="lightbox" />}
+        {(sheet === 'mask' || sheet === 'crop' || sheet === 'clip') && <MediaEditor key={sheet} mode={sheet} />}
       </AnimatePresence>
       <ConfirmHost />
       <Toasts />
@@ -113,7 +130,7 @@ function useShortcuts() {
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       const s = useStore.getState()
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { if (s.workspace !== 'workflow') { e.preventDefault(); s.generate() } return }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { if (!s.sheet && s.workspace !== 'workflow') { e.preventDefault(); s.generate() } return }
       if ((e.target as HTMLElement).matches('input,textarea,select') || s.sheet) return
       const vis = s.rounds.filter(r => (!s.galleryFilter.kind || r.kind === s.galleryFilter.kind) && (!s.galleryFilter.starred || r.starred))
       const cur = s.rounds.find(r => r.id === s.viewing)
@@ -143,16 +160,18 @@ function usePasteUpload() {
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
       const s = useStore.getState()
-      if (s.workspace === 'workflow') return
+      if (s.workspace === 'workflow' || s.sheet) return
       const f = [...(e.clipboardData?.files || [])].find(x => /^image\/(png|jpeg|webp)$/.test(x.type))
       if (!f) return
       e.preventDefault()
       try {
-        const r = await api.uploadRef(f, 'first', !!s.status?.references.items.length)
+        const keyframe = s.workspace === 'video' && s.draft.workflow === 'fl2va'
+        const r = await api.uploadRef(f, 'first', !keyframe && !!s.status?.references.items.length)
         const st = useStore.getState().status
         if (st) useStore.setState({ status: { ...st, references: r.references } })
         if (s.workspace === 'image') s.patchDraft({ useRef: true, chain: false })
-        s.toast('已粘贴为参考图', 'ok')
+        if (keyframe) s.patchDraft({ useFirstFrame: true })
+        s.toast(keyframe ? '已粘贴为首帧' : '已粘贴为参考图', 'ok')
       } catch (err) { s.toast(err instanceof Error ? err.message : '上传失败', 'err') }
     }
     document.addEventListener('paste', onPaste)

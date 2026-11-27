@@ -1,9 +1,9 @@
 // 创作台左侧：参数全部在这里，生成按钮钉在底部。
 import { useMemo, useRef, useState } from 'react'
-import { ChevronDown, Dices, ImagePlus, Link2, Lock, Minus, Plus, RefreshCw, Save, Sparkles, Trash2, Wand2, X } from 'lucide-react'
+import { ChevronDown, Dices, Film, ImagePlus, Link2, Lock, Minus, Plus, RefreshCw, Save, Sparkles, Trash2, Wand2, X } from 'lucide-react'
 import { api, media } from '../../api/client'
 import type { ComfyPreset, LlmKind, Lora, StudioPreset } from '../../api/types'
-import { cx, mp, parseHfLink, ratio } from '../../lib/util'
+import { cx, mp, parseHfLink, ratio, rid } from '../../lib/util'
 import { comfyDraftFields, comfyPayload, useStore } from '../../store/store'
 import { Field, Seg, Slider, Toggle } from '../../ui/Overlay'
 import { NamePrompt } from '../../ui/NamePrompt'
@@ -12,6 +12,9 @@ import type { Draft } from '../../store/store'
 const IMAGE_SIZES: [string, number, number][] = [['1:1', 1024, 1024], ['2:3', 768, 1152], ['3:2', 1152, 768], ['3:4', 896, 1152], ['4:3', 1152, 896], ['9:16', 768, 1344], ['16:9', 1344, 768], ['2:3 高清', 1024, 1536], ['3:2 高清', 1536, 1024]]
 const VIDEO_SIZES: [string, number, number][] = [['16:9 横', 1280, 768], ['9:16 竖', 768, 1280], ['1:1', 768, 768], ['预览', 512, 768]]
 const FRAMES: [number, string][] = [[124, '5 秒'], [175, '7 秒'], [243, '10 秒'], [345, '14 秒']]
+const REF_TASKS: [Draft['videoTask'], string][] = [
+  ['images', '参考图'], ['edit', '翻修原片'], ['continue', '续拍下一段'], ['motion', '白模 + 人设'],
+]
 
 export function Composer() {
   const ws = useStore(s => s.workspace)
@@ -23,6 +26,10 @@ export function Composer() {
   const toast = useStore(s => s.toast)
   const open = useStore(s => s.openSheet)
   const video = ws === 'video'
+  const mask = !video && draft.editMask
+  const videoTask = video && draft.workflow === 'ref2va' && draft.videoTask !== 'images' ? draft.videoTask : undefined
+  const optionalImages = videoTask === 'edit' || videoTask === 'continue'
+  const useImages = !optionalImages || draft.videoUseImages
   const lim = cfg?.limits
   const [rewriting, setRewriting] = useState(false)
   const [savingPreset, setSavingPreset] = useState(false)
@@ -38,13 +45,19 @@ export function Composer() {
     setRewriting(true)
     try {
       const refs = status?.references
-      const editing = !video && (draft.useRef || draft.chain)
+      const keyframes = video && draft.workflow === 'fl2va'
+      const hasFirst = draft.useFirstFrame && !!refs?.first.set
+      const editing = !video && (!!mask || draft.useRef || draft.chain)
       const active = useStore.getState().llm?.active
       const r = await api.rewrite({
         provider_id: active?.provider_id, model: active?.model,
         text: draft.idea.trim(), mode: video ? 'video' : 'image', workflow: draft.workflow, num_frames: draft.frames,
-        editing, chain: !video && draft.chain, has_last_image: video && draft.workflow === 'fl2va' && !!refs?.last.set,
-        ref_count: video ? (draft.workflow === 't2va' ? 0 : (refs?.items.length || 0)) : (editing ? (draft.chain ? 1 : (refs?.items.length || 0)) : 0),
+        video_task: videoTask,
+        edit_source_id: mask ? mask.source_id : undefined,
+        editing, chain: !video && draft.chain, has_image: keyframes ? hasFirst : undefined,
+        has_last_image: keyframes && !!refs?.last.set,
+        ref_count: keyframes ? Number(hasFirst) + Number(!!refs?.last.set)
+          : video ? (draft.workflow === 't2va' || !useImages ? 0 : (refs?.items.length || 0)) : (editing ? (draft.chain || mask ? 1 : (refs?.items.length || 0)) : 0),
       })
       patch({ prompt: r.prompt }); toast('已写入提示词', 'ok')
     } catch (e) { toast(e instanceof Error ? e.message : '改写失败', 'err') }
@@ -56,7 +69,7 @@ export function Composer() {
       const r = await api.presets.save({
         name, mode: video ? 'video' : 'image', gpu: draft.gpu, width: draft.width, height: draft.height,
         steps: draft.steps, cfg: draft.cfg, loras: draft.loras.filter(l => l.repo_id),
-        ...(video ? { workflow: draft.workflow, num_frames: draft.frames, offload_mode: draft.offload } : draft.engine === 'comfyui' ? {
+        ...(video ? { workflow: draft.workflow, video_task: videoTask, num_frames: draft.frames, offload_mode: draft.offload } : draft.engine === 'comfyui' ? {
           engine: draft.engine, comfy: comfyPayload(draft),
         } : { engine: draft.engine, model: draft.model }),
       })
@@ -76,10 +89,12 @@ export function Composer() {
           {video ? <VideoMode /> : <ImageEngine />}
         </section>
 
-        <section className="block">
-          <h2>{video ? (draft.workflow === 'fl2va' ? '首帧与尾帧' : draft.workflow === 'ref2va' ? '参考图' : '参考图（文生视频不需要）') : '参考图'}</h2>
-          <RefBoard video={video} />
-        </section>
+        {videoTask && <VideoRefBoard />}
+        {(!video || draft.workflow !== 't2va') && <section className="block">
+          {optionalImages ? <Toggle on={draft.videoUseImages} onChange={v => patch({ videoUseImages: v })}>附加参考图</Toggle>
+            : <h2>{mask ? '局部改图' : video && draft.workflow === 'fl2va' ? '首帧与尾帧' : videoTask === 'motion' ? '人设图' : '参考图'}</h2>}
+          {useImages && <RefBoard video={video} />}
+        </section>}
 
         <section className="block">
           <div className="block-h"><h2>提示词</h2><span className="dim kbd-hint">⌘/Ctrl + Enter</span></div>
@@ -107,7 +122,8 @@ export function Composer() {
         </section>
 
         <section className="block">
-          <div className="block-h"><h2>画幅与采样</h2><span className="mp-badge">{mp(draft.width, draft.height)} MP · {ratio(draft.width, draft.height)}</span></div>
+          <div className="block-h"><h2>{mask ? '采样' : '画幅与采样'}</h2>{!mask && <span className="mp-badge">{mp(draft.width, draft.height)} MP · {ratio(draft.width, draft.height)}</span>}</div>
+          {!mask && <>
           <div className="chips">
             {(video ? VIDEO_SIZES : IMAGE_SIZES).map(([l, w, h]) => (
               <button key={l} className={cx('chip', draft.width === w && draft.height === h && 'on')} onClick={() => patch({ width: w, height: h })}>
@@ -133,6 +149,7 @@ export function Composer() {
               }}>最佳像素</button>
             </span>
           </div>
+          </>}
           <Field label="采样步数" hint={video ? '视频推荐 30' : '常规 28–40，Turbo 可设 4–8'}>
             <Slider min={lim?.steps_min ?? 2} max={lim?.steps_max ?? 60} value={draft.steps} onChange={v => patch({ steps: v })} />
           </Field>
@@ -362,12 +379,57 @@ function VideoMode() {
   return (
     <>
       <div className="chips">{(cfg?.video_workflows || []).map(w => <button key={w.id} className={cx('chip', draft.workflow === w.id && 'on')} onClick={() => patch({ workflow: w.id })}>{w.label}</button>)}</div>
+      {draft.workflow === 'ref2va' && <div className="chips" role="group" aria-label="参考用途">
+        {REF_TASKS.map(([key, label]) => <button key={key} aria-pressed={draft.videoTask === key}
+          className={cx('chip', draft.videoTask === key && 'on')} onClick={() => patch({ videoTask: key })}>{label}</button>)}
+      </div>}
       <Field label="时长">
         <div className="chips">{FRAMES.map(([n, l]) => <button key={n} className={cx('chip', draft.frames === n && 'on')} onClick={() => patch({ frames: n })}>{l}<span className="dim">{n}f</span></button>)}</div>
+        {!FRAMES.some(([n]) => n === draft.frames) && <span className="dim">当前 {draft.frames} 帧 · 约 {(draft.frames / 24).toFixed(1)} 秒</span>}
       </Field>
-      <p className="help">MiniMax-H3，24fps，帧数自动对齐 17×n+5。首帧与参考图模式需要先放图。</p>
+      <p className="help">{draft.workflow === 'ref2va' && draft.videoTask === 'continue'
+        ? '时长指新生成的下一段。原片和续拍片段会分别保存在作品库。'
+        : 'MiniMax-H3，24 fps，帧数自动对齐到 17 × n + 5。'}</p>
     </>
   )
+}
+
+function VideoRefBoard() {
+  const clip = useStore(s => s.status?.references.video)
+  const task = useStore(s => s.draft.videoTask)
+  const frames = useStore(s => s.draft.frames)
+  const maxFrames = useStore(s => s.cfg?.limits.frames_max ?? 345)
+  const windowSeconds = (5 + 17 * Math.ceil((Math.min(frames, maxFrames) - 5) / 17)) / 24
+  const maxMB = useStore(s => s.cfg?.limits.video_upload_max_mb ?? 64)
+  const open = useStore(s => s.openSheet)
+  const busy = useStore(s => s.videoRefBusy)
+  const update = useStore(s => s.setVideoRef)
+  const input = useRef<HTMLInputElement>(null)
+  return <section className="block" aria-label="参考视频" aria-busy={busy}
+    onDragOver={e => e.preventDefault()} onDrop={e => {
+      e.preventDefault()
+      const source = e.dataTransfer.getData('text/x-round') || e.dataTransfer.files[0]
+      if (source && !busy) void update(source)
+    }}>
+    <div className="block-h"><h2>{task === 'motion' ? '白模视频' : '参考视频'}</h2>
+      {clip && <span className="dim">{clip.source.startsWith('round:') ? rid(clip.source.slice(6)) : '已上传'} · {+clip.duration_s.toFixed(2)} 秒</span>}
+    </div>
+    {clip && (__MOCK__ && clip.source.startsWith('round:')
+      ? <img className="ref-video" src={media.videoRef(clip.id)} alt="参考视频封面" />
+      : <video className="ref-video" src={media.videoRef(clip.id)} controls playsInline preload="metadata" aria-label="参考视频预览" />)}
+    <div className="row wrap">
+      <button className="btn sm" disabled={busy} onClick={() => input.current?.click()}><Film size={14} />{busy ? '处理中…' : clip ? '更换视频' : '上传视频'}</button>
+      <button className="btn sm ghost" disabled={busy} onClick={() => open('picker', { slot: 'video' })}>从作品库选视频</button>
+      {clip && <button className="iconbtn sm" aria-label="移除参考视频" disabled={busy} onClick={() => update(null)}><X size={14} /></button>}
+    </div>
+    <input ref={input} type="file" accept="video/mp4,.mp4" hidden onChange={e => {
+      const file = e.target.files?.[0]; e.target.value = ''; if (file) void update(file)
+    }} />
+    <p className="help">MP4 · 2–15 秒 · 最大 {maxMB} MB{task === 'motion' ? '。动作、节奏和运镜取自白模，角色外观取自第一张人设图。' : ''}</p>
+    {clip && clip.duration_s > windowSeconds && <p className="help">{task === 'continue'
+      ? `续拍会参考原片最后 ${windowSeconds.toFixed(1)} 秒。`
+      : `本次生成会参考原片前 ${windowSeconds.toFixed(1)} 秒。`}</p>}
+  </section>
 }
 
 function RefBoard({ video }: { video: boolean }) {
@@ -378,17 +440,27 @@ function RefBoard({ video }: { video: boolean }) {
   const open = useStore(s => s.openSheet)
   const fileRef = useRef<HTMLInputElement>(null)
   const [slot, setSlot] = useState<'first' | 'last'>('first')
+  const source = useStore(s => s.rounds.find(r => r.id === draft.editMask?.source_id))
+  if (!video && draft.editMask) return <div className="mask-source">
+    {source ? <img src={media.thumb(source)} alt="局部改图原图" /> : <span className="dim">原图已移除</span>}
+    <div><b>{rid(draft.editMask.source_id)}</b>{source && <span className="dim"> · {source.width}×{source.height}</span>}
+      <div className="row wrap"><button className="btn sm" disabled={!source} onClick={() => open('mask', { id: source?.id })}>调整选区</button>
+        <button className="btn sm ghost" onClick={() => patch({ editMask: null })}>退出局部改图</button></div>
+    </div>
+  </div>
   if (!refs) return null
-  const needs = video ? draft.workflow !== 't2va' : draft.useRef || draft.chain
+  const keyframes = video && draft.workflow === 'fl2va'
+  const needs = video ? draft.videoTask === 'images' || draft.videoTask === 'motion' : draft.useRef && !draft.chain
   const upload = async (files: FileList | File[], target: 'first' | 'last', append: boolean) => {
-    for (const f of [...files]) {
+    for (const f of keyframes ? [...files].slice(0, 1) : [...files]) {
       if (!/^image\/(png|jpeg|webp)$/.test(f.type)) { toast('只支持 PNG / JPEG / WebP', 'err'); return }
       if (f.size > 12 * 1048576) { toast('图片超过 12MB', 'err'); return }
       try { const r = await api.uploadRef(f, target, append); const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } }); append = true }
       catch (e) { toast(e instanceof Error ? e.message : '上传失败', 'err'); return }
     }
     if (target === 'first' && !video) patch({ useRef: true, chain: false })
-    toast(target === 'last' ? '尾帧已上传' : '参考图已上传', 'ok')
+    if (target === 'first' && keyframes) patch({ useFirstFrame: true })
+    toast(target === 'last' ? '尾帧已上传' : keyframes ? '首帧已上传' : '参考图已上传', 'ok')
   }
   const remove = async (id: string) => {
     const r = await api.removeRef(id); const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } })
@@ -397,9 +469,31 @@ function RefBoard({ video }: { video: boolean }) {
   const onDrop = (e: React.DragEvent, target: 'first' | 'last') => {
     e.preventDefault()
     const rid = e.dataTransfer.getData('text/x-round')
-    if (rid) { api.useRound(rid, target, target === 'first').then(r => { const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } }); if (!video) patch({ useRef: true, chain: false }) }).catch(err => toast(err.message, 'err')) }
-    else if (e.dataTransfer.files.length) upload(e.dataTransfer.files, target, target === 'first')
+    const append = target === 'first' && !keyframes
+    if (rid) { api.useRound(rid, target, append).then(r => {
+      const st = useStore.getState().status
+      if (st) useStore.setState({ status: { ...st, references: r.references } })
+      if (!video) patch({ useRef: true, chain: false })
+      if (keyframes && target === 'first') patch({ useFirstFrame: true })
+    }).catch(err => toast(err.message, 'err')) }
+    else if (e.dataTransfer.files.length) upload(e.dataTransfer.files, target, append)
   }
+  if (keyframes) return <div>
+    {(['first', 'last'] as const).map(target => {
+      const first = target === 'first'
+      const label = first ? '首帧' : '尾帧'
+      const selected = refs[target].set && (!first || draft.useFirstFrame)
+      return <div key={target} className="last-frame" onDrop={e => onDrop(e, target)} onDragOver={e => e.preventDefault()}>
+        <span className="dim">{label}</span>
+        {selected && <figure className="ref-tile"><img src={media.slot(target, refs[target].updated_at)} alt={label} />
+          <button className="ref-x" aria-label={first ? '本次不用首帧' : '移除尾帧'} onClick={() => first ? patch({ useFirstFrame: false }) : clearLast().catch(e => toast(e.message, 'err'))}><X size={12} /></button></figure>}
+        {first && !selected && refs.first.set && <button className="btn sm" onClick={() => patch({ useFirstFrame: true })}>使用现有首帧</button>}
+        <button className="btn sm" onClick={() => { setSlot(target); fileRef.current?.click() }}>{selected ? '更换' : '上传'}{label}</button>
+        <button className="btn sm ghost" onClick={() => open('picker', { slot: target, keyframe: first })}>从作品库选{label}</button>
+      </div>
+    })}
+    <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e => { if (e.target.files?.length) void upload(e.target.files, slot, false); e.target.value = '' }} />
+  </div>
   return (
     <div onDragOver={e => e.preventDefault()}>
       {!video && (
@@ -415,7 +509,7 @@ function RefBoard({ video }: { video: boolean }) {
             <button className="ref-x" onClick={() => remove(it.id)} aria-label="移除"><X size={12} /></button>
           </figure>
         ))}
-        {refs.items.length < refs.max && !draft.chain && (
+        {refs.items.length < refs.max && (video || !draft.chain) && (
           <button className="ref-add" onClick={() => { setSlot('first'); fileRef.current?.click() }} onDrop={e => onDrop(e, 'first')} onDragOver={e => e.preventDefault()}>
             <ImagePlus size={16} /><span>{refs.items.length ? '再加一张' : '上传、拖入或粘贴'}</span>
           </button>
@@ -423,19 +517,12 @@ function RefBoard({ video }: { video: boolean }) {
       </div>
       <div className="row wrap">
         <button className="btn sm ghost" onClick={() => open('picker', { slot: 'first' })}>从作品库挑选</button>
+        {!video && <button className="btn sm ghost" onClick={() => open('picker', { onPick: (r: { id: string }) => open('mask', { id: r.id }) })}>选图局部修改</button>}
         {refs.items.length > 0 && <button className="btn sm ghost" onClick={async () => { const r = await api.clearSlot('first'); const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } }); patch({ useRef: false }) }}>清空全部</button>}
         <span className="dim">{refs.items.length}/{refs.max}</span>
       </div>
-      {video && draft.workflow === 'fl2va' && (
-        <div className="last-frame" onDrop={e => onDrop(e, 'last')} onDragOver={e => e.preventDefault()}>
-          <span className="dim">尾帧（可选）</span>
-          {refs.last.set
-            ? <figure className="ref-tile"><img src={media.slot('last', refs.last.updated_at)} alt="尾帧" /><button className="ref-x" onClick={clearLast} aria-label="移除尾帧"><X size={12} /></button></figure>
-            : <button className="btn sm" onClick={() => { setSlot('last'); fileRef.current?.click() }}>上传尾帧</button>}
-        </div>
-      )}
-      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" multiple={slot === 'first'} hidden onChange={e => { if (e.target.files) upload(e.target.files, slot, slot === 'first' && refs.items.length > 0); e.target.value = '' }} />
-      {needs && !refs.first.set && !draft.chain && <p className="help warn-text">当前设置需要参考图</p>}
+      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={e => { if (e.target.files) upload(e.target.files, 'first', refs.items.length > 0); e.target.value = '' }} />
+      {needs && !refs.first.set && <p className="help warn-text">{video && draft.videoTask === 'motion' ? '请添加一张人设图' : '当前设置需要参考图'}</p>}
     </div>
   )
 }
