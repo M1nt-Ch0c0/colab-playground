@@ -754,6 +754,8 @@ class WorkflowEngine:
             ctx[sid] = out
         if extra:
             ctx.update(extra)
+        if variables := run.get("workflow", {}).get("variables"):
+            ctx["vars"] = variables
         return ctx
 
     def _collect_ref_blobs_from_sources(

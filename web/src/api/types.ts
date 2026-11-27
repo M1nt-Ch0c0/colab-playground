@@ -155,8 +155,8 @@ export type LlmProviderBody = Wire['ProviderInput']
 export type StepType = 'asset_input' | 'llm_script' | 'web_asset_fetch' | 'image_gen' | 'h3_prompt' | 'video_gen' | 'video_stitch'
 export type RunStatus = 'draft' | 'running' | 'paused' | 'done' | 'error' | 'canceled'
 export type StepStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'canceled'
-export interface WfStep { id: string; type: StepType; name: string; enabled: boolean; pause_after: boolean; config: Record<string, any> }
-export interface WfDef { id: string; builtin?: boolean; name: string; description: string; default_topic?: string; steps: WfStep[] }
+export interface WfStep { id: string; type: StepType; name: string; enabled: boolean; pause_after: boolean; config: Record<string, any>; position?: { x: number; y: number } }
+export interface WfDef { id: string; builtin?: boolean; name: string; description: string; default_topic?: string; steps: WfStep[]; variables?: Record<string, string | number | boolean> }
 export interface StepState { status: StepStatus; started_at: number | null; finished_at: number | null; progress: string; output: Record<string, any>; error: string }
 export interface WfRun {
   id: string; topic: string; workflow: WfDef; status: RunStatus; current_step_id: string | null
