@@ -13,13 +13,11 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import types
 import unittest
@@ -32,9 +30,9 @@ sys.path.insert(0, str(REPO))
 
 # Stub colab_backend ONLY when running on a dev workstation without google-colab-cli installed
 try:
-    import colab_backend  # noqa: F401
+    from draw_studio.colab import client  # noqa: F401
 except ImportError:
-    cb_mod = types.ModuleType("colab_backend")
+    cb_mod = types.ModuleType("draw_studio.colab.client")
 
     class _StubColabBackend:
         def __init__(self, *args, **kwargs) -> None:
@@ -47,12 +45,14 @@ except ImportError:
             return {"authed": False, "ok": True, "sessions": []}
 
     cb_mod.ColabBackend = _StubColabBackend
-    cb_mod.redact_secrets = lambda s: str(s)
-    sys.modules["colab_backend"] = cb_mod
+    sys.modules[cb_mod.__name__] = cb_mod
 
-import jobs
-import workflows
-from store import Store
+from draw_studio.gallery import Store
+from draw_studio.generation.parameters import expand_prompt_wildcards, normalize_grab, normalize_job
+from draw_studio.generation.studio import Studio
+from draw_studio.logs import LogBuffer
+from draw_studio.workflows import video, web_assets
+from draw_studio.workflows.engine import WorkflowEngine
 
 
 def make_png(width: int = 256, height: int = 256, color: tuple[int, int, int] = (80, 140, 220)) -> bytes:
@@ -155,12 +155,12 @@ class FakeColab:
 class StudioV3Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="qp-wf-test-"))
-        self.log = jobs.LogBuffer()
+        self.log = LogBuffer()
         self.store = Store(self.tmp / "out", self.log)
         self.colab = FakeColab(self.tmp)
-        self.secret = {"password": "pw", "token": "tok", "cpa_api_key": "fake-key", "cpa_base": "http://127.0.0.1:8317"}
-        self.studio = jobs.Studio(self.tmp, self.secret, self.colab, self.store, self.log, 600)
-        self.wf = workflows.WorkflowEngine(self.tmp, self.studio, self.store, self.log)
+        self.secret = {"password": "pw", "token": "tok"}
+        self.studio = Studio(self.tmp, self.secret, self.colab, self.store, self.log, 600)
+        self.wf = WorkflowEngine(self.tmp, self.studio, self.store, self.log)
 
     def tearDown(self) -> None:
         self.studio.shutdown()
@@ -170,16 +170,16 @@ class StudioV3Tests(unittest.TestCase):
 
     def test_expand_prompt_wildcards(self) -> None:
         tpl = "A cyberpunk {girl|samurai|android} in {rainy night|golden sunset}, {json_kept}"
-        a = jobs.expand_prompt_wildcards(tpl, 42)
-        b = jobs.expand_prompt_wildcards(tpl, 42)
+        a = expand_prompt_wildcards(tpl, 42)
+        b = expand_prompt_wildcards(tpl, 42)
         self.assertEqual(a, b)
         self.assertIn("{json_kept}", a)
         self.assertNotIn("|", a)
         # Across multiple seeds, we observe multiple variants
-        seen = {jobs.expand_prompt_wildcards(tpl, s) for s in range(1, 30)}
+        seen = {expand_prompt_wildcards(tpl, s) for s in range(1, 30)}
         self.assertGreaterEqual(len(seen), 3)
         # Escaped braces stay literal
-        self.assertEqual(jobs.expand_prompt_wildcards(r"literal \{a|b\} text", 7), "literal {a|b} text")
+        self.assertEqual(expand_prompt_wildcards(r"literal \{a|b\} text", 7), "literal {a|b} text")
 
     # ── 2. General Studio Parameter Presets ───────────────────────────
 
@@ -198,7 +198,7 @@ class StudioV3Tests(unittest.TestCase):
         self.assertEqual(len(all_p), 1)
 
         # Recover in a fresh Studio instance
-        studio2 = jobs.Studio(self.tmp, self.secret, self.colab, self.store, self.log, 600)
+        studio2 = Studio(self.tmp, self.secret, self.colab, self.store, self.log, 600)
         studio2.recover()
         recovered = studio2.studio_presets()
         self.assertEqual(len(recovered), 1)
@@ -215,20 +215,20 @@ class StudioV3Tests(unittest.TestCase):
     def test_ssrf_guard_blocks_internal_and_non_http(self) -> None:
         for bad in (
             "file:///etc/passwd",
-            "http://127.0.0.1:8317/v1/models",
+            "http://127.0.0.1:8080/v1/models",
             "http://localhost:8787/api/status",
             "http://169.254.169.254/latest/meta-data/",
             "http://10.0.0.1/secret",
-            "http://172.17.0.1:8317/",
+            "http://172.16.4.5:8080/",
             "http://192.168.1.1/",
             "http://[::1]/",
-            "http://host.docker.internal:8317/",
+            "http://host.docker.internal:8080/",
         ):
             with self.assertRaises(ValueError, msg=f"Expected SSRF block for {bad}"):
-                workflows.validate_public_url(bad, resolve_dns=False)
+                web_assets.validate_public_url(bad, resolve_dns=False)
 
         self.assertEqual(
-            workflows.validate_public_url("https://example.com/gallery/page.html", resolve_dns=False),
+            web_assets.validate_public_url("https://example.com/gallery/page.html", resolve_dns=False),
             "https://example.com/gallery/page.html",
         )
 
@@ -243,7 +243,7 @@ class StudioV3Tests(unittest.TestCase):
           <a href="/downloads/extra_model.png" title="Extra">Download</a>
         </body></html>
         """
-        p = workflows._PageImageExtractor("https://models.example.org/pack/1")
+        p = web_assets.PageImageExtractor("https://models.example.org/pack/1")
         p.feed(sample)
         urls = [im["url"] for im in p.images]
         self.assertIn("https://models.example.org/assets/hero-clay.jpg", urls)
@@ -276,6 +276,64 @@ class StudioV3Tests(unittest.TestCase):
         self.assertEqual(rest, [])
 
     # ── 5. Full 7-Step End-to-End Pipeline + Pause/Edit/Resume + Isolation ──
+
+    def test_workflow_step_option_contract(self):
+        steps = [
+            {"id": "single", "type": "image_gen", "config": {"gpu": "L4"}},
+            {"id": "ordered", "type": "image_gen", "config": {"gpu_pool": ["G4", "T4", "G4"]}},
+            {"id": "custom", "type": "video_gen", "config": {"gpu": "A100", "gpu_pool": ["L4", "H100"]}},
+            {"id": "default", "type": "image_gen"},
+            {"id": "join", "type": "video_stitch", "config": {"transition": "none"}},
+        ]
+        wf, _ = self.wf.save_workflow({"name": "参数契约", "steps": steps})
+        single, ordered, custom, default, join = [s["config"] for s in wf["steps"]]
+        for cfg, expected in [(single, ["L4"]), (ordered, ["G4", "T4"]), (custom, ["L4", "H100"]), (default, ["A100", "H100"])]:
+            self.assertEqual((cfg["gpu"], cfg["gpu_pool"]), (expected[0], expected))
+        self.assertEqual(join["transition"], "cut")
+        for kind, config in [("image_gen", {"poll_all_proxies": "flase"}), ("video_stitch", {"transition": "unknown"})]:
+            with self.assertRaises(ValueError):
+                self.wf.create_run({"workflow": {"name": "无效配置", "steps": [{"type": kind, "config": config}]}})
+        # Direct API callers can still explicitly order candidates, independent of the editor's dropdown.
+        job = normalize_job({"prompt": "fixture", "gpu": "L4", "gpu_pool": ["A100", "H100"], "poll_all_proxies": "false"})
+        self.assertEqual(job["gpu"], "A100")
+        self.assertIs(job["poll_all_proxies"], False)
+        self.assertIs(normalize_grab({"gpu_pool": ["L4"], "poll_all_proxies": "false"})["poll_all_proxies"], False)
+
+    def test_legacy_workflow_options_reach_worker(self):
+        wf, _ = self.wf.save_workflow({"name": "旧版参数", "steps": [
+            {"id": "image", "type": "image_gen"}, {"id": "video", "type": "video_gen"},
+            {"id": "join", "type": "video_stitch", "enabled": False},
+        ]})
+        run = self.wf.create_run({"workflow_id": wf["id"], "topic": "fixture"})
+        # Write exactly what the previous React form could leave on disk.
+        image, clip, join = [s["config"] for s in wf["steps"]]
+        image.update(gpu="L4", poll_all_proxies="false")
+        clip.update(gpu="G4", poll_all_proxies="true", auto_offload="false", workflow="t2va")
+        join["transition"] = "none"
+        self.wf.defs_path.write_text(json.dumps([wf]))
+        path = self.wf.runs_dir / run["id"] / "run.json"
+        stored = json.loads(path.read_text())
+        stored["workflow"] = wf
+        path.write_text(json.dumps(stored))
+
+        self.wf = WorkflowEngine(self.tmp, self.studio, self.store, self.log)
+        for definition in [self.wf.list_workflows()["custom"][0], self.wf.get_run(run["id"])["workflow"]]:
+            image, clip, join = [s["config"] for s in definition["steps"]]
+            self.assertEqual(image["gpu_pool"], ["L4"])
+            self.assertIs(image["poll_all_proxies"], False)
+            self.assertEqual(clip["gpu_pool"], ["G4"])
+            self.assertIs(clip["auto_offload"], False)
+            self.assertEqual(join["transition"], "cut")
+        self.wf.start_run(run["id"])
+        finished = self._wait_run_not_running(run["id"])
+        self.assertEqual(finished["status"], "done", finished["error"])
+        image_job, video_job = self.colab.uploaded_jobs
+        self.assertEqual((image_job["gpu"], image_job["gpu_pool"]), ("L4", ["L4"]))
+        self.assertIs(image_job["poll_all_proxies"], False)
+        self.assertEqual((video_job["gpu"], video_job["gpu_pool"]), ("G4", ["G4"]))
+        self.assertIs(video_job["poll_all_proxies"], True)
+        self.assertIs(video_job["auto_offload"], False)
+        self.assertEqual(video_job["offload_mode"], "none")
 
     def _wait_run_not_running(self, run_id: str, timeout: float = 20.0) -> dict:
         deadline = time.time() + timeout
@@ -319,7 +377,7 @@ class StudioV3Tests(unittest.TestCase):
                 st["pause_after"] = False
         self.wf.update_run_config(run_id, {"workflow": run["workflow"]})
 
-        # Mock CPA LLM, web fetch, and stitch_videos (unless real ffmpeg tested separately)
+        # Mock model gateway, web fetch, and stitch_videos (unless real ffmpeg tested separately)
         fake_storyboard = json.dumps({
             "title": "雨夜霓虹",
             "style_bible": "赛博朋克胶片质感",
@@ -349,19 +407,19 @@ class StudioV3Tests(unittest.TestCase):
                 return white_model_png, "image/png", url
             return mock_html, "text/html", url
 
-        def fake_cpa_chat(messages, **kwargs):
+        def fake_model_chat(messages, **kwargs):
             sys_txt = messages[0]["content"]
             if "分镜" in sys_txt:
-                return fake_storyboard, "deepseek-flash"
+                return fake_storyboard, "fixture-model"
             if "筛选" in sys_txt:
-                return '{"selected": [0]}', "deepseek-flash"
+                return '{"selected": [0]}', "fixture-model"
             # MiniMax-H3 prompt rewriter
             return (
                 "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n"
                 "integrated_multimodal_description: [Shot 1] Cinematic rain scene.\n"
                 "overall_soundscape: Gentle rain hitting umbrella.\n"
                 "non_diegetic_music: Soft ambient synth."
-            ), "deepseek-flash"
+            ), "fixture-model"
 
         def fake_stitch(clip_paths, out_mp4: Path, out_thumb: Path | None = None, **kwargs):
             self.assertEqual(len(clip_paths), 2)
@@ -379,15 +437,15 @@ class StudioV3Tests(unittest.TestCase):
                     "overall_soundscape: Gentle rain hitting umbrella.\n"
                     "non_diegetic_music: Soft ambient synth."
                 ),
-                "model": "deepseek-flash",
+                "model": "fixture-model",
                 "format": "H3 三段式 (I2VA · 看首帧)",
                 "images_used": len(imgs),
             }
 
-        with mock.patch.object(self.studio, "call_cpa_chat", side_effect=fake_cpa_chat), \
+        with mock.patch.object(self.studio, "call_llm", side_effect=fake_model_chat), \
              mock.patch.object(self.studio, "write_prompt_rich", side_effect=fake_write_prompt_rich), \
-             mock.patch.object(workflows, "_fetch_public_bytes", side_effect=fake_fetch), \
-             mock.patch.object(workflows, "stitch_videos", side_effect=fake_stitch):
+             mock.patch.object(web_assets, "fetch_public_bytes", side_effect=fake_fetch), \
+             mock.patch.object(video, "stitch_videos", side_effect=fake_stitch):
 
             # Phase 1: Start -> pauses after `script`
             self.wf.start_run(run_id)
@@ -440,7 +498,7 @@ class StudioV3Tests(unittest.TestCase):
     # ── 6. Real FFmpeg Stitch Integration Test (when ffmpeg is installed) ─
 
     def test_real_ffmpeg_stitch_if_available(self) -> None:
-        if not workflows.ffmpeg_available():
+        if not video.ffmpeg_available():
             self.skipTest("ffmpeg not installed in this local test environment")
         c1 = self.tmp / "c1.mp4"
         c2 = self.tmp / "c2.mp4"
@@ -449,7 +507,7 @@ class StudioV3Tests(unittest.TestCase):
         # Clip 1 has audio, Clip 2 has NO audio — verify auto silent-track normalization + xfade!
         make_mp4_via_ffmpeg(c1, color="red", dur_s=1.2, with_audio=True)
         make_mp4_via_ffmpeg(c2, color="green", dur_s=1.2, with_audio=False)
-        info = workflows.stitch_videos(
+        info = video.stitch_videos(
             [c1, c2], out_mp4, out_thumb,
             target_width=320, target_height=240, fps=24, transition="fade", fade_s=0.3,
         )
@@ -457,137 +515,128 @@ class StudioV3Tests(unittest.TestCase):
         self.assertTrue(out_thumb.exists() and out_thumb.stat().st_size > 200)
         self.assertEqual(info["clip_count"], 2)
         self.assertGreater(info["duration_s"], 1.5)
+        self.assertEqual(info["transition"], "fade")
+        cuts = []
+        for value in ("cut", "none"):
+            cut = video.stitch_videos([c1, c2], self.tmp / f"{value}.mp4", target_width=320, target_height=240,
+                                      fps=24, transition=value, fade_s=0.3)
+            self.assertEqual(cut["transition"], "cut")
+            self.assertGreater(cut["duration_s"], info["duration_s"] + 0.2)
+            cuts.append(cut["duration_s"])
+        self.assertAlmostEqual(*cuts, delta=1 / 24)
 
     # ── 7. Live HTTP API Integration Test (app.Handler) ───────────────
 
     def test_http_api_presets_and_workflows(self) -> None:
         import urllib.request
-        from http.server import ThreadingHTTPServer
+        from app import create_app
+        from http_fixture import serving
+        from draw_studio.runtime import Runtime
 
-        secret_file = self.tmp / "secret.env"
-        secret_file.write_text("password=pw\ntoken=testtok123\ncpa_api_key=fake\n", encoding="utf-8")
-        old_env = {k: os.environ.get(k) for k in ("QP_ROOT", "QP_SECRET")}
-        os.environ["QP_ROOT"] = str(self.tmp)
-        os.environ["QP_SECRET"] = str(secret_file)
-        try:
-            sys.modules.pop("app", None)
-            import app as studio_app
+        runtime = Runtime(self.tmp, self.secret, self.log, self.colab, self.store, self.studio, self.wf)
+        with serving(create_app(root=self.tmp, services=runtime)) as base:
+            def req(method: str, path: str, body: dict | bytes | None = None, ctype: str = "application/json"):
+                headers = {"Authorization": "Bearer " + self.secret["token"]}
+                raw = None
+                if isinstance(body, dict):
+                    raw = json.dumps(body).encode("utf-8")
+                    headers["Content-Type"] = "application/json"
+                elif isinstance(body, bytes):
+                    raw = body
+                    headers["Content-Type"] = ctype
+                r = urllib.request.Request(base + path, data=raw, method=method, headers=headers)
+                with urllib.request.urlopen(r, timeout=10) as resp:
+                    return resp.status, resp.read(), resp.headers.get("Content-Type", "")
 
-            studio_app.COLAB = self.colab
-            studio_app.STUDIO = self.studio
-            studio_app.STORE = self.store
-            studio_app.WORKFLOWS = self.wf
-            studio_app.SECRET = {"password": "pw", "token": "testtok123", "cpa_api_key": "fake"}
+            # /healthz exposes busy / queue_len / workflow_running (non-sensitive deploy guard)
+            r_hz = urllib.request.urlopen(base + "/healthz", timeout=10)
+            hz = json.loads(r_hz.read())
+            self.assertEqual(hz["ok"], True)
+            self.assertEqual(hz["version"], "3.1")
+            self.assertEqual(hz["busy"], False)
+            self.assertEqual(hz["queue_len"], 0)
+            self.assertEqual(hz["workflow_running"], False)
 
-            srv = ThreadingHTTPServer(("127.0.0.1", 0), studio_app.Handler)
-            port = srv.server_address[1]
-            t = threading.Thread(target=srv.serve_forever, daemon=True)
-            t.start()
-            try:
-                base = f"http://127.0.0.1:{port}"
+            # /api/config exposes studio_presets, workflow_step_catalog, video_offload_modes, ffmpeg_available
+            code, raw, _ = req("GET", "/api/config")
+            self.assertEqual(code, 200)
+            cfg = json.loads(raw)
+            self.assertEqual(cfg["version"], "3.1")
+            self.assertIn("studio_presets", cfg)
+            self.assertEqual(len(cfg["video_offload_modes"]), 4)
+            self.assertEqual(len(cfg["workflow_step_catalog"]), 7)
 
-                def req(method: str, path: str, body: dict | bytes | None = None, ctype: str = "application/json"):
-                    headers = {"Authorization": "Bearer testtok123"}
-                    raw = None
-                    if isinstance(body, dict):
-                        raw = json.dumps(body).encode("utf-8")
-                        headers["Content-Type"] = "application/json"
-                    elif isinstance(body, bytes):
-                        raw = body
-                        headers["Content-Type"] = ctype
-                    r = urllib.request.Request(base + path, data=raw, method=method, headers=headers)
-                    with urllib.request.urlopen(r, timeout=10) as resp:
-                        return resp.status, resp.read(), resp.headers.get("Content-Type", "")
+            # /api/presets CRUD
+            code, raw, _ = req("POST", "/api/presets", {"name": "API 测试预设", "mode": "image", "width": 768, "height": 1152})
+            self.assertEqual(code, 200)
+            pid = json.loads(raw)["preset"]["id"]
+            code, raw, _ = req("DELETE", f"/api/presets/{pid}")
+            self.assertEqual(code, 200)
 
-                # /healthz exposes busy / queue_len / workflow_running (non-sensitive deploy guard)
-                r_hz = urllib.request.urlopen(base + "/healthz", timeout=10)
-                hz = json.loads(r_hz.read())
-                self.assertEqual(hz["ok"], True)
-                self.assertEqual(hz["version"], "3.1")
-                self.assertEqual(hz["busy"], False)
-                self.assertEqual(hz["queue_len"], 0)
-                self.assertEqual(hz["workflow_running"], False)
+            # /api/workflows + runs + asset upload/fetch/delete
+            code, raw, _ = req("GET", "/api/workflows")
+            self.assertEqual(code, 200)
+            self.assertGreaterEqual(len(json.loads(raw)["builtin"]), 3)
 
-                # /api/config exposes studio_presets, workflow_step_catalog, video_offload_modes, ffmpeg_available
-                code, raw, _ = req("GET", "/api/config")
-                self.assertEqual(code, 200)
-                cfg = json.loads(raw)
-                self.assertEqual(cfg["version"], "3.1")
-                self.assertIn("studio_presets", cfg)
-                self.assertEqual(len(cfg["video_offload_modes"]), 4)
-                self.assertEqual(len(cfg["workflow_step_catalog"]), 7)
+            code, raw, _ = req("POST", "/api/workflows/runs", {"workflow_id": "builtin:agent-long-video", "topic": "API 测试短片"})
+            self.assertEqual(code, 201)
+            rid = json.loads(raw)["run"]["id"]
 
-                # /api/presets CRUD
-                code, raw, _ = req("POST", "/api/presets", {"name": "API 测试预设", "mode": "image", "width": 768, "height": 1152})
-                self.assertEqual(code, 200)
-                pid = json.loads(raw)["preset"]["id"]
-                code, raw, _ = req("DELETE", f"/api/presets/{pid}")
-                self.assertEqual(code, 200)
+            png = make_png(128, 128)
+            code, raw, _ = req("POST", f"/api/workflows/runs/{rid}/assets?step_id=character_assets", png, ctype="image/png")
+            self.assertEqual(code, 200)
+            fname = json.loads(raw)["asset"]["filename"]
 
-                # /api/workflows + runs + asset upload/fetch/delete
-                code, raw, _ = req("GET", "/api/workflows")
-                self.assertEqual(code, 200)
-                self.assertGreaterEqual(len(json.loads(raw)["builtin"]), 3)
+            code, img_raw, img_ct = req("GET", f"/api/workflows/runs/{rid}/assets/{fname}")
+            self.assertEqual(code, 200)
+            self.assertEqual(img_ct, "image/png")
+            self.assertEqual(img_raw, png)
 
-                code, raw, _ = req("POST", "/api/workflows/runs", {"workflow_id": "builtin:agent-long-video", "topic": "API 测试短片"})
-                self.assertEqual(code, 201)
-                rid = json.loads(raw)["run"]["id"]
+            code, _, _ = req("DELETE", f"/api/workflows/runs/{rid}/assets/{fname}")
+            self.assertEqual(code, 200)
 
-                png = make_png(128, 128)
-                code, raw, _ = req("POST", f"/api/workflows/runs/{rid}/assets?step_id=character_assets", png, ctype="image/png")
-                self.assertEqual(code, 200)
-                fname = json.loads(raw)["asset"]["filename"]
-
-                code, img_raw, img_ct = req("GET", f"/api/workflows/runs/{rid}/assets/{fname}")
-                self.assertEqual(code, 200)
-                self.assertEqual(img_ct, "image/png")
-                self.assertEqual(img_raw, png)
-
-                code, _, _ = req("DELETE", f"/api/workflows/runs/{rid}/assets/{fname}")
-                self.assertEqual(code, 200)
-
-                code, _, _ = req("DELETE", f"/api/workflows/runs/{rid}")
-                self.assertEqual(code, 200)
-            finally:
-                srv.shutdown()
-                srv.server_close()
-        finally:
-            for k, v in old_env.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-
+            code, _, _ = req("DELETE", f"/api/workflows/runs/{rid}")
+            self.assertEqual(code, 200)
 
     # ── 8. Universal Model-Agnostic Memory & Offload Planner ──────────
 
     def test_video_offload_mode_and_worker_resolver(self) -> None:
-        import colab_worker
+        from draw_studio.colab import worker
 
-        j_auto = jobs.normalize_job({"mode": "video", "prompt": "test"})
+        hook = mock.Mock()
+        module = types.SimpleNamespace(requires_grad_=mock.Mock())
+        with mock.patch.dict(sys.modules, {
+            "torch": types.SimpleNamespace(device=str),
+            "diffusers.hooks": types.SimpleNamespace(apply_group_offloading=hook),
+        }), mock.patch.object(worker, "Path", return_value=self.tmp):
+            worker._apply_module_group_offload("unet/main", module, "group_disk")
+        self.assertEqual(hook.call_args.kwargs["offload_to_disk_path"], str(self.tmp / "unet_main"))
+        self.assertTrue((self.tmp / "unet_main").is_dir())
+
+        j_auto = normalize_job({"mode": "video", "prompt": "test"})
         self.assertEqual(j_auto["offload_mode"], "auto")
         self.assertTrue(j_auto["auto_offload"])
 
-        j_group = jobs.normalize_job({"mode": "video", "prompt": "test", "offload_mode": "group"})
+        j_group = normalize_job({"mode": "video", "prompt": "test", "offload_mode": "group"})
         self.assertEqual(j_group["offload_mode"], "group")
         self.assertTrue(j_group["auto_offload"])
 
-        j_legacy_off = jobs.normalize_job({"mode": "video", "prompt": "test", "auto_offload": False})
+        j_legacy_off = normalize_job({"mode": "video", "prompt": "test", "auto_offload": False})
         self.assertEqual(j_legacy_off["offload_mode"], "none")
         self.assertFalse(j_legacy_off["auto_offload"])
 
         # Case A: ~33GB image model (e.g. Qwen BF16) on 80GB VRAM -> full GPU ('none'), on 40GB -> 'component'
         img_33g = {"transformer": 22.0, "text_encoder": 10.5, "vae": 0.5}
-        p_img_80 = colab_worker.plan_memory_strategy(img_33g, vram_gb=79.3, ram_gb=167.0)
+        p_img_80 = worker.plan_memory_strategy(img_33g, vram_gb=79.3, ram_gb=167.0)
         self.assertEqual(p_img_80["mode"], "none")
-        p_img_40 = colab_worker.plan_memory_strategy(img_33g, vram_gb=40.0, ram_gb=83.5)
+        p_img_40 = worker.plan_memory_strategy(img_33g, vram_gb=40.0, ram_gb=83.5)
         self.assertEqual(p_img_40["mode"], "component")
 
         # Case B: ~70GB model (e.g. FLUX.2) on 96GB -> 'none', on 80GB -> 'component', on 40GB -> 'group' in CPU RAM
         flux_70g = {"transformer": 58.0, "text_encoder": 11.5, "vae": 0.5}
-        self.assertEqual(colab_worker.plan_memory_strategy(flux_70g, vram_gb=95.0, ram_gb=167.0)["mode"], "none")
-        self.assertEqual(colab_worker.plan_memory_strategy(flux_70g, vram_gb=79.3, ram_gb=167.0)["mode"], "component")
-        p_flux_40 = colab_worker.plan_memory_strategy(flux_70g, vram_gb=40.0, ram_gb=83.5)
+        self.assertEqual(worker.plan_memory_strategy(flux_70g, vram_gb=95.0, ram_gb=167.0)["mode"], "none")
+        self.assertEqual(worker.plan_memory_strategy(flux_70g, vram_gb=79.3, ram_gb=167.0)["mode"], "component")
+        p_flux_40 = worker.plan_memory_strategy(flux_70g, vram_gb=40.0, ram_gb=83.5)
         self.assertEqual(p_flux_40["mode"], "group")
         self.assertEqual(p_flux_40["placements"]["transformer"], "group_cpu")
         self.assertEqual(p_flux_40["placements"]["vae"], "cuda")
@@ -595,27 +644,27 @@ class StudioV3Tests(unittest.TestCase):
         # Case C: ~132GB video model (MiniMax-H3) across 80G / 40G / 24G
         h3_132g = {"transformer": 66.0, "text_encoder": 64.0, "vae": 1.2, "audio_vae": 0.8}
         # On 80GB VRAM / 167GB RAM -> fast component offload
-        p_h3_80 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0)
+        p_h3_80 = worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0)
         self.assertEqual(p_h3_80["mode"], "component")
         # On 40GB VRAM / 83.5GB RAM -> group offload; one-shot text_encoder evicted to disk, transformer stays in CPU RAM!
-        p_h3_40 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5)
+        p_h3_40 = worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5)
         self.assertEqual(p_h3_40["mode"], "group")
         self.assertEqual(p_h3_40["placements"]["text_encoder"], "group_disk")
         self.assertEqual(p_h3_40["placements"]["transformer"], "group_cpu")
         self.assertEqual(p_h3_40["placements"]["vae"], "cuda")
         # On 24GB VRAM / 53GB RAM -> both text_encoder & transformer evicted to disk so host RAM never OOMs
-        p_h3_24 = colab_worker.plan_memory_strategy(h3_132g, vram_gb=24.0, ram_gb=53.0)
+        p_h3_24 = worker.plan_memory_strategy(h3_132g, vram_gb=24.0, ram_gb=53.0)
         self.assertEqual(p_h3_24["mode"], "group")
         self.assertEqual(p_h3_24["placements"]["text_encoder"], "group_disk")
         self.assertEqual(p_h3_24["placements"]["transformer"], "group_disk")
 
         # Explicit override is always respected
         self.assertEqual(
-            colab_worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0, requested_mode="group")["mode"],
+            worker.plan_memory_strategy(h3_132g, vram_gb=79.3, ram_gb=167.0, requested_mode="group")["mode"],
             "group",
         )
         self.assertEqual(
-            colab_worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5, requested_mode="none")["mode"],
+            worker.plan_memory_strategy(h3_132g, vram_gb=40.0, ram_gb=83.5, requested_mode="none")["mode"],
             "none",
         )
 

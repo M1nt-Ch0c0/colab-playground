@@ -542,7 +542,7 @@ _BODY = r"""
   <button class="btn sm danger hide" id="releaseBtn" title="立即释放所有 Colab 运行时，停止消耗 Compute Units"><i data-i="power"></i><span class="hide-sm">释放算力</span></button>
   <button class="iconbtn" id="themeBtn" title="切换亮色 / 暗色模式"><i data-i="moon"></i></button>
   <button class="iconbtn" id="logBtn" title="实时日志 (L)"><i data-i="terminal"></i><span class="badge hide" id="logBadge"></span></button>
-  <button class="iconbtn" id="settingsBtn" title="设置"><i data-i="settings"></i></button>
+  <button class="iconbtn" id="settingsBtn" title="设置" disabled><i data-i="settings"></i></button>
   <a class="iconbtn" href="logout" title="退出登录"><i data-i="logout"></i></a>
 </header>
 
@@ -681,7 +681,7 @@ _BODY = r"""
 
       <section class="block" id="promptBlock">
         <div class="bh"><i data-i="sparkles"></i>创意与提示词<span class="hint" id="shortcutHint">Ctrl + Enter 生成</span></div>
-        <div class="rw-badge" id="rewriteModeBadge">deepseek-flash · 自动适配当前模式</div>
+        <div class="rw-badge" id="rewriteModeBadge">自动适配当前模式</div>
         <label class="f">一句话想法</label>
         <div class="row" style="align-items:stretch">
           <textarea id="idea" data-p rows="2" placeholder="例如：雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感"></textarea>
@@ -1034,7 +1034,7 @@ const S = {
   cfg:null, mode:'image', tab:'image', engine:'diffusers', status:null, logSeq:0, logCount:0, galleryRev:-1, gallery:[], stats:{},
   filter:{kind:'', starred:false, q:''}, page:60, viewing:null, followLatest:true,
   selecting:false, selected:new Set(), lastClicked:null, refs:{}, lastLatestId:null, form:{}, unseenLogs:0,
-  comfyPresets:[], studioPresets:[], promptHist:[], proxy:null, customProxyOpen:false, galleryOpen:false, galleryLoaded:false,
+  comfyPresets:[], studioPresets:[], promptHist:[], proxy:null, galleryOpen:false, galleryLoaded:false,
   grabPool:[], pollRounds:2, pollAllProxies:false,
   wfData:null, wfRun:null, wfAssetStep:'',
 };
@@ -1399,20 +1399,24 @@ function renderProxyChips(){
   const px = S.proxy;
   if (!px || !Array.isArray(px.profiles)) return;
   const active = px.active || '';
-  $('#proxyChips').innerHTML = px.profiles.map(p => {
-    const on = active === p.id;
-    const disabled = !p.configured && p.id !== 'custom';
-    return `<button type="button" class="pchip ${on?'on':''}" data-proxy="${esc(p.id)}" ${disabled?'disabled style="opacity:.45;cursor:not-allowed"':''} title="${esc(p.hint + (p.masked ? ' · ' + p.masked : ''))}">${esc(p.label)}</button>`;
-  }).join('');
-  const cust = px.profiles.find(p => p.id === 'custom') || {};
-  const showCust = S.customProxyOpen || active === 'custom';
-  $('#customProxyWrap').classList.toggle('hide', !showCust);
-  if (cust.configured) $('#customProxyHint').textContent = `当前已配置：${cust.masked}（输入新地址可覆盖）`;
-  else $('#customProxyHint').textContent = '填入 http:// 或 socks5:// 代理，密码仅存服务器 0600 文件，不回显。';
-
+  const entries = [{id:'', label:'系统网络', masked:''}, ...px.profiles];
+  $('#proxyChips').innerHTML = entries.map(p =>
+    `<button type="button" class="pchip ${active===p.id?'on':''}" data-proxy="${esc(p.id)}" title="${esc(p.masked||'')}">${esc(p.label)}</button>`).join('');
+  const editor = $('#proxyEditTarget');
+  const selected = editor.value;
+  const choices = '<option value="">新增线路</option>' + px.profiles.map(p =>
+    `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join('');
+  if (editor.dataset.choices !== choices){
+    editor.innerHTML = choices;
+    editor.dataset.choices = choices;
+    editor.value = px.profiles.some(p => p.id === selected) ? selected : '';
+    if (selected && !editor.value) editor.onchange?.();
+  }
+  $('#removeProxyBtn').disabled = !editor.value;
+  $('#testProxyBtn').disabled = !active;
   const curP = px.profiles.find(p => p.id === active);
   const lt = px.last_test;
-  let txt = curP ? `当前出口：${curP.label}` : '尚未配置出口代理';
+  let txt = curP ? `当前出口：${curP.label}` : '当前使用系统网络';
   if (lt && lt.profile === active){
     txt += lt.ok ? ` · 连通 ${lt.loc}/${lt.colo} (${lt.ms}ms)` : ` · 测速失败：${lt.error}`;
   } else if (curP && curP.hint){
@@ -1495,17 +1499,17 @@ function updateRewriteBadge(){
   if (S.mode === 'video'){
     const sec = (S.frames / 24).toFixed(1);
     if (S.workflow === 'ref2va'){
-      el.textContent = `deepseek-flash · 破甲 · H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
+      el.textContent = `H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
     } else if (S.workflow === 'fl2va'){
       const sub = items.length && hasLast ? 'FL2VA · 看首尾帧' : (items.length ? 'I2VA · 看首帧' : 'FL2VA');
-      el.textContent = `deepseek-flash · 破甲 · H3 三段式 (${sub} · ${sec}s)`;
+      el.textContent = `H3 三段式 (${sub} · ${sec}s)`;
     } else {
-      el.textContent = `deepseek-flash · 破甲 · H3 三段式 (T2VA · ${sec}s)`;
+      el.textContent = `H3 三段式 (T2VA · ${sec}s)`;
     }
   } else {
-    if ($('#chain').checked) el.textContent = 'deepseek-flash · 破甲 · 多模态连续改图（看最新作品）';
-    else if ($('#useRef').checked && items.length) el.textContent = `deepseek-flash · 破甲 · 多模态看图改写（看 ${items.length} 张参考图）`;
-    else el.textContent = 'deepseek-flash · 破甲 · 文生图提示词改写';
+    if ($('#chain').checked) el.textContent = '多模态连续改图（看最新作品）';
+    else if ($('#useRef').checked && items.length) el.textContent = `多模态看图改写（看 ${items.length} 张参考图）`;
+    else el.textContent = '文生图提示词改写';
   }
 }
 function updateModeUI(){
@@ -1634,7 +1638,7 @@ async function rewrite(){
   const idea = $('#idea').value.trim();
   if (!idea) { toast('先写一句想法', 'err'); $('#idea').focus(); return; }
   const b = $('#rewriteBtn'); b.disabled = true; b.innerHTML = '<span class="sp"></span>改写中…';
-  $('#rewriteHint').textContent = 'deepseek-flash 正在生成…';
+  $('#rewriteHint').textContent = '正在改写…';
   try {
     const items = Array.isArray(S.refs.items) ? S.refs.items : [];
     const chain = S.mode === 'image' && $('#chain').checked;
@@ -2781,7 +2785,7 @@ function openSettings(){
             <span>轮</span>
             <span class="poll-plan" id="pollSummary"></span>
           </div>
-          <label class="switch" style="margin:0" title="开启后每轮依次切换全部已配置的代理（美国 / 新加坡 / 自定义，绝不直连）逐卡抢算力">
+          <label class="switch" style="margin:0" title="开启后每轮使用全部已保存的代理线路申请算力">
             <input type="checkbox" id="pollAllProxies" ${S.pollAllProxies ? 'checked' : ''}>
             <span class="tg"></span>使用全部已配代理轮询
           </label>
@@ -2792,12 +2796,14 @@ function openSettings(){
             <button type="button" class="btn sm" id="testProxyBtn" style="height:24px;padding:0 8px;font-size:11px">测出口</button>
           </div>
           <div class="chips" id="proxyChips"></div>
-          <div id="customProxyWrap" class="hide" style="margin-top:8px">
-            <div class="row">
-              <input type="password" id="customProxyUrl" autocomplete="off" placeholder="http://user:pass@host:port 或 socks5://...">
-              <button type="button" class="btn sm primary" id="saveCustomProxyBtn">启用</button>
-            </div>
-            <div class="help" id="customProxyHint">密码保存在服务器 0600 文件中，页面不会回显。</div>
+          <div class="row" style="margin-top:8px">
+            <select id="proxyEditTarget" aria-label="管理线路"><option value="">新增线路</option></select>
+            <button type="button" class="btn sm danger" id="removeProxyBtn" disabled>删除线路</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <input type="text" id="proxyLabel" aria-label="线路名称" placeholder="线路名称" maxlength="80">
+            <input type="password" id="customProxyUrl" autocomplete="new-password" aria-label="代理地址" placeholder="http://host:port 或 socks5://host:port">
+            <button type="button" class="btn sm" id="saveCustomProxyBtn">保存线路</button>
           </div>
           <div class="help" id="proxyHelp"></div>
         </div>
@@ -2895,33 +2901,45 @@ function openSettings(){
   $('#proxyChips', scrim).onclick = async e => {
     const b = e.target.closest('[data-proxy]'); if (!b || b.disabled) return;
     const pid = b.dataset.proxy;
-    if (pid === 'custom'){
-      const cust = (S.proxy && S.proxy.profiles || []).find(p => p.id === 'custom');
-      S.customProxyOpen = true;
-      renderProxyChips();
-      if (!cust || !cust.configured){ $('#customProxyUrl', scrim).focus(); return; }
-    } else {
-      S.customProxyOpen = false;
-    }
     try {
       const r = await post('api/proxy', {active: pid});
       S.proxy = r;
       renderProxyChips();
-      const lbl = (r.profiles.find(p => p.id === pid) || {}).label || pid;
+      const lbl = (r.profiles.find(p => p.id === pid) || {}).label || '系统网络';
       toast('已切换出口为 ' + lbl, 'ok');
       refresh();
     } catch(err){ toast(err.message, 'err'); }
   };
+  const editor = $('#proxyEditTarget', scrim);
+  editor.onchange = () => {
+    const selected = S.proxy?.profiles.find(p => p.id === editor.value);
+    $('#proxyLabel', scrim).value = selected?.label || '';
+    $('#customProxyUrl', scrim).value = '';
+    $('#customProxyUrl', scrim).placeholder = selected ? '留空保留地址与凭据' : 'http://host:port 或 socks5://host:port';
+    $('#removeProxyBtn', scrim).disabled = !selected;
+  };
+  $('#removeProxyBtn', scrim).onclick = async () => {
+    const pid = editor.value;
+    const profile = S.proxy?.profiles.find(p => p.id === pid);
+    if (!profile || !await confirmBox({title:`删除「${profile.label}」？`,ok:'删除',danger:true})) return;
+    try {
+      S.proxy = await api('api/proxy/profiles/' + encodeURIComponent(pid), {method:'DELETE'});
+      renderProxyChips(); refresh();
+    } catch(err){ toast(err.message, 'err'); }
+  };
   $('#saveCustomProxyBtn', scrim).onclick = async () => {
     const url = $('#customProxyUrl', scrim).value.trim();
-    if (!url) return toast('请先输入代理地址', 'err');
+    const label = $('#proxyLabel', scrim).value.trim();
+    const id = editor.value || undefined;
+    if (!label || (!url && !id)) return toast('请填写线路名称与代理地址', 'err');
     const b = $('#saveCustomProxyBtn', scrim); b.disabled = true;
     try {
-      const r = await post('api/proxy', {active: 'custom', custom_url: url});
+      const r = await post('api/proxy/profiles', {id, label, url: url || undefined});
       S.proxy = r;
-      $('#customProxyUrl', scrim).value = '';
+      editor.value = '';
+      editor.onchange();
       renderProxyChips();
-      toast('自定义代理已保存并启用', 'ok');
+      toast('线路已保存', 'ok');
       refresh();
     } catch(err){ toast(err.message, 'err'); }
     b.disabled = false;
@@ -3320,6 +3338,7 @@ function bind(){
     await post('api/release'); toast('正在释放…'); refresh();
   };
   $('#settingsBtn').onclick = $('#colabChip').onclick = openSettings;
+  $('#settingsBtn').disabled = false;
   $('#logBtn').onclick = () => toggleLogs();
   const THEME_KEY = 'colab-studio.theme';
   const applyTheme = (t) => {

@@ -1,0 +1,203 @@
+import math
+from pathlib import Path
+
+from fastapi import APIRouter, Body, HTTPException, Request
+
+from ..generation.catalog import LIMITS
+from .core import IMAGE_BODY, IMMUTABLE, Raw, State, flag, image_type, media_file, media_route, readable
+
+router = APIRouter(prefix="/api", tags=["作品库与参考图"])
+
+
+def ids(body: dict) -> list[str]:
+    values = body.get("ids")
+    if not isinstance(values, list) or not 1 <= len(values) <= 2000:
+        raise ValueError("ids 必须是非空数组，一次最多处理 2000 个")
+    return [str(i) for i in values]
+
+
+@readable(router, "/storage")
+def storage(s: State):
+    return s.store.storage_stats()
+
+
+@readable(router, "/rounds")
+def rounds(s: State, kind: str = "", starred: bool | None = None, q: str = "", order: str = "desc",
+           offset: int = 0, limit: int = 0):
+    return s.store.list(kind=kind, starred=starred, q=q.strip(), order=order,
+                        offset=max(0, offset), limit=max(0, min(1000, limit)))
+
+
+@router.post("/rounds/delete")
+def delete_rounds(body: dict, s: State):
+    return s.store.delete(ids(body), permanent=flag(body.get("permanent")))
+
+
+@router.post("/rounds/star")
+def star_rounds(body: dict, s: State):
+    starred = flag(body.get("starred", True))
+    return {"ok": True, "updated": [i for i in ids(body) if s.store.set_star(i, starred)], "starred": starred}
+
+
+@router.post("/rounds/cleanup")
+def cleanup(body: dict, s: State):
+    try:
+        days, keep, mb = [cast(body[k]) if body.get(k) not in (None, "") else None for k, cast in
+                          (("older_than_days", float), ("keep_latest", int), ("max_mb", float))]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("older_than_days / keep_latest / max_mb 必须是数字") from exc
+    values = [v for v in (days, keep, mb) if v is not None]
+    if not values or any(v < 0 or not math.isfinite(v) for v in values):
+        raise ValueError("至少指定一个有效的非负清理条件")
+    plan = s.store.cleanup_plan(days, keep, kind=body.get("kind") or "",
+                                include_starred=flag(body.get("include_starred")), max_mb=mb)
+    matched = [item["id"] for item in plan]
+    result = {"dry_run": flag(body.get("dry_run")), "matched": matched, "count": len(plan),
+              "bytes": sum(item["bytes"] for item in plan)}
+    if not result["dry_run"] and matched:
+        deleted = s.store.delete(matched, permanent=flag(body.get("permanent")))
+        result.update(deleted=deleted["deleted"], permanent=deleted["permanent"])
+    return result
+
+
+def serve_round(request: Request, found: tuple[str, Path] | None, **options):
+    if not found:
+        raise HTTPException(404, "作品不存在")
+    kind, path = found
+    return media_file(request, path, "video/mp4" if kind == "video" else "image/png", **options)
+
+
+@media_route(router, "/rounds/{rid}", "image/png", "video/mp4")
+def round_media(rid: str, request: Request, s: State, download: bool = False):
+    found = s.store.media_path(rid)
+    filename = f"colab-studio-{rid}{found[1].suffix}" if found and download else None
+    return serve_round(request, found, cache=IMMUTABLE, download=filename)
+
+
+@media_route(router, "/rounds/{rid}/thumb", "image/jpeg")
+def round_thumb(rid: str, request: Request, s: State):
+    return media_file(request, s.store.thumb_path(rid), "image/jpeg", IMMUTABLE)
+
+
+@readable(router, "/rounds/{rid}/meta")
+def round_meta(rid: str, s: State):
+    item = s.store.get(rid)
+    if not item:
+        raise HTTPException(404, "作品不存在")
+    return item
+
+
+@router.delete("/rounds/{rid}")
+@router.post("/rounds/{rid}/delete")
+def delete_round(rid: str, request: Request, s: State, permanent: bool | None = None,
+                 body: dict = Body(default_factory=dict)):
+    purge = permanent if request.method == "DELETE" and permanent is not None else flag(body.get("permanent"))
+    result = s.store.delete([rid], permanent=purge)
+    if not result["deleted"]:
+        raise HTTPException(404, "作品不存在")
+    return result
+
+
+@router.post("/rounds/{rid}/star")
+@router.patch("/rounds/{rid}/star")
+def star_round(rid: str, s: State, body: dict = Body(default_factory=dict)):
+    starred = flag(body.get("starred", True))
+    if not s.store.set_star(rid, starred):
+        raise HTTPException(404, "作品不存在")
+    return {"ok": True, "id": rid, "starred": starred}
+
+
+@router.post("/rounds/{rid}/use")
+def use_round(rid: str, s: State, slot: str = "first", body: dict = Body(default_factory=dict)):
+    target = "last" if body.get("slot") == "last" or slot == "last" else "first"
+    try:
+        s.studio.use_round(rid, target, append=flag(body.get("append")))
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"ok": True, "slot": target, "references": s.studio.refs_report()}
+
+
+@readable(router, "/trash")
+def trash(s: State):
+    return s.store.trash_list()
+
+
+@router.post("/trash/restore")
+def restore(body: dict, s: State):
+    return s.store.restore(ids(body))
+
+
+@router.post("/trash/purge")
+def purge(body: dict, s: State):
+    return s.store.purge(None if flag(body.get("all")) else ids(body))
+
+
+@media_route(router, "/trash/{rid}/thumb", "image/jpeg")
+def trash_thumb(rid: str, request: Request, s: State):
+    return media_file(request, s.store.thumb_path(rid, trash=True), "image/jpeg")
+
+
+@media_route(router, "/trash/{rid}", "image/png", "video/mp4")
+def trash_media(rid: str, request: Request, s: State):
+    return serve_round(request, s.store.media_path(rid, trash=True))
+
+
+def target_slot(request: Request, slot: str) -> str:
+    return "last" if slot == "last" or request.url.path.endswith("/last-frame") else "first"
+
+
+@media_route(router, "/reference", "image/png", "image/jpeg", "image/webp")
+@media_route(router, "/last-frame", "image/png", "image/jpeg", "image/webp")
+def reference(request: Request, s: State, slot: str = "first", id: str = ""):
+    target = target_slot(request, slot)
+    path = s.studio.ref_item_file(id) if id and target == "first" else s.studio.ref_file(target)
+    if not path or not path.exists():
+        raise HTTPException(404, "还没有设置")
+    return media_file(request, path, image_type(path))
+
+
+@router.delete("/reference")
+@router.delete("/last-frame")
+def clear_reference(request: Request, s: State, slot: str = "first", id: str = ""):
+    target = target_slot(request, slot)
+    if id and target == "first":
+        if not s.studio.remove_ref(id):
+            raise HTTPException(404, "未找到该参考图")
+    else:
+        s.studio.clear_ref(target)
+    return {"ok": True, "references": s.studio.refs_report()}
+
+
+@router.post("/reference", openapi_extra=IMAGE_BODY)
+@router.post("/last-frame", openapi_extra=IMAGE_BODY)
+def set_reference(request: Request, raw: Raw, s: State, slot: str = "first", id: str = "", append: bool = False):
+    target = target_slot(request, slot)
+    if not 32 <= len(raw) <= LIMITS["upload_max_mb"] * 1048576:
+        raise ValueError(f"图片为空或超过 {LIMITS['upload_max_mb']}MB")
+    if not (raw.startswith(b"\x89PNG") or raw.startswith(b"\xff\xd8") or (raw.startswith(b"RIFF") and raw[8:12] == b"WEBP")):
+        raise ValueError("只接受 PNG、JPEG 或 WebP 图片")
+    item_id = ""
+    if target == "last":
+        s.studio.set_ref(target, raw, "upload")
+    elif append:
+        item_id = s.studio.add_ref(raw, "upload")["id"]
+    elif id:
+        item_id = s.studio.replace_ref(id, raw, "upload")["id"]
+    else:
+        s.studio.set_ref(target, raw, "upload")
+        item_id = s.studio.refs_report()["items"][0]["id"]
+    return {"ok": True, "slot": target, "id": item_id, "bytes": len(raw), "references": s.studio.refs_report()}
+
+
+@router.post("/use-latest-image")
+def use_latest(s: State):
+    latest = s.store.latest("image")
+    if not latest:
+        raise ValueError("还没有生成过图片")
+    s.studio.use_round(latest["id"], "first")
+    return {"ok": True, "id": latest["id"]}
+
+
+@media_route(router, "/image", "image/png")
+def latest(request: Request, s: State):
+    return media_file(request, s.store.out / "latest.png", "image/png")

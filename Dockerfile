@@ -1,3 +1,10 @@
+FROM node:22-bookworm-slim AS web
+WORKDIR /build
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -15,8 +22,9 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py jobs.py store.py ui.py workflows.py colab_backend.py colab_worker.py ./
-COPY h3_skills ./h3_skills
+COPY app.py ./
+COPY draw_studio ./draw_studio
+COPY --from=web /build/dist ./web/dist
 
 RUN useradd -m -u 1000 studio \
     && mkdir -p /data/out \

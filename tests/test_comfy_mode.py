@@ -11,9 +11,11 @@ from pathlib import Path
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import colab_worker
-import jobs
-from store import Store
+from draw_studio.colab import worker
+from draw_studio.gallery import Store
+from draw_studio.generation.parameters import normalize_job, parse_model_link
+from draw_studio.generation.studio import Studio
+from draw_studio.logs import LogBuffer
 
 
 class DummyColab:
@@ -26,7 +28,7 @@ class DummyColab:
 
 def test_parse_model_link():
     u1 = "https://huggingface.co/chatrlabs/Qwen-Image-2.1-Uncensored-Omni-Quantized/blob/main/qwen-image-2.1-step90000-BF16/diffusion_pytorch_model.safetensors"
-    s1 = jobs.parse_model_link(u1, "扩散模型")
+    s1 = parse_model_link(u1, "扩散模型")
     assert s1["source"] == "hf"
     assert s1["repo_id"] == "chatrlabs/Qwen-Image-2.1-Uncensored-Omni-Quantized"
     assert s1["filename"] == "qwen-image-2.1-step90000-BF16/diffusion_pytorch_model.safetensors"
@@ -34,22 +36,22 @@ def test_parse_model_link():
     assert s1["basename"] == "diffusion_pytorch_model.safetensors"
 
     u2 = "https://huggingface.co/chatrlabs/Qwen-Image-2.1-Uncensored-Omni-Quantized/resolve/main/qwen-image-2.1-step90000-NVFP4-comfy.safetensors?download=true"
-    s2 = jobs.parse_model_link(u2)
+    s2 = parse_model_link(u2)
     assert s2["format"] == "NVFP4"
     assert s2["filename"] == "qwen-image-2.1-step90000-NVFP4-comfy.safetensors"
 
     u3 = "Comfy-Org/Qwen-Image-2.1 :: text_encoders/qwen3vl_8b_bf16.safetensors"
-    s3 = jobs.parse_model_link(u3)
+    s3 = parse_model_link(u3)
     assert s3["repo_id"] == "Comfy-Org/Qwen-Image-2.1"
     assert s3["filename"] == "text_encoders/qwen3vl_8b_bf16.safetensors"
 
     u4 = "Comfy-Org/Qwen-Image-2.1/vae/qwen_image_2.1_vae_bf16.safetensors"
-    s4 = jobs.parse_model_link(u4)
+    s4 = parse_model_link(u4)
     assert s4["repo_id"] == "Comfy-Org/Qwen-Image-2.1"
     assert s4["filename"] == "vae/qwen_image_2.1_vae_bf16.safetensors"
 
     u5 = "https://example.com/weights/custom-q5.gguf"
-    s5 = jobs.parse_model_link(u5)
+    s5 = parse_model_link(u5)
     assert s5["source"] == "url"
     assert s5["ext"] == ".gguf"
 
@@ -62,14 +64,14 @@ def test_parse_model_link():
         "https://huggingface.co/owner/repo",
     ]:
         try:
-            jobs.parse_model_link(bad)
+            parse_model_link(bad)
             raise AssertionError(f"Expected ValueError for {bad!r}")
         except ValueError:
             pass
 
 
 def test_normalize_job_comfy_and_loras():
-    j = jobs.normalize_job({
+    j = normalize_job({
         "mode": "image",
         "engine": "comfyui",
         "gpu": "G4",
@@ -99,7 +101,7 @@ def test_normalize_job_comfy_and_loras():
     assert j["loras"][0]["weight_name"] == "chatrlabs-omni-turbo-8step-fp32.safetensors"
 
     # Backward-compatible diffusers job still works identically
-    j2 = jobs.normalize_job({"mode": "image", "prompt": "hello"})
+    j2 = normalize_job({"mode": "image", "prompt": "hello"})
     assert j2["engine"] == "diffusers"
     assert j2["model"] == "qwen-2.1-bf16"
 
@@ -107,9 +109,9 @@ def test_normalize_job_comfy_and_loras():
 def test_comfy_presets_persistence():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        log = jobs.LogBuffer()
+        log = LogBuffer()
         store = Store(root / "out", log)
-        studio = jobs.Studio(root, {}, DummyColab(), store, log, 600)
+        studio = Studio(root, {}, DummyColab(), store, log, 600)
 
         saved, all_p = studio.save_comfy_preset({
             "name": "测试组合 NVFP4",
@@ -128,7 +130,7 @@ def test_comfy_presets_persistence():
         pid = saved["id"]
 
         # Recover into a fresh Studio instance
-        studio2 = jobs.Studio(root, {}, DummyColab(), store, log, 600)
+        studio2 = Studio(root, {}, DummyColab(), store, log, 600)
         studio2.recover()
         assert len(studio2.comfy_presets()) == 1
         assert studio2.comfy_presets()[0]["id"] == pid
@@ -138,7 +140,7 @@ def test_comfy_presets_persistence():
 
 
 def test_build_comfy_prompt_graphs():
-    base_job = jobs.normalize_job({
+    base_job = normalize_job({
         "mode": "image",
         "engine": "comfyui",
         "prompt": "a smiling girl",
@@ -162,7 +164,7 @@ def test_build_comfy_prompt_graphs():
         "loras": [{"filename": "turbo.safetensors", "scale": 1.0}],
     }
     # 1. Qwen-Image 2.1 t2i + Turbo LoRA
-    g, _ = colab_worker._build_comfy_prompt(base_job, files, has_ref=False)
+    g, _ = worker._build_comfy_prompt(base_job, files, has_ref=False)
     assert g["1"]["class_type"] == "UNETLoader"
     assert g["2"]["inputs"]["type"] == "qwen_image"
     assert g["10"]["class_type"] == "LoraLoaderModelOnly"
@@ -174,7 +176,7 @@ def test_build_comfy_prompt_graphs():
 
     # 2. Qwen-Image 2.1 i2i + GGUF
     files_gguf = dict(files, diffusion="model.gguf", loras=[])
-    g2, _ = colab_worker._build_comfy_prompt(base_job, files_gguf, has_ref=True, ref_image_name="ref1.png")
+    g2, _ = worker._build_comfy_prompt(base_job, files_gguf, has_ref=True, ref_image_name="ref1.png")
     assert g2["1"]["class_type"] == "UnetLoaderGGUF"
     assert g2["23"]["class_type"] == "LoadImage"
     assert g2["24"]["class_type"] == "JoinImageWithAlpha"
@@ -182,7 +184,7 @@ def test_build_comfy_prompt_graphs():
     assert g2["25"]["inputs"]["vae"] == ["3", 0]
 
     # 2b. Qwen-Image 2.1 multi-ref i2i (3 images -> images.image_1..3)
-    g_multi, _ = colab_worker._build_comfy_prompt(
+    g_multi, _ = worker._build_comfy_prompt(
         base_job,
         files_gguf,
         has_ref=True,
@@ -198,7 +200,7 @@ def test_build_comfy_prompt_graphs():
     for tpl in ("flux", "sd-generic"):
         j_tpl = json.loads(json.dumps(base_job))
         j_tpl["comfy"]["template"] = tpl
-        gt, _ = colab_worker._build_comfy_prompt(j_tpl, files, has_ref=False)
+        gt, _ = worker._build_comfy_prompt(j_tpl, files, has_ref=False)
         assert gt["26"]["class_type"] == "KSampler"
         assert gt["27"]["class_type"] == "VAEDecode"
         assert gt["28"]["class_type"] == "SaveImage"
@@ -218,8 +220,8 @@ def test_minimax_h3_comfy_lora_conversion():
         def __mul__(self, scalar: float):
             return TinyArr([[x * scalar for x in r] for r in self.rows])
 
-    orig_cat = colab_worker._cat_dim0
-    colab_worker._cat_dim0 = lambda parts: TinyArr([r for p in parts for r in p.rows])
+    orig_cat = worker._cat_dim0
+    worker._cat_dim0 = lambda parts: TinyArr([r for p in parts for r in p.rows])
     try:
         sd = {
             "diffusion_model.audio_patch_proj.lora_A.weight": TinyArr([[1.0] * 4 for _ in range(2)]),
@@ -243,8 +245,8 @@ def test_minimax_h3_comfy_lora_conversion():
                 [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]
             ),
         }
-        assert colab_worker._is_minimax_h3_comfy_lora(sd.keys()) is True
-        conv = colab_worker._convert_minimax_h3_comfy_lora(sd)
+        assert worker._is_minimax_h3_comfy_lora(sd.keys()) is True
+        conv = worker._convert_minimax_h3_comfy_lora(sd)
         assert conv["transformer.audio_proj_in.lora_A.weight"].shape == (2, 4)
         assert conv["transformer.audio_proj_out.lora_B.weight"].shape == (4, 2)
         # QKV split exact check
@@ -259,7 +261,7 @@ def test_minimax_h3_comfy_lora_conversion():
         assert conv["transformer.transformer_blocks.0.ff.net.2.lora_B.weight"].shape == (4, 2)
         assert conv["transformer.token_refiner.refiner_blocks.1.attn.to_k.lora_B.weight"].rows == [[2.0, 0.0]]
     finally:
-        colab_worker._cat_dim0 = orig_cat
+        worker._cat_dim0 = orig_cat
 
 
 if __name__ == "__main__":
