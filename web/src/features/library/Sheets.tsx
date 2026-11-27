@@ -199,6 +199,7 @@ export function PickerSheet() {
   const patch = useStore(s => s.patchDraft)
   const onPick = args.onPick as ((r: Round) => void) | undefined
   const videos = args.slot === 'video'
+  const character = args.slot === 'first' && args.character === true
   const items = useMemo(() => rounds.filter(r => r.kind === (videos ? 'video' : 'image')), [rounds, videos])
   const setVideoRef = useStore(s => s.setVideoRef)
   const videoRefBusy = useStore(s => s.videoRefBusy)
@@ -209,15 +210,15 @@ export function PickerSheet() {
       const slot = (args.slot as 'first' | 'last') || 'first'
       const st0 = useStore.getState().status
       const keyframe = slot === 'first' && args.keyframe === true
-      const res = await api.useRound(r.id, slot, slot === 'first' && !keyframe && !!st0?.references.items.length)
+      const res = await api.useRound(r.id, slot, slot === 'first' && !keyframe && !character && !!st0?.references.items.length)
       const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: res.references } })
       if (slot === 'first' && useStore.getState().workspace === 'image') patch({ useRef: true, chain: false })
       if (keyframe) patch({ useFirstFrame: true })
-      toast(`已将 ${rid(r.id)} 设为${slot === 'last' ? '尾帧' : keyframe ? '首帧' : '参考图'}`, 'ok'); close()
+      toast(`已将 ${rid(r.id)} 设为${slot === 'last' ? '尾帧' : keyframe ? '首帧' : character ? '人设图' : '参考图'}`, 'ok'); close()
     } catch (e) { toast(e instanceof Error ? e.message : '设置失败', 'err') }
   }
   return (
-    <Modal title={videos ? '从作品库选视频' : '从作品库挑选'} icon={videos ? <Film size={16} /> : <ImagePlus size={16} />} onClose={close} wide>
+    <Modal title={videos ? '从作品库选视频' : character ? '从作品库选人设图' : '从作品库挑选'} icon={videos ? <Film size={16} /> : <ImagePlus size={16} />} onClose={close} wide>
       {!items.length ? <div className="empty"><b>{videos ? '作品库里还没有视频' : '作品库里还没有图片'}</b></div> : (
         <div className="trash-grid">
           {items.map(r => (

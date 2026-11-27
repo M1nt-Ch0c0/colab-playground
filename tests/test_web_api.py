@@ -224,7 +224,8 @@ class WebTests(unittest.TestCase):
         src = png((321, 157), "navy")
         rid = self.req("POST", route + "/import?kind=image&name=original.png", data=src).json()["id"]
         self.req("POST", "/api/reference", data=png(color="green"))
-        mask = {"source_id": rid, "strokes": [{"size": .001, "points": [[.5, .5]]}]}
+        mask = {"source_id": rid, "strokes": [{"size": .001, "points": [[.5, .5]]},
+                                              {"size": 2 / 157, "points": [[0, 0]]}]}
         body = {"prompt": "red {dot|spot}", "seed": 0, "edit_mask": mask}
         studio = self.s.studio
         with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
@@ -263,6 +264,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.s.store.get(out["id"])["meta"]["edit_mask"], mask)
         expected = Image.open(io.BytesIO(src))
         expected.putpixel((160, 78), (255, 0, 0))
+        expected.putpixel((0, 0), (255, 0, 0))
         with Image.open(self.s.store.media_path(out["id"])[1]) as actual:
             self.assertEqual(actual.tobytes(), expected.tobytes())
         self.assertFalse(list(studio.queue_refs_dir.iterdir()))
