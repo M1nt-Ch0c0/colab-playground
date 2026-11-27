@@ -55,7 +55,7 @@ function Studio() {
     <div className="app">
       <Topbar />
       <AnimatePresence mode="wait" initial={false}>
-        <motion.main key={ws === 'workflow' ? 'wf' : 'studio'} className={cx('workspace', ws === 'workflow' && 'is-wf', ws !== 'workflow' && !libOpen && 'lib-closed')}
+        <motion.main key={ws === 'workflow' ? 'wf' : 'studio'} className={cx('workspace', ws === 'workflow' && 'is-wf')}
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
           {ws === 'workflow' ? <WorkflowWorkspace /> : (
             <>

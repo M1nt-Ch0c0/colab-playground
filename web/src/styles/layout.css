@@ -62,8 +62,13 @@ input.inl { width: 72px; display: inline-block; padding: 4px 8px; margin: 0 4px;
 .card h4 { margin: 0 0 2px; }
 .toast.err { color: var(--bad); }
 /* ── 三栏工作区 ── */
-.workspace { display: grid; grid-template-columns: 360px minmax(0, 1fr) 300px; gap: 10px; }
-.workspace.lib-closed { grid-template-columns: 360px minmax(0, 1fr); }
+.workspace {
+  display: grid; gap: 10px;
+  grid-template-columns: 360px minmax(0, 1fr);
+  /* 作品库占用第三列，直到退出动画结束、侧栏卸载。 */
+  grid-auto-flow: column;
+  grid-auto-columns: 300px;
+}
 .workspace.is-wf { grid-template-columns: 1fr; }
 .composer { display: flex; flex-direction: column; min-height: 0; position: relative; }
 .composer-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 0 4px 96px 0; }
@@ -320,12 +325,12 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
 
 /* ── 响应式 ── */
 @media (max-width: 1180px) {
-  .workspace, .workspace.lib-closed { grid-template-columns: 340px minmax(0, 1fr); }
+  .workspace { grid-template-columns: 340px minmax(0, 1fr); grid-auto-flow: row; }
   /* 窄屏下作品库浮在舞台上方，而不是挤占一栏 */
   .lib-dock { position: fixed; z-index: 30; top: calc(var(--top) + 18px + env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100vw - 32px)); box-shadow: var(--shadow-lg); }
 }
 @media (max-width: 760px) {
-  .workspace, .workspace.lib-closed { grid-template-columns: 1fr; overflow-y: auto; }
+  .workspace { grid-template-columns: 1fr; overflow-y: auto; }
   .composer { max-height: none; }
   .composer-scroll { overflow: visible; padding-bottom: 12px; }
   .go-bar { position: sticky; bottom: 8px; }

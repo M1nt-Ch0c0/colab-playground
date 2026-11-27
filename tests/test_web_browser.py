@@ -47,6 +47,35 @@ def signed_in_browser():
 
 
 class BrowserTest(unittest.TestCase):
+    def test_library_toggle_keeps_the_stage_height(self):
+        with signed_in_browser() as (rt, driver, url):
+            src = rt.root / "preview.png"
+            src.write_bytes(png())
+            rt.store.save(src, "image", {"prompt": "library preview"})
+            driver.get(url)
+            wait = WebDriverWait(driver, 10)
+            toggle = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".lib-toggle")))
+            stage = driver.find_element(By.CSS_SELECTOR, ".stage")
+            closed_width = stage.rect["width"]
+            # The height drop used to occur between the close click and the dock's removal.
+            driver.execute_script("""
+                const stage = arguments[0], heights = [stage.clientHeight];
+                const observer = new ResizeObserver(() => heights.push(stage.clientHeight));
+                observer.observe(stage);
+                window.finishStageMeasurement = () => { observer.disconnect(); return heights };
+            """, stage)
+            toggle.click()
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".tile"))).click()
+            image = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".viewer img")))
+            self.assertLess(stage.rect["width"], closed_width)
+            dock = driver.find_element(By.CSS_SELECTOR, ".lib-dock")
+            driver.find_element(By.TAG_NAME, "body").send_keys("g")
+            wait.until(EC.staleness_of(dock))
+            self.assertTrue(image.is_displayed())
+            self.assertAlmostEqual(stage.rect["width"], closed_width, delta=1)
+            heights = driver.execute_script("return window.finishStageMeasurement()")
+            self.assertLessEqual(max(heights) - min(heights), 1, heights)
+
     def test_grab_failure_is_reported_once_per_attempt(self):
         with signed_in_browser() as (rt, driver, url):
             message = "A100 暂无空闲库存（HTTP 503），可换卡、换出口或稍后重试。"
