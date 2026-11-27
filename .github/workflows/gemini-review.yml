@@ -1,0 +1,164 @@
+name: '🔎 Gemini PR Review'
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+  issue_comment:
+    types:
+      - created
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  review:
+    if: |-
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.head.repo.fork == false &&
+        github.event.pull_request.draft == false
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '@gemini-cli /review') &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      )
+    concurrency:
+      group: '${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}'
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: write
+    steps:
+      - name: Resolve PR context and guard against forks
+        id: pr_context
+        env:
+          GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          PR_HEAD_SHA: '${{ github.event.pull_request.head.sha }}'
+          COMMENT_BODY: '${{ github.event.comment.body }}'
+        run: |-
+          ADDITIONAL_CONTEXT=""
+          CHECKOUT_REF="${PR_HEAD_SHA}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "issue_comment" ]]; then
+            PREFIX='@gemini-cli /review'
+            REST="${COMMENT_BODY:${#PREFIX}}"
+            if [[ "${COMMENT_BODY,,}" != "${PREFIX}"* || ( -n "${REST}" && ! "${REST}" =~ ^[[:space:]] ) ]]; then
+              echo "::notice::Comment does not match exact '@gemini-cli /review' command; skipping."
+              echo "should_run=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            PR_JSON="$(gh api "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")"
+            IS_FORK="$(jq -r '(.head.repo == null) or (.head.repo.fork == true) or (.head.repo.full_name != .base.repo.full_name)' <<< "${PR_JSON}")"
+            if [[ "${IS_FORK}" != "false" ]]; then
+              echo "::notice::Skipping Gemini PR review for fork pull request #${PULL_REQUEST_NUMBER}."
+              echo "should_run=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            CHECKOUT_REF="$(jq -r '.head.sha' <<< "${PR_JSON}")"
+            ADDITIONAL_CONTEXT="$(printf '%s' "${REST}" | sed '1s/^[[:space:]]*//')"
+          fi
+
+          echo "should_run=true" >> "${GITHUB_OUTPUT}"
+          echo "checkout_ref=${CHECKOUT_REF}" >> "${GITHUB_OUTPUT}"
+
+          DELIMITER="EOF_$(openssl rand -hex 16)"
+          {
+            echo "additional_context<<${DELIMITER}"
+            printf '%s\n' "${ADDITIONAL_CONTEXT}"
+            echo "${DELIMITER}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout PR head commit
+        if: steps.pr_context.outputs.should_run == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: '${{ steps.pr_context.outputs.checkout_ref }}'
+          persist-credentials: false
+
+      - name: Clone official code-review extension (pinned SHA)
+        if: steps.pr_context.outputs.should_run == 'true'
+        run: |-
+          EXT_DIR="${RUNNER_TEMP}/gemini-code-review"
+          EXT_SHA="dd1a10d2c9d07b2ebade866590fdfa59cd8f9d04"
+          git init "${EXT_DIR}"
+          git -C "${EXT_DIR}" remote add origin https://github.com/gemini-cli-extensions/code-review.git
+          git -C "${EXT_DIR}" fetch --depth 1 origin "${EXT_SHA}"
+          git -C "${EXT_DIR}" checkout --detach FETCH_HEAD
+
+      - name: Run Gemini pull request review
+        if: steps.pr_context.outputs.should_run == 'true'
+        uses: google-github-actions/run-gemini-cli@v0
+        id: gemini_pr_review
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          GEMINI_API_KEY: '${{ secrets.GEMINI_API_KEY }}'
+          REPOSITORY: '${{ github.repository }}'
+          PULL_REQUEST_NUMBER: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          ADDITIONAL_CONTEXT: '${{ steps.pr_context.outputs.additional_context }}'
+        with:
+          gemini_api_key: '${{ secrets.GEMINI_API_KEY }}'
+          gemini_debug: '${{ fromJSON(vars.GEMINI_DEBUG || false) }}'
+          gemini_model: '${{ vars.GEMINI_MODEL }}'
+          workflow_name: 'gemini-review'
+          github_pr_number: '${{ github.event.pull_request.number || github.event.issue.number }}'
+          settings: |-
+            {
+              "model": {
+                "maxSessionTurns": 15
+              },
+              "telemetry": {
+                "enabled": true,
+                "target": "local",
+                "outfile": ".gemini/telemetry.log"
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "includeTools": [
+                    "add_comment_to_pending_review",
+                    "pull_request_read",
+                    "pull_request_review_write"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+                  }
+                }
+              },
+              "tools": {
+                "exclude": [
+                  "run_shell_command",
+                  "write_file",
+                  "replace",
+                  "web_fetch",
+                  "google_web_search"
+                ]
+              }
+            }
+          extensions: |
+            [
+              "${{ runner.temp }}/gemini-code-review"
+            ]
+          prompt: '/pr-code-review Review GitHub PR #${{ github.event.pull_request.number || github.event.issue.number }} in repository ${{ github.repository }}. Additional review instructions (if any): ${{ steps.pr_context.outputs.additional_context }}. You MUST submit the review on GitHub using the GitHub MCP tools (pull_request_read, pull_request_review_write, add_comment_to_pending_review).'
