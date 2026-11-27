@@ -464,6 +464,20 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, ou
   )
 }
 
+function ListField({ label, values, disabled, onChange }: {
+  label: string; values: string[]; disabled: boolean; onChange: (values: string[]) => void
+}) {
+  const [text, setText] = useState<string | null>(null)
+  return <label className="field"><span className="fl">{label}</span>
+    <input type="text" disabled={disabled} placeholder="逗号分隔" value={text ?? values.join(', ')}
+      onChange={e => {
+        const raw = e.target.value
+        setText(raw)
+        onChange(raw.split(/[,，\s]+/).filter(Boolean))
+      }} onBlur={() => setText(null)} />
+  </label>
+}
+
 function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }: {
   run?: WfRun; steps: WfStep[]; step: WfStep; idx: number; disabled: boolean; onChange: (s: WfStep) => void
   local?: DraftFiles; onAct?: RunAction
@@ -531,7 +545,7 @@ function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }:
     if (k === 'auto_offload' && step.config.offload_mode) return null
     if (typeof v === 'boolean' || typeof defaults?.[k] === 'boolean') return <div className="field" key={k}>
       <Toggle on={v === true} disabled={disabled} onChange={on => set(k, on)}>{label}</Toggle></div>
-    if (Array.isArray(v)) return <label className="field" key={k}><span className="fl">{label}</span><input type="text" disabled={disabled} value={(v as string[]).join(', ')} placeholder="逗号分隔" onChange={e => set(k, e.target.value.split(/[,，\s]+/).filter(Boolean))} /></label>
+    if (Array.isArray(v)) return <ListField key={k} label={label} values={v} disabled={disabled} onChange={values => set(k, values)} />
     if (typeof v === 'number') return <label className="field" key={k}><span className="fl">{label}</span><input type="number" disabled={disabled} value={v} step={k === 'cfg' || k === 'fade_s' ? 0.05 : 1} onChange={e => set(k, +e.target.value)} /></label>
     const long = ['instruction', 'prompt_template', 'note'].includes(k)
     return long
