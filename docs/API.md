@@ -381,4 +381,4 @@ H="Authorization: Bearer $QP_TOKEN"
 
 ## 8. 工作流中的视频参考
 
-`h3_prompt` 与 `video_gen` 在 `config.workflow="ref2va"` 时支持 `video_round_id`、`video_task`（`edit`、`continue`、`motion`）和 `extra_ref_sources`（上游图片步骤 ID 列表）。白模模式用第一张参考图提供角色外观，明确选择的上游图片排在关键帧之前。也可以用 `video_from` 替代 `video_round_id`，选择前面的 `video_gen` 或 `video_stitch` 步骤。单个视频供各镜头共用，多段视频按 `scene_index` 匹配。缺少相应片段时该步骤报错。H3 提示词步骤会在各镜头的输出里传递视频编号、用途和图片来源。下游参考模式可直接沿用，也可指定新素材。在 `fl2va` 模式下，两个节点也可传递 `last_frame_round_id`。工作流读取自己的配置与上游产出，创作台的参考槽可独立使用。
+`h3_prompt` 与 `video_gen` 在 `config.workflow="ref2va"` 时支持 `video_round_id`、`video_task`（`edit`、`continue`、`motion`）和 `extra_ref_sources`（上游图片步骤 ID 列表）。白模模式用第一张参考图提供角色外观，明确选择的上游图片排在关键帧之前。也可以用 `video_from` 替代 `video_round_id`，选择前面的 `video_gen` 或 `video_stitch` 步骤。保存或更新工作流时会校验这一引用，删除被引用的步骤或把它移到引用方之后会报错。单个视频供各镜头共用，多段视频按 `scene_index` 匹配。缺少相应片段时该步骤报错。H3 提示词步骤会在各镜头的输出里传递视频编号、用途和图片来源。下游参考模式可直接沿用，也可指定新素材。在 `fl2va` 模式下，两个节点也可传递 `last_frame_round_id`。工作流读取自己的配置与上游产出，创作台的参考槽可独立使用。

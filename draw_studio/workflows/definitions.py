@@ -586,6 +586,10 @@ def normalize_workflow_def(body: dict[str, Any]) -> dict[str, Any]:
         while st["id"] in used_ids:
             st["id"] = f"{base_id}_{n}"
             n += 1
+        cfg = st["config"]
+        if st["type"] in ("h3_prompt", "video_gen") and cfg["workflow"] == "ref2va" and (source := cfg["video_from"]):
+            if not any(s["id"] == source and s["type"] in ("video_gen", "video_stitch") for s in steps):
+                raise ValueError(f"「{st['name']}」引用的上游视频步骤 {source} 不存在、类型不符或位于本步骤之后")
         used_ids.add(st["id"])
         steps.append(st)
     req_id = str(body.get("id") or "").strip()

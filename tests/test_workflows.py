@@ -400,6 +400,24 @@ class StudioV3Tests(unittest.TestCase):
                          [("edit", rid) for rid in inputs] + [("continue", rid) for rid in outputs["edited"]["round_ids"]])
         self.assertFalse(self.studio.refs_report()["video"])
 
+    def test_removing_a_referenced_video_step_keeps_the_saved_workflow(self):
+        original = {"id": "original", "type": "video_gen"}
+        for consumer in ("h3_prompt", "video_gen"):
+            with self.subTest(consumer=consumer):
+                follow = {"id": "next", "type": consumer, "config": {
+                    "workflow": "ref2va", "video_from": "original", "video_task": "continue",
+                }}
+                run = self.wf.create_run({"workflow": {"name": "续拍", "steps": [original, follow]}})
+                for invalid in ([follow], [follow, original], [{**original, "type": "image_gen"}, follow]):
+                    with self.assertRaisesRegex(ValueError, "上游视频步骤 original"):
+                        self.wf.update_run_config(run["id"], {"workflow": {"steps": invalid}})
+                    self.assertEqual(self.wf.get_run(run["id"])["workflow"], run["workflow"])
+
+                edited = self.wf.update_run_config(run["id"], {"workflow": {
+                    "steps": [{**original, "type": "video_stitch"}, follow],
+                }})
+                self.assertEqual(edited["workflow"]["steps"][1]["config"]["video_from"], "original")
+
     def _wait_run_not_running(self, run_id: str, timeout: float = 20.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:
