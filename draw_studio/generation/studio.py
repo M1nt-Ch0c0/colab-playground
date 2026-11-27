@@ -659,7 +659,7 @@ class Studio:
                     "id": rid,
                     "bytes": p.stat().st_size,
                     "source": str(it.get("source") or "upload"),
-                    "updated_at": int(it.get("updated_at") or p.stat().st_mtime),
+                    "updated_at": float(it.get("updated_at") or p.stat().st_mtime),
                 })
         if not items:
             first_f = self.ref_file("first")
@@ -669,7 +669,7 @@ class Studio:
                     "id": "legacy",
                     "bytes": first_f.stat().st_size,
                     "source": str(finfo.get("source") or "legacy"),
-                    "updated_at": int(finfo.get("updated_at") or first_f.stat().st_mtime),
+                    "updated_at": float(finfo.get("updated_at") or first_f.stat().st_mtime),
                 })
         return items
 
@@ -746,7 +746,7 @@ class Studio:
                     "set": last_f.exists(),
                     "bytes": last_f.stat().st_size if last_f.exists() else 0,
                     "source": last_info.get("source") or ("legacy" if last_f.exists() else ""),
-                    "updated_at": int(last_info.get("updated_at") or (last_f.stat().st_mtime if last_f.exists() else 0)),
+                    "updated_at": float(last_info.get("updated_at") or (last_f.stat().st_mtime if last_f.exists() else 0)),
                 },
                 "items": items,
                 "video": meta.get("video"),
@@ -796,7 +796,7 @@ class Studio:
                 (self.refs_dir / f"{ref_id}.mp4").unlink(missing_ok=True)
 
     def add_ref(self, data: bytes, source: str) -> dict:
-        now = int(time.time())
+        now = time.time()
         with self._lock:
             meta = self._refs_meta()
             items = self._materialize_legacy_locked(self._ref_items_locked())
@@ -816,7 +816,7 @@ class Studio:
         return entry
 
     def replace_ref(self, ref_id: str, data: bytes, source: str) -> dict:
-        now = int(time.time())
+        now = time.time()
         with self._lock:
             meta = self._refs_meta()
             items = self._materialize_legacy_locked(self._ref_items_locked())
@@ -860,7 +860,7 @@ class Studio:
             return True
 
     def set_ref(self, slot: str, data: bytes, source: str) -> None:
-        now = int(time.time())
+        now = time.time()
         with self._lock:
             if slot == "last":
                 tmp = self.ref_file("last").with_suffix(".bin.tmp")

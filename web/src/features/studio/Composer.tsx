@@ -439,6 +439,7 @@ function RefBoard({ video }: { video: boolean }) {
   const toast = useStore(s => s.toast)
   const open = useStore(s => s.openSheet)
   const fileRef = useRef<HTMLInputElement>(null)
+  const characterFile = useRef<HTMLInputElement>(null)
   const [slot, setSlot] = useState<'first' | 'last'>('first')
   const source = useStore(s => s.rounds.find(r => r.id === draft.editMask?.source_id))
   if (!video && draft.editMask) return <div className="mask-source">
@@ -450,6 +451,7 @@ function RefBoard({ video }: { video: boolean }) {
   </div>
   if (!refs) return null
   const keyframes = video && draft.workflow === 'fl2va'
+  const character = video && draft.workflow === 'ref2va' && draft.videoTask === 'motion'
   const needs = video ? draft.videoTask === 'images' || draft.videoTask === 'motion' : draft.useRef && !draft.chain
   const upload = async (files: FileList | File[], target: 'first' | 'last', append: boolean) => {
     for (const f of keyframes ? [...files].slice(0, 1) : [...files]) {
@@ -503,20 +505,30 @@ function RefBoard({ video }: { video: boolean }) {
         </div>
       )}
       <div className="ref-grid">
-        {refs.items.map(it => (
+        {refs.items.map((it, i) => (
           <figure key={it.id} className="ref-tile">
-            <img src={media.ref(it.id, it.updated_at)} alt="参考图" />
+            <img src={media.ref(it.id, it.updated_at)} alt={character && i === 0 ? '人设图' : '参考图'} />
+            {character && i === 0 && <figcaption className="tile-id">人设图</figcaption>}
             <button className="ref-x" onClick={() => remove(it.id)} aria-label="移除"><X size={12} /></button>
           </figure>
         ))}
         {refs.items.length < refs.max && (video || !draft.chain) && (
           <button className="ref-add" onClick={() => { setSlot('first'); fileRef.current?.click() }} onDrop={e => onDrop(e, 'first')} onDragOver={e => e.preventDefault()}>
-            <ImagePlus size={16} /><span>{refs.items.length ? '再加一张' : '上传、拖入或粘贴'}</span>
+            <ImagePlus size={16} /><span>{refs.items.length ? '再加一张' : character ? '上传人设图' : '上传、拖入或粘贴'}</span>
           </button>
         )}
       </div>
       <div className="row wrap">
-        <button className="btn sm ghost" onClick={() => open('picker', { slot: 'first' })}>从作品库挑选</button>
+        {character && <>
+          <button className="btn sm ghost" onClick={() => open('picker', { slot: 'first', character: true })}>从作品库选人设图</button>
+          {refs.first.set && <button className="btn sm ghost" onClick={() => characterFile.current?.click()}>上传替换人设图</button>}
+          <input ref={characterFile} type="file" aria-label="上传替换人设图" accept="image/png,image/jpeg,image/webp" hidden onChange={e => {
+            if (e.target.files?.length) void upload(e.target.files, 'first', false)
+            e.target.value = ''
+          }} />
+        </>}
+        {(!character || (refs.first.set && refs.items.length < refs.max)) && <button className="btn sm ghost" onClick={() => open('picker', { slot: 'first' })}>
+          {character ? '从作品库追加参考图' : '从作品库挑选'}</button>}
         {!video && <button className="btn sm ghost" onClick={() => open('picker', { onPick: (r: { id: string }) => open('mask', { id: r.id }) })}>选图局部修改</button>}
         {refs.items.length > 0 && <button className="btn sm ghost" onClick={async () => { const r = await api.clearSlot('first'); const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } }); patch({ useRef: false }) }}>清空全部</button>}
         <span className="dim">{refs.items.length}/{refs.max}</span>

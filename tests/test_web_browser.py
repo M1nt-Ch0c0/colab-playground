@@ -308,8 +308,10 @@ class BrowserTest(unittest.TestCase):
             previous = mp4(rt.root / "previous.mp4", 3, audio=True)
             rid = rt.store.save(previous, "video", {"prompt": "previous shot", "width": 768, "height": 512})
             character = rt.root / "character.png"
-            character.write_bytes(png())
-            rt.studio.set_ref("first", character.read_bytes(), "upload")
+            character.write_bytes(png((192, 256), "maroon"))
+            character_id = rt.store.save(character, "image", {"prompt": "角色正面", "width": 192, "height": 256})
+            rt.studio.set_ref("first", png(), "upload")
+            rt.studio.add_ref(png(color="green"), "wardrobe")
             driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
             status = rt.colab.status_report()
             with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
@@ -332,6 +334,15 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(submit(2)["video_reference_id"], edit["video_reference_id"])
                 self.assertEqual(enqueue.call_args.args[0]["video_task"], "continue")
                 button("白模 + 人设").click()
+                button("从作品库选人设图").click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.trash-tile[title="角色正面"]'))).click()
+                wait.until(lambda d: d.find_element(By.CSS_SELECTOR, 'img[alt="人设图"]').get_property("naturalWidth") == 192)
+                self.assertEqual([item["source"] for item in rt.studio.refs_report()["items"]], [f"round:{character_id}", "wardrobe"])
+                alternate = rt.root / "alternate.png"
+                alternate.write_bytes(png((128, 256), "blue"))
+                driver.find_element(By.CSS_SELECTOR, 'input[aria-label="上传替换人设图"]').send_keys(str(alternate))
+                wait.until(lambda d: d.find_element(By.CSS_SELECTOR, 'img[alt="人设图"]').get_property("naturalWidth") == 128)
+                self.assertEqual(rt.studio.ref_blobs(), [alternate.read_bytes(), png(color="green")])
                 driver.find_element(By.CSS_SELECTOR, 'input[accept^="video/mp4"]').send_keys(str(mp4(rt.root / "blocking.mp4")))
                 wait.until(lambda d: d.find_element(By.CSS_SELECTOR, "video.ref-video").get_property("duration") == 2)
                 motion = submit(3)
