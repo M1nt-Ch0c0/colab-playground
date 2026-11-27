@@ -1,6 +1,6 @@
 # 部署与运维
 
-FrameTandem 支持单机自托管。优先从 [Docker Compose 快速开始](../README.md#快速开始) 安装。工作台、作品库和队列数据由部署者管理，生成需要访问 Google Colab；部署成功不代表账号有可用的 GPU 或额度。
+ColabReel 支持单机自托管。优先从 [Docker Compose 快速开始](../README.md#快速开始) 安装。工作台、作品库和队列数据由部署者管理，生成需要访问 Google Colab；部署成功不代表账号有可用的 GPU 或额度。
 
 ## Docker 与数据目录
 

@@ -1,12 +1,12 @@
-# FrameTandem
+# ColabReel
 
-**从参考图，到下一幕。**
+**From Colab to the next shot.**
 
-FrameTandem 是可自托管的开源图像与视频创作工作台。可以从一句提示词或一张参考图开始，在作品库里继续修改、取帧和续拍，再把多个镜头接成一段视频。工作台部署在你自己的电脑或服务器上，生成任务交给 Google Colab 的 GPU。
+ColabReel 是可自托管的开源图像与视频创作工作台。可以从一句提示词或一张参考图开始，在作品库里继续修改、取帧和续拍，再把多个镜头接成一段视频。工作台部署在你自己的电脑或服务器上，生成任务交给 Google Colab 的 GPU。
 
-![FrameTandem 项目封面](docs/media/cover.webp)
+![ColabReel 项目封面](docs/media/cover.webp)
 
-[快速开始](#快速开始) · [创作指南](docs/guide.md) · [部署与运维](docs/deployment.md) · [版本发布](https://github.com/M1nt-Ch0c0/colab-playground/releases)
+[看宣传片](docs/media/launch.mp4) · [快速开始](#快速开始) · [创作指南](docs/guide.md) · [部署与运维](docs/deployment.md) · [版本发布](https://github.com/M1nt-Ch0c0/colab-playground/releases)
 
 ## 在工作台里做什么
 
@@ -31,7 +31,7 @@ FrameTandem 是可自托管的开源图像与视频创作工作台。可以从�
 
 </details>
 
-界面录自本地演示，使用样例素材，未连接 Colab GPU。当前应用界面仍显示 Colab Studio。
+界面录自本地演示，使用样例素材，未连接 Colab GPU。
 
 ## 快速开始
 
@@ -53,7 +53,7 @@ docker compose up -d --build
 
 打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)，登录后在「设置 → Google Colab」完成授权。第一次可以先生成一张图，再从作品库选中它，试试「设为参考」。已有素材也可以直接导入。遇到数据目录权限问题，见[部署与运维](docs/deployment.md#docker-与数据目录)。
 
-Colab GPU 的可用性、配额和费用由你的账号和套餐决定，不保证随时可用。不同模型的显存需求不同。FrameTandem 是独立项目，与 Google Colab 无隶属关系。
+Colab GPU 的可用性、配额和费用由你的账号和套餐决定，不保证随时可用。不同模型的显存需求不同。ColabReel 是独立项目，与 Google Colab 无隶属关系。
 
 ## 文档与贡献
 

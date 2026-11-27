@@ -1,6 +1,6 @@
-# FrameTandem 后端设计与运行说明
+# ColabReel 后端设计与运行说明
 
-FrameTandem 使用 Python、FastAPI 和 Uvicorn。React 和 API 由同一个服务在 8787 端口提供。一个数据卷对应一个执行进程。作品、队列和工作流沿用各自的磁盘格式，模型服务商配置使用 Python 自带的 SQLite。
+ColabReel 使用 Python、FastAPI 和 Uvicorn。React 和 API 由同一个服务在 8787 端口提供。一个数据卷对应一个执行进程。作品、队列和工作流沿用各自的磁盘格式，模型服务商配置使用 Python 自带的 SQLite。
 
 ## 代码与状态归属
 

@@ -1,9 +1,10 @@
 # 宣传素材
 
-- `cover.webp`：项目封面。背景为原创生成插画《潮门》，用于展示这一套样例的视觉主题。
-- `workbench.webp`、`workflows.webp`：工作台、分镜工作流的本地界面截图。
-- `workbench-demo.gif`、`workflows-demo.gif`：适合 GitHub README 内嵌播放的短演示。相同内容也有高清 MP4 版本。
+- `cover.webp`：项目封面，取自《迎风》的第一镜。
+- `workbench.webp`、`workflows.webp`：亮色工作台与分镜审核截图。
+- `workbench-demo.gif`、`workflows-demo.gif`：便于在 GitHub README 中播放的短演示，也提供高清 MP4。
+- `launch.mp4`：开场、两段功能演示和三镜头片尾的完整宣传片，配原创环境音轨。
 
-演示在 macOS 上用项目的本地模拟模式操作实际界面。样例关键帧为生成插画，样例视频由这些静帧做镜头推拉得到；它们不是项目内模型的实机输出。录制时未使用 Colab GPU、线上作品或账号数据。
+界面在 macOS 上录制，使用真实的 ColabReel 界面和本地模拟数据。《迎风》的样例关键帧是生成插画，样例视频由静帧做推拉得到。录制未申请 Colab GPU，也未使用账号数据、线上作品或生成模型实测结果。
 
-更新功能截图时，请继续用独立的本地演示环境，保留「本地演示 · 样例素材」标识，并分别导出可读的 WebP、GIF 和 MP4。不要录入真实账号、代理地址、令牌或私有作品。
+更新产品截图时，使用独立的本地演示环境，保留「本地演示 · 样例素材」标识。应用界面、封面和宣传片使用相同的 ColabReel 标志，不使用 Google 官方图标。
