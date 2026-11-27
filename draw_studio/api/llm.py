@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field, SecretStr
 
 from ..generation.catalog import DEFAULTS
+from ..generation.masked_edit import source_image
 from .core import State, readable
 
 router = APIRouter(prefix="/api", tags=["改写模型"])
@@ -62,7 +63,10 @@ class Rewrite(BaseModel):
     workflow: Literal["t2va", "fl2va", "ref2va"] = "t2va"
     num_frames: int = DEFAULTS["video"]["num_frames"]
     chain: bool = False
+    has_image: bool = True
     has_last_image: bool = False
+    video_task: Literal["edit", "continue", "motion"] | None = None
+    edit_source_id: str | None = Field(default=None, pattern=r"^\d{3,7}$")
     provider_id: str | None = None
     model: str | None = None
 
@@ -112,6 +116,9 @@ def rewrite(body: Rewrite, s: State):
     if not text:
         raise HTTPException(400, "请描述想生成的内容（不超过 3000 字）")
     try:
-        return s.studio.write_prompt_rich(text, **body.model_dump(exclude={"text"}))
+        options = body.model_dump(exclude={"text", "edit_source_id"})
+        if body.edit_source_id and body.mode == "image":
+            options.update(editing=True, override_images=[("局部改图原图", source_image(s.store, body.edit_source_id))])
+        return s.studio.write_prompt_rich(text, **options)
     except RuntimeError as exc:
         raise HTTPException(502, str(exc)) from exc

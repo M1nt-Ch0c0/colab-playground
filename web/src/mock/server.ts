@@ -2,7 +2,7 @@
 // 生成任务按真实阶段推进（排队 → 拉起实例 → 上传 → 生成 → 回传），工作流逐步执行并产出示例图。
 import { makeArt } from './art'
 import type {
-  ColabStatus, ComfyPreset, Config, GeneratePayload, Job, Lora, ProxyState, ProxyTest, References, RewriteBody,
+  ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, Job, Lora, ProxyState, ProxyTest, References, RewriteBody,
   Round, RoundsStats, Status, StepCatalogItem, StudioPreset, WfDef, WfRun, WfStep, WorkflowActive,
   LlmKind, LlmProvider, LlmProviderBody, LlmState,
 } from '../api/types'
@@ -24,8 +24,8 @@ const MODELS = [
 ]
 const VIDEO_WF = [
   { id: 't2va' as const, label: '文生视频 + 音频', needs: [] as string[] },
-  { id: 'fl2va' as const, label: '首帧 / 首尾帧生视频 + 音频', needs: ['first'] },
-  { id: 'ref2va' as const, label: '参考图生视频 + 音频', needs: ['first'] },
+  { id: 'fl2va' as const, label: '首帧 / 尾帧', needs: ['first_or_last'] },
+  { id: 'ref2va' as const, label: '图片 / 视频参考', needs: ['image_or_video'] },
 ]
 const SAMPLERS = ['euler', 'er_sde', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_3m_sde', 'uni_pc', 'heun', 'res_multistep']
 const SCHEDULERS = ['simple', 'normal', 'karras', 'exponential', 'sgm_uniform', 'beta', 'ddim_uniform']
@@ -39,8 +39,8 @@ const STEP_CATALOG: StepCatalogItem[] = [
   { type: 'llm_script', label: 'AI 脚本与分镜', icon: '📝', category: '规划', hint: '调用大模型撰写结构化分镜脚本', default_config: { scene_count: 3, output_format: 'storyboard', instruction: '请根据主题「{{topic}}」拆解为 {{scene_count}} 个连贯镜头。' } },
   { type: 'web_asset_fetch', label: '网页 Agent 找图', icon: '🌐', category: '检索', hint: '访问目标网页或公开图库检索参考图并下载', default_config: { url: '', search_query: '{{topic}}', scenes_from: '', instruction: '优先选择轮廓清晰、构图干净的参考图', max_images: 2 } },
   { type: 'image_gen', label: '关键帧融合生图', icon: '🎨', category: '生图', hint: '把参考图送入生图模型，按分镜批量生成关键帧', default_config: { scenes_from: 'script', ref_sources: [], prompt_template: '{{scene.keyframe_prompt}}', model: 'qwen-2.1-bf16', gpu: 'A100', gpu_pool: ['A100', 'H100'], poll_rounds: 2, poll_all_proxies: false, width: 1280, height: 768, steps: 35, cfg: 5.0, max_scenes: 6 } },
-  { type: 'h3_prompt', label: 'H3 多模态写视频词', icon: '✨', category: '提示词', hint: '看图把每个关键帧改写为音画同步视频提示词', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', workflow: 'fl2va', num_frames: 124, instruction: '保持画面风格与角色外观一致，加入自然镜头运动与环境音。' } },
-  { type: 'video_gen', label: '逐镜生成视频+音频', icon: '🎬', category: '视频', hint: '将每镜关键帧与提示词送入 MiniMax-H3 逐段生成', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', prompts_from: 'h3_prompts', workflow: 'fl2va', gpu: 'H100', gpu_pool: ['H100', 'G4', 'A100'], poll_rounds: 2, poll_all_proxies: false, width: 1280, height: 768, num_frames: 124, steps: 30, cfg: 5.0, auto_offload: true } },
+  { type: 'h3_prompt', label: 'H3 多模态写视频词', icon: '✨', category: '提示词', hint: '看图把每个关键帧改写为音画同步视频提示词', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', extra_ref_sources: [], workflow: 'fl2va', video_from: '', video_round_id: '', video_task: 'edit', last_frame_round_id: '', num_frames: 124, instruction: '保持画面风格与角色外观一致，加入自然镜头运动与环境音。' } },
+  { type: 'video_gen', label: '逐镜生成视频+音频', icon: '🎬', category: '视频', hint: '将每镜关键帧与提示词送入 MiniMax-H3 逐段生成', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', prompts_from: 'h3_prompts', extra_ref_sources: [], workflow: 'fl2va', video_from: '', video_round_id: '', video_task: 'edit', last_frame_round_id: '', gpu: 'H100', gpu_pool: ['H100', 'G4', 'A100'], poll_rounds: 2, poll_all_proxies: false, width: 1280, height: 768, num_frames: 124, steps: 30, cfg: 5.0, auto_offload: true } },
   { type: 'video_stitch', label: 'FFmpeg 剪辑合成', icon: '🎞️', category: '成片', hint: '统一分辨率与音轨，把全部片段合成为长视频', default_config: { clips_from: 'clips', clip_round_ids: [], transition: 'fade', fade_s: 0.35, target_width: 1280, target_height: 768, fps: 24 } },
 ]
 const defCfg = (t: string) => STEP_CATALOG.find(s => s.type === t)!.default_config
@@ -121,7 +121,7 @@ interface State {
   phase: Status['phase']; error: string; activeGpu: string; idleMinutes: number; idleDeadline: number | null
   current: Job | null; queue: Job[]; history: Job[]
   rounds: Round[]; trash: Round[]; rev: number; nextId: number
-  refs: RefRec[]; last: RefRec | null
+  refs: RefRec[]; last: RefRec | null; video: References['video']
   recentModels: string[]; comfyPresets: ComfyPreset[]; studioPresets: StudioPreset[]
   colab: ColabStatus; proxy: ProxyState
   wfCustom: WfDef[]; runs: WfRun[]
@@ -133,7 +133,7 @@ const S: State = {
   phase: 'ready', error: '', activeGpu: 'A100 (HIGH_RAM)', idleMinutes: 10, idleDeadline: null,
   current: null, queue: [], history: [],
   rounds: [], trash: [], rev: 1, nextId: 19,
-  refs: [], last: null,
+  refs: [], last: null, video: null,
   recentModels: ['qwen-2.1-bf16', 'flux2-dev'], comfyPresets: [], studioPresets: [],
   colab: {
     authed: true, ok: true, email: 'studio@example.com', balance: 128.4, rate_per_hour: 3.2,
@@ -186,7 +186,7 @@ function refsReport(): References {
   return {
     first: first ? { set: true, bytes: first.bytes, source: first.source, updated_at: first.updated_at } : { set: false, bytes: 0, source: '', updated_at: 0 },
     last: S.last ? { set: true, bytes: S.last.bytes, source: S.last.source, updated_at: S.last.updated_at } : { set: false, bytes: 0, source: '', updated_at: 0 },
-    items: S.refs.map(item), max: 6,
+    items: S.refs.map(item), max: 6, video: S.video,
   }
 }
 function repairSelection(st: LlmState) {
@@ -247,9 +247,9 @@ function config(): Config {
     workflow_step_catalog: STEP_CATALOG,
     limits: {
       size_min: 512, size_max: 1536, size_step: 64, steps_min: 2, steps_max: 60, cfg_min: 1, cfg_max: 12,
-      frames_min: 120, frames_max: 360, count_max: 4, loras_max: 4, lora_scale_max: 2.5, refs_max: 6,
+      frames_min: 120, frames_max: 345, count_max: 4, loras_max: 4, lora_scale_max: 2.5, refs_max: 6,
       idle_minutes_min: 5, idle_minutes_max: 60, poll_rounds_min: 1, poll_rounds_max: 10,
-      prompt_max: 12000, negative_max: 1200, upload_max_mb: 12, queue_max: 12,
+      prompt_max: 12000, negative_max: 1200, upload_max_mb: 12, video_upload_max_mb: 64, queue_max: 12,
     },
     defaults: {
       image: { width: 768, height: 1152, steps: 35, cfg: 5, model: 'qwen-2.1-bf16' },
@@ -278,8 +278,8 @@ function addRound(partial: Partial<Round> & { prompt: string; kind: 'image' | 'v
     starred: false, has_thumb: true, mtime: sec(), negative: partial.negative || '', workflow: partial.workflow ?? null,
     gpu: partial.gpu || 'A100', width: partial.width, height: partial.height, steps: partial.steps, cfg: partial.cfg,
     seed: partial.seed, num_frames: partial.num_frames ?? null, loras: partial.loras || [], has_image: !!partial.has_image,
-    chain: !!partial.chain, duration_s: partial.duration_s, job_id: partial.job_id, idea: partial.idea, engine: partial.engine,
-    comfy: partial.comfy, offload_mode: partial.offload_mode,
+    chain: !!partial.chain, duration_s: partial.duration_s, media_duration_s: partial.media_duration_s, job_id: partial.job_id, idea: partial.idea, engine: partial.engine,
+    comfy: partial.comfy, offload_mode: partial.offload_mode, video_task: partial.video_task,
   }
   S.rounds.unshift(r); bumpRev(); return r
 }
@@ -290,6 +290,8 @@ function enqueue(p: GeneratePayload) {
   if (!S.colab.authed) return err(400, '还没有连接 Google Colab，请先在设置里完成授权')
   if (!p.prompt?.trim()) return err(400, '提示词不能为空')
   if (p.prompt.length > 12000) return err(400, '提示词不超过 12000 字')
+  if (p.video_task && (!S.video || S.video.id !== p.video_reference_id)) return err(409, '参考视频已移除或更换')
+  if (p.video_task === 'motion' && !S.refs.length) return err(400, '请添加一张人设图')
   if (S.queue.length + (S.current ? 1 : 0) + (p.count || 1) > 12) return err(409, '队列已满（最多 12 个），请等当前任务完成')
   const n = Math.max(1, Math.min(4, p.count || 1))
   const base = p.seed === -1 || p.seed == null ? Math.floor(Math.random() * 9_000_000) + 100_000 : p.seed
@@ -348,8 +350,8 @@ function finish(j: Job) {
     kind: j.mode, prompt: j.prompt, model: j.model, width: j.width, height: j.height, gpu: j.gpu, steps: j.steps,
     cfg: p?.cfg, seed: j.seed, negative: p?.negative, workflow: j.workflow, num_frames: p?.num_frames,
     loras: p?.loras, has_image: p?.has_image, chain: p?.chain, idea: p?.idea, engine: p?.engine,
-    comfy: p?.comfy, offload_mode: p?.offload_mode,
-    duration_s: j.mode === 'video' ? Math.round(((p?.num_frames || 124) / 24) * 10) / 10 : undefined, job_id: j.id,
+    comfy: p?.comfy, offload_mode: p?.offload_mode, video_task: p?.video_task,
+    duration_s: j.started_at ? sec() - j.started_at : undefined, media_duration_s: j.mode === 'video' ? Math.round(((p?.num_frames || 124) / 24) * 10) / 10 : undefined, job_id: j.id,
   })
   j.status = 'done'; j.stage = 'done'; j.round_id = r.id; j.finished_at = sec(); j.progress = { label: '完成', pct: 100, detail: '', rate: '' }
   S.history.unshift(j); S.current = null
@@ -410,7 +412,7 @@ function execStep(r: WfRun, st: WfStep): Record<string, unknown> {
   if (st.type === 'video_gen') {
     const prompts = (prev('h3_prompt')?.items as { title: string; video_prompt: string }[]) || (prev('llm_script')?.scenes as { title: string; video_prompt: string }[]) || []
     const items = (prompts.length ? prompts : [{ title: '片段 1', video_prompt: r.topic }]).map((s, i) => {
-      const round = addRound({ kind: 'video', prompt: s.video_prompt || r.topic, model: 'MiniMax-H3', width: +cfg.width || 1280, height: +cfg.height || 768, gpu: String(cfg.gpu || 'H100'), steps: +cfg.steps || 30, workflow: String(cfg.workflow || 'fl2va'), num_frames: +cfg.num_frames || 124, duration_s: Math.round((+cfg.num_frames || 124) / 24 * 10) / 10 })
+      const round = addRound({ kind: 'video', prompt: s.video_prompt || r.topic, model: 'MiniMax-H3', width: +cfg.width || 1280, height: +cfg.height || 768, gpu: String(cfg.gpu || 'H100'), steps: +cfg.steps || 30, workflow: String(cfg.workflow || 'fl2va'), num_frames: +cfg.num_frames || 124, media_duration_s: Math.round((+cfg.num_frames || 124) / 24 * 10) / 10 })
       return { round_id: round.id, title: s.title, scene_index: i + 1 }
     })
     return { items, round_ids: items.map(it => it.round_id), count: items.length }
@@ -418,7 +420,7 @@ function execStep(r: WfRun, st: WfStep): Record<string, unknown> {
   if (st.type === 'video_stitch') {
     const clips = (prev('video_gen')?.items as { round_id: string }[]) || []
     const ids = [...clips.map(c => c.round_id), ...((cfg.clip_round_ids as string[]) || [])]
-    const round = addRound({ kind: 'video', prompt: `[长视频工作流成片] ${r.topic || r.workflow.name}`, model: 'Workflow Studio · FFmpeg', width: +cfg.target_width || 1280, height: +cfg.target_height || 768, workflow: 'stitch', duration_s: ids.length * 5 })
+    const round = addRound({ kind: 'video', prompt: `[长视频工作流成片] ${r.topic || r.workflow.name}`, model: 'Workflow Studio · FFmpeg', width: +cfg.target_width || 1280, height: +cfg.target_height || 768, workflow: 'stitch', media_duration_s: ids.length * 5 })
     return { final_round_id: round.id, source_rounds: ids, clip_count: ids.length || 1, duration_s: (ids.length || 1) * 5, transition: cfg.transition || 'fade', width: +cfg.target_width || 1280, height: +cfg.target_height || 768 }
   }
   return {}
@@ -483,7 +485,11 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   if (head === 'status' && method === 'GET') return ok(status(+(q.get('log_since') || 0)))
   if (head === 'storage' && method === 'GET') return ok({ rounds: stats(), trash: { count: S.trash.length, bytes: S.trash.reduce((a, r) => a + r.bytes, 0), retention_days: 7 }, total_bytes: stats().bytes, disk_free_bytes: 248_000_000_000, disk_total_bytes: 500_000_000_000 })
 
-  if (head === 'generate' && method === 'POST') return enqueue(body<GeneratePayload>(raw))
+  if (head === 'generate' && method === 'POST') {
+    const payload = body<GeneratePayload>(raw)
+    if (payload.edit_mask) return err(400, '局部改图生成需要连接真实生图服务')
+    return enqueue(payload)
+  }
   if (head === 'prompt' && method === 'POST') {
     const b = body<RewriteBody>(raw)
     if (!b.text?.trim()) return err(400, '先写一句想法')
@@ -521,6 +527,19 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   }
 
   if (head === 'rounds') {
+    if (seg[1] === 'import' && method === 'POST' && raw instanceof Blob) {
+      if (q.get('kind') === 'video') return err(400, '视频导入需要连接工作台的 FFmpeg 服务')
+      if (!['image/png', 'image/jpeg', 'image/webp'].includes(raw.type)) return err(400, '请选择 PNG、JPEG 或 WebP 图片')
+      try {
+        const bitmap = await createImageBitmap(raw)
+        const id = newId()
+        S.urls[id] = URL.createObjectURL(raw)
+        S.rounds.unshift({ id, kind: 'image', prompt: q.get('name') || '导入图片', model: '导入素材', width: bitmap.width, height: bitmap.height,
+          bytes: raw.size, media_operation: 'import', starred: false, has_thumb: true, mtime: sec(), created_at: sec() })
+        bitmap.close(); bumpRev()
+        return ok({ id })
+      } catch { return err(400, '图片读取失败') }
+    }
     if (seg.length === 1 && method === 'GET') return ok({ rounds: S.rounds, total: S.rounds.length, rev: S.rev, stats: stats() })
     if (seg[1] === 'delete' && method === 'POST') {
       const ids = body<{ ids: string[] }>(raw).ids || []
@@ -571,16 +590,41 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       return ok({ matched, count: matched.length, bytes, deleted: b.dry_run ? undefined : matched })
     }
     const id = seg[1]
+    if (seg[2] === 'crop' && method === 'POST') {
+      const source = S.rounds.find(r => r.id === id)
+      if (!source || source.kind !== 'image') return err(400, '请选择图片作品')
+      const { x, y, width, height } = body<CropBox>(raw)
+      const image = new Image()
+      image.src = S.urls[id]
+      try { await image.decode() } catch { return err(400, '原图读取失败') }
+      if (![x, y, width, height].every(Number.isInteger) || Math.min(x, y) < 0 || Math.min(width, height) < 1
+        || x + width > image.naturalWidth || y + height > image.naturalHeight) return err(400, '裁剪范围超出原图')
+      const canvas = document.createElement('canvas')
+      canvas.width = width; canvas.height = height
+      canvas.getContext('2d')!.drawImage(image, x, y, width, height, 0, 0, width, height)
+      const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve))
+      if (!blob) return err(400, '保存裁图失败')
+      const cropId = newId()
+      S.urls[cropId] = URL.createObjectURL(blob)
+      S.rounds.unshift({ id: cropId, kind: 'image', prompt: `图片 #${id} · 裁图 ${width}×${height}`, model: '图片裁剪',
+        width, height, media_operation: 'crop', source_rounds: [id], bytes: blob.size, created_at: sec(), mtime: sec(), has_thumb: true, starred: false })
+      bumpRev()
+      return ok({ id: cropId })
+    }
     if (seg[2] === 'meta' && method === 'GET') { const r = S.rounds.find(x => x.id === id); return r ? ok({ ...r, meta: r }) : err(404, '作品不存在') }
     if (seg[2] === 'star') { const r = S.rounds.find(x => x.id === id); if (!r) return err(404, '作品不存在'); r.starred = !!body<{ starred: boolean }>(raw).starred; bumpRev(); return ok({ ok: true }) }
     if (seg[2] === 'use' && method === 'POST') {
-      const r = S.rounds.find(x => x.id === id); if (!r || r.kind !== 'image') return err(400, '只能把图片作品设为参考图')
+      const r = S.rounds.find(x => x.id === id)
       const b = body<{ slot?: string; append?: boolean }>(raw)
+      if (b.slot === 'video' && r?.kind === 'video') {
+        return setMockVideo(S.urls[id], `round:${id}`, r.bytes, r.media_duration_s ?? (r.num_frames || 124) / 24)
+      }
+      if (b.slot === 'video' || r?.kind !== 'image') return err(400, '请选择对应类型的作品')
       const rec: RefRec = { id: b.slot === 'last' ? 'last' : uid('ref'), bytes: r.bytes, source: `round:${id}`, updated_at: sec(), url: S.urls[id] }
       S.urls[rec.id] = rec.url
       if (b.slot === 'last') S.last = rec
       else if (b.append) { if (S.refs.length >= 6) return err(400, '最多 6 张参考图'); S.refs.push({ ...rec }); S.urls[rec.id] = S.urls[id] }
-      else { S.refs = [{ ...rec, id: S.refs[0]?.id || rec.id }]; S.urls[S.refs[0].id] = S.urls[id] }
+      else { S.refs.splice(0, 1, { ...rec, id: S.refs[0]?.id || rec.id }); S.urls[S.refs[0].id] = S.urls[id] }
       return ok({ ok: true, references: refsReport() })
     }
   }
@@ -606,6 +650,24 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
     }
   }
 
+  if (head === 'video-reference') {
+    if (method === 'DELETE') {
+      if (S.video && S.video.id !== q.get('id')) return err(409, '参考视频已更换')
+      clearMockVideo()
+      return ok({ references: refsReport() })
+    }
+    if (method === 'POST' && raw instanceof Blob) {
+      const url = URL.createObjectURL(raw)
+      const duration = await new Promise<number>(resolve => {
+        const el = document.createElement('video')
+        el.preload = 'metadata'
+        el.onloadedmetadata = () => resolve(el.duration)
+        el.onerror = () => resolve(0)
+        el.src = url
+      })
+      return setMockVideo(url, 'upload', raw.size, duration)
+    }
+  }
   if (head === 'reference') {
     if (method === 'DELETE') {
       const id = q.get('id')
@@ -620,7 +682,7 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       S.urls[rec.id] = rec.url
       if (slot === 'last') S.last = rec
       else if (q.get('append') === '1') { if (S.refs.length >= 6) return err(400, '最多 6 张参考图，请先移除不需要的图片'); S.refs.push(rec) }
-      else S.refs = [rec]
+      else S.refs.splice(0, 1, rec)
       return ok({ ok: true, references: refsReport() })
     }
   }
@@ -855,7 +917,26 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   return err(404, `mock 未实现：${method} ${path}`)
 }
 
-export function mediaOf(key: string): string { return S.urls[key] || '' }
+export function mediaOf(key: string): string { return key === 'first' ? S.refs[0]?.url || '' : S.urls[key] || '' }
+
+function clearMockVideo() {
+  if (!S.video) return
+  if (S.video.source === 'upload') URL.revokeObjectURL(S.urls[S.video.id])
+  delete S.urls[S.video.id]
+  S.video = null
+}
+
+function setMockVideo(url: string, source: string, bytes: number, duration: number) {
+  if (!(duration >= 2 && duration <= 15)) {
+    if (source === 'upload') URL.revokeObjectURL(url)
+    return err(400, '请选择 2–15 秒的 MP4 视频')
+  }
+  clearMockVideo()
+  const id = 'v' + crypto.randomUUID().replaceAll('-', '')
+  S.urls[id] = url
+  S.video = { id, bytes, source, duration_s: duration }
+  return ok({ references: refsReport() })
+}
 
 export function boot() {
   for (const s of SEED_ROUNDS) {
@@ -865,7 +946,7 @@ export function boot() {
       id: s.id, kind: s.kind, prompt: s.prompt, model: s.model, created_at: sec() - Math.round(s.daysAgo * 86400),
       bytes: 1_100_000 + s.seed % 3_000_000, starred: s.starred, has_thumb: true, mtime: sec(),
       width: s.w, height: s.h, steps: s.kind === 'video' ? 30 : 35, cfg: 5, seed: s.seed, gpu: s.kind === 'video' ? 'H100' : 'A100',
-      workflow: s.wf || null, num_frames: s.frames || null, duration_s: s.dur, negative: 'blurry, lowres, watermark, text',
+      workflow: s.wf || null, num_frames: s.frames || null, media_duration_s: s.dur, negative: 'blurry, lowres, watermark, text',
     })
   }
   S.urls['seed-ref'] = makeArt({ w: 768, h: 1024, seed: 42, label: '' })

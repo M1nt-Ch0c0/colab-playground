@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from ..generation.parameters import as_bool, boolean_input
+from ..generation.video_reference import VIDEO_TASKS
 from .video import TRANSITIONS, normalize_transition
 
 STEPS_MAX = 16
@@ -97,6 +98,10 @@ STEP_CATALOG: list[dict[str, Any]] = [
             "keyframe_from": "keyframes",
             "extra_ref_sources": [],
             "workflow": "fl2va",
+            "video_from": "",
+            "video_round_id": "",
+            "video_task": "edit",
+            "last_frame_round_id": "",
             "num_frames": 124,
             "instruction": "保持画面风格与角色外观严格一致，加入自然镜头运动与真实环境音效。",
         },
@@ -113,6 +118,10 @@ STEP_CATALOG: list[dict[str, Any]] = [
             "prompts_from": "h3_prompts",
             "extra_ref_sources": [],
             "workflow": "fl2va",
+            "video_from": "",
+            "video_round_id": "",
+            "video_task": "edit",
+            "last_frame_round_id": "",
             "gpu": "H100",
             "gpu_pool": ["H100", "G4", "A100"],
             "poll_rounds": 2,
@@ -541,6 +550,14 @@ def _normalize_step(raw: Any, idx: int) -> dict[str, Any]:
             cfg[key] = as_bool(cfg[key], key)
     if stype == "video_stitch":
         cfg["transition"] = normalize_transition(cfg["transition"])
+    if stype in ("video_gen", "h3_prompt") and (cfg.get("video_round_id") or cfg.get("video_from")):
+        source, rid = cfg.get("video_from"), cfg.get("video_round_id")
+        if source and (not isinstance(source, str) or not STEP_ID_RE.fullmatch(source) or rid):
+            raise ValueError("参考视频请选择一个上游视频步骤，或一件作品库视频")
+        if rid and (not isinstance(rid, str) or not re.fullmatch(r"\d{3,7}", rid)):
+            raise ValueError("参考视频需要一个作品库视频编号")
+        if not isinstance(cfg.get("video_task"), str) or cfg["video_task"] not in VIDEO_TASKS:
+            raise ValueError("参考视频用途无效")
     return {
         "id": sid,
         "type": stype,

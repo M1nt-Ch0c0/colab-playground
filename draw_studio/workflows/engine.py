@@ -19,6 +19,8 @@ from ..errors import StateConflict
 from ..gallery import Store, probe_image_dimensions
 from ..generation.catalog import DEFAULTS, LIMITS, VIDEO_WORKFLOWS
 from ..generation.parameters import normalize_job
+from ..generation.masked_edit import source_image
+from ..generation.video_reference import VIDEO_TASKS, probe_reference_video
 from . import video, web_assets
 from .definitions import BUILTIN_WORKFLOWS, STEP_CATALOG, normalize_workflow_def, render_template, upgrade_stored_workflow
 
@@ -1140,6 +1142,52 @@ class WorkflowEngine:
 
         return {"items": items, "round_ids": round_ids, "count": len(items)}
 
+    def _video_images(self, run: dict, workflow: str, keyframe: str, sources: list[str] | None,
+                      scene_index: int, task: str | None) -> list[bytes]:
+        if workflow == "t2va":
+            return []
+        frames = [source_image(self.store, keyframe)] if keyframe else []
+        refs = self._collect_ref_blobs_from_sources(run, sources, scene_index=scene_index) if workflow == "ref2va" else []
+        if task == "motion" and sources and not refs:
+            raise ValueError("所选上游步骤没有可用的人设图，请检查素材")
+        # In motion transfer Picture 1 supplies identity. Put selected character assets before the keyframe.
+        images = refs + frames if task == "motion" else frames + refs
+        if task == "motion" and not images:
+            raise ValueError("白模动作参考需要人设图，请选择上游参考图或关键帧")
+        return images[:LIMITS["refs_max"]]
+
+    @staticmethod
+    def _upstream_video_shots(run: dict, step: dict) -> dict[int, dict]:
+        cfg = step["config"]
+        source = cfg.get("video_from")
+        if cfg.get("workflow") != "ref2va" or not source:
+            return {}
+        for upstream in run["workflow"]["steps"]:
+            if upstream["id"] == step["id"]:
+                break
+            if upstream["id"] != source:
+                continue
+            state = run["step_states"].get(source) or {}
+            output = state.get("output") or {}
+            if state.get("status") == "done":
+                if upstream["type"] == "video_stitch" and output.get("final_round_id"):
+                    return {1: {"scene_index": 1, "title": upstream["name"], "round_id": output["final_round_id"]}}
+                if upstream["type"] == "video_gen" and output.get("items"):
+                    return {int(item["scene_index"]): item for item in output["items"]}
+            break
+        raise ValueError(f"上游步骤 {source} 没有可用的视频产出，请检查所选步骤及运行结果")
+
+    @staticmethod
+    def _video_reference(cfg: dict, shots: dict[int, dict], scene_index: int, inherited: dict | None = None) -> dict:
+        if cfg.get("workflow") != "ref2va":
+            return {}
+        if not shots:
+            return cfg if cfg.get("video_round_id") else (inherited or {})
+        shot = next(iter(shots.values())) if len(shots) == 1 else shots.get(scene_index)
+        if not shot or not shot.get("round_id"):
+            raise ValueError(f"上游视频步骤没有镜头 {scene_index} 的片段")
+        return {**cfg, "video_round_id": shot["round_id"]}
+
     def _exec_h3_prompt(self, run: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
         cfg = step["config"]
         wf = str(cfg.get("workflow") or "fl2va")
@@ -1149,11 +1197,15 @@ class WorkflowEngine:
         scenes_from = str(cfg.get("scenes_from") or "").strip()
         keyframe_from = str(cfg.get("keyframe_from") or "").strip()
         extra_refs = cfg.get("extra_ref_sources") or []
+        upstream = self._upstream_video_shots(run, step)
+        checked_clips = set()
+        tail_id = cfg.get("last_frame_round_id") if wf == "fl2va" else None
+        tail = source_image(self.store, tail_id) if tail_id else None
         ctx_base = self._template_ctx(run)
         extra_inst = render_template(cfg.get("instruction") or "", ctx_base).strip()
 
-        scenes = self._get_scenes(run, scenes_from)
         kf_items = ((run.get("step_states") or {}).get(keyframe_from) or {}).get("output", {}).get("items") or []
+        scenes = self._get_scenes(run, scenes_from) or kf_items or list(upstream.values())
         total = max(len(scenes), len(kf_items), 1)
         items: list[dict[str, Any]] = []
 
@@ -1162,20 +1214,24 @@ class WorkflowEngine:
                 raise RuntimeError("已取消")
             sc = scenes[idx] if idx < len(scenes) else {"index": idx + 1, "title": f"镜头 {idx + 1}"}
             kf = kf_items[idx] if idx < len(kf_items) else {}
-            sc_idx = int(sc.get("index") or idx + 1)
+            sc_idx = int(sc.get("index") or sc.get("scene_index") or idx + 1)
+            reference = self._video_reference(cfg, upstream, sc_idx)
+            clip_id = reference.get("video_round_id")
+            task = (reference.get("video_task") or "edit") if clip_id else None
+            if clip_id and clip_id not in checked_clips:
+                found = self.store.media_path(clip_id)
+                if not found or found[0] != "video" or task not in VIDEO_TASKS:
+                    raise ValueError("请在 H3 提示词步骤重新选择参考视频和用途")
+                probe_reference_video(found[1])
+                checked_clips.add(clip_id)
             self._set_step_progress(run["id"], step["id"], f"正在看图写 H3 视频提示词 {idx + 1}/{total}…")
 
-            override_images: list[tuple[str, bytes]] = []
             kf_rid = str(kf.get("round_id") or "")
-            if kf_rid:
-                found = self.store.media_path(kf_rid)
-                if found and found[0] == "image":
-                    lbl = "<Picture 1> (First Frame at 0.00s)" if wf == "fl2va" else "<Picture 1>"
-                    override_images.append((lbl, found[1].read_bytes()))
-            if wf == "ref2va" and extra_refs:
-                for blob in self._collect_ref_blobs_from_sources(run, extra_refs, scene_index=sc_idx):
-                    if len(override_images) < LIMITS["refs_max"]:
-                        override_images.append((f"<Picture {len(override_images) + 1}>", blob))
+            image_blobs = self._video_images(run, wf, kf_rid, extra_refs, sc_idx, task)
+            override_images = [("<Picture 1> (First Frame at 0.00s)" if wf == "fl2va" else f"<Picture {i}>", blob)
+                               for i, blob in enumerate(image_blobs, 1)]
+            if tail:
+                override_images.append((f"<Picture {len(override_images) + 1}> (Last Frame at end)", tail))
 
             brief_parts = [
                 f"Shot title: {sc.get('title') or f'Shot {sc_idx}'}",
@@ -1194,11 +1250,15 @@ class WorkflowEngine:
                 num_frames=num_frames,
                 ref_count=len(override_images),
                 override_images=override_images,
+                **({"video_task": task} if task else {}),
+                **({"has_last_image": True} if tail else {}),
             )
             items.append({
                 "scene_index": sc_idx,
                 "title": sc.get("title") or f"镜头 {sc_idx}",
                 "keyframe_round_id": kf_rid,
+                **({"video_round_id": clip_id, "video_task": task, "extra_ref_sources": extra_refs} if clip_id else {}),
+                **({"last_frame_round_id": tail_id} if tail else {}),
                 "video_prompt": res["prompt"],
                 "format": res.get("format") or "",
                 "images_used": res.get("images_used") or 0,
@@ -1213,9 +1273,10 @@ class WorkflowEngine:
         wf = str(cfg.get("workflow") or "fl2va")
         if wf not in {w["id"] for w in VIDEO_WORKFLOWS}:
             wf = "fl2va"
-        scenes = self._get_scenes(run, str(cfg.get("scenes_from") or ""))
+        upstream = self._upstream_video_shots(run, step)
         kf_items = ((run.get("step_states") or {}).get(str(cfg.get("keyframe_from") or "")) or {}).get("output", {}).get("items") or []
         pr_items = ((run.get("step_states") or {}).get(str(cfg.get("prompts_from") or "")) or {}).get("output", {}).get("items") or []
+        scenes = self._get_scenes(run, str(cfg.get("scenes_from") or "")) or pr_items or kf_items or list(upstream.values())
         extra_refs = cfg.get("extra_ref_sources") or []
 
         total = max(len(pr_items), len(kf_items), len(scenes), 1)
@@ -1228,7 +1289,7 @@ class WorkflowEngine:
             sc = scenes[idx] if idx < len(scenes) else {"index": idx + 1, "title": f"镜头 {idx + 1}"}
             kf = kf_items[idx] if idx < len(kf_items) else {}
             pr = pr_items[idx] if idx < len(pr_items) else {}
-            sc_idx = int(pr.get("scene_index") or sc.get("index") or idx + 1)
+            sc_idx = int(pr.get("scene_index") or sc.get("index") or sc.get("scene_index") or idx + 1)
             title = pr.get("title") or sc.get("title") or f"镜头 {sc_idx}"
             self._set_step_progress(run["id"], step["id"], f"正在生成视频片段 {idx + 1}/{total}：{title}")
 
@@ -1236,19 +1297,22 @@ class WorkflowEngine:
             if not prompt:
                 raise RuntimeError(f"第 {idx + 1} 镜缺少视频提示词")
 
-            ref_blobs: list[bytes] = []
             kf_rid = str(pr.get("keyframe_round_id") or kf.get("round_id") or "")
-            if kf_rid:
-                found = self.store.media_path(kf_rid)
-                if found and found[0] == "image":
-                    ref_blobs.append(found[1].read_bytes())
-            if wf == "ref2va" and extra_refs:
-                ref_blobs.extend(self._collect_ref_blobs_from_sources(run, extra_refs, scene_index=sc_idx))
-
-            eff_wf = wf if (wf == "t2va" or ref_blobs) else "t2va"
+            # A prompt step can hand off the same clip and character sources to each shot.
+            reference = self._video_reference(cfg, upstream, sc_idx, pr)
+            clip_id = reference.get("video_round_id")
+            task = (reference.get("video_task") or "edit") if clip_id else None
+            sources = extra_refs or (reference.get("extra_ref_sources") if clip_id else [])
+            ref_blobs = self._video_images(run, wf, kf_rid, sources, sc_idx, task)
+            tail_id = (cfg.get("last_frame_round_id") or pr.get("last_frame_round_id")) if wf == "fl2va" else None
+            tail = source_image(self.store, tail_id) if tail_id else None
+            if wf != "t2va" and not (ref_blobs or clip_id or tail):
+                raise ValueError(f"第 {idx + 1} 镜缺少参考素材，请选择关键帧、参考素材或文生视频模式")
             raw_body: dict[str, Any] = {
                 "mode": "video",
-                "workflow": eff_wf,
+                "workflow": wf,
+                **({"video_round_id": clip_id, "video_task": task} if clip_id else {}),
+                **({"last_frame_round_id": tail_id} if tail else {}),
                 "prompt": prompt,
                 "negative": cfg.get("negative") or "",
                 "width": cfg.get("width") or 1280,
@@ -1264,13 +1328,13 @@ class WorkflowEngine:
                 "poll_rounds": cfg.get("poll_rounds") or 2,
                 "poll_all_proxies": cfg.get("poll_all_proxies", False),
                 "loras": cfg.get("loras") or [],
-                "has_image": bool(ref_blobs) and eff_wf != "t2va",
+                "has_image": bool(ref_blobs),
                 "idea": f"[工作流 {run['id']}] {title}",
             }
             payload = normalize_job(raw_body)
             payload["workflow_run_id"] = run["id"]
             payload["workflow_step_id"] = step["id"]
-            created = self.studio.enqueue_with_refs(payload, ref_blobs=ref_blobs if eff_wf != "t2va" else [])
+            created = self.studio.enqueue_with_refs(payload, ref_blobs=ref_blobs, last_ref=tail)
             job_id = created[0]["id"]
             done = self.studio.wait_for_job(job_id, cancel_check=self._cancel_event.is_set)
             if done.get("status") != "done" or not done.get("round_id"):

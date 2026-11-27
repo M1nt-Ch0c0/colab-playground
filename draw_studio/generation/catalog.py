@@ -249,8 +249,8 @@ IMAGE_MODELS = [
 ]
 VIDEO_WORKFLOWS = [
     {"id": "t2va", "label": "文生视频 + 音频", "needs": []},
-    {"id": "fl2va", "label": "首帧 / 首尾帧生视频 + 音频", "needs": ["first"]},
-    {"id": "ref2va", "label": "参考图生视频 + 音频", "needs": ["first"]},
+    {"id": "fl2va", "label": "首帧 / 尾帧", "needs": ["first_or_last"]},
+    {"id": "ref2va", "label": "图片 / 视频参考", "needs": ["image_or_video"]},
 ]
 VIDEO_OFFLOAD_MODES = [
     {"id": "auto", "label": "自动", "hint": "按显存自动选择组件级或逐层卸载"},
@@ -264,11 +264,11 @@ LIMITS = {
     "size_min": 512, "size_max": 1536, "size_step": 64,
     "steps_min": 2, "steps_max": 60,
     "cfg_min": 1.0, "cfg_max": 12.0,
-    "frames_min": 120, "frames_max": 360,
+    "frames_min": 120, "frames_max": 345,  # Largest 17*n+5 frame count within 15 seconds at 24 fps.
     "count_max": 4, "loras_max": 4, "lora_scale_max": 2.5, "refs_max": 6,
     "idle_minutes_min": 5, "idle_minutes_max": 60,
     "poll_rounds_min": 1, "poll_rounds_max": 10,
-    "prompt_max": 12000, "negative_max": 1200, "upload_max_mb": 12,
+    "prompt_max": 12000, "negative_max": 1200, "upload_max_mb": 12, "video_upload_max_mb": 64,
     "queue_max": QUEUE_MAX,
 }
 DEFAULTS = {

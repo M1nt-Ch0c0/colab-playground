@@ -1,8 +1,9 @@
 // 舞台：当前作品、生成进度、任务队列。作品浮在玻璃面上，是整个界面的视觉中心。
 import { AnimatePresence, motion } from 'motion/react'
-import { ChevronLeft, ChevronRight, Copy, Download, Expand, Film, GitCompare, ImageIcon, RefreshCw, Star, Trash2, X } from 'lucide-react'
+import { Brush, ChevronLeft, ChevronRight, Copy, Crop, Download, Expand, Film, GitCompare, ImageIcon, RefreshCw, Scissors, Star, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { api, media } from '../../api/client'
-import type { Job, Round } from '../../api/types'
+import type { EditMask, Job, Round } from '../../api/types'
 import { ago, clock, cx, now, rid } from '../../lib/util'
 import { comfyDraftFields, useStore } from '../../store/store'
 import { useConfirm, useTick } from '../../ui/Overlay'
@@ -34,6 +35,7 @@ export function Stage() {
       {job && current && <div className="stage-progress"><Progress job={job} compact /></div>}
       <Queue />
       {current && <ActionBar round={current} />}
+      <FailedJobs />
     </section>
   )
 }
@@ -52,11 +54,14 @@ function EmptyStage({ hasHistory }: { hasHistory: boolean }) {
 
 function Viewer({ round, onStep, hasNav }: { round: Round; onStep: (d: number) => void; hasNav: boolean }) {
   const open = useStore(s => s.openSheet)
+  const sheet = useStore(s => s.sheet)
+  const player = useRef<HTMLVideoElement>(null)
+  useEffect(() => { if (sheet === 'clip' || sheet === 'lightbox') player.current?.pause() }, [sheet])
   const src = media.round(round.id, round.mtime)
   return (
     <motion.div className="viewer" initial={{ opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}>
       {round.kind === 'video' && !__MOCK__
-        ? <video src={src} controls autoPlay loop playsInline poster={round.has_thumb ? media.thumb(round) : undefined} />
+        ? <video ref={player} src={src} controls autoPlay loop playsInline poster={round.has_thumb ? media.thumb(round) : undefined} />
         : <img src={src} alt={round.prompt.slice(0, 80)} />}
       {hasNav && <>
         <button className="vnav l" onClick={() => onStep(-1)} aria-label="上一张"><ChevronLeft size={20} /></button>
@@ -118,6 +123,8 @@ function ActionBar({ round }: { round: Round }) {
   const setViewing = useStore(s => s.setViewing)
   const ask = useConfirm(s => s.ask)
   const loadRounds = useStore(s => s.loadRounds)
+  const setVideoRef = useStore(s => s.setVideoRef)
+  const videoRefBusy = useStore(s => s.videoRefBusy)
 
   const star = async () => {
     try { await api.star([round.id], !round.starred); await loadRounds(); toast(round.starred ? '已取消收藏' : '已收藏', 'ok') }
@@ -132,15 +139,28 @@ function ActionBar({ round }: { round: Round }) {
       toast('已删除', 'ok', { label: '撤销', fn: async () => { await api.restore(r.deleted); await loadRounds() } })
     } catch (e) { toast(e instanceof Error ? e.message : '删除失败', 'err') }
   }
-  const reuse = () => {
+  const reuse = async () => {
     const m = round
+    let mask: EditMask | null = null
+    let width = m.width || 768, height = m.height || 1152
+    if (m.edit_source_id) {
+      try {
+        const record = await api.roundMeta(m.id)
+        mask = record.meta.edit_mask as EditMask
+        if (!mask || !useStore.getState().rounds.some(r => r.id === mask!.source_id)) throw new Error('局部改图的原图已移除，请从回收站恢复后再复用')
+        width = Number(record.meta.sampling_width) || width
+        height = Number(record.meta.sampling_height) || height
+      } catch (e) { toast(e instanceof Error ? e.message : '选区读取失败', 'err'); return }
+    }
     const comfy = m.kind === 'image' && m.engine === 'comfyui' ? comfyDraftFields(m.comfy) : null
     if (m.kind === 'video') setWs('video'); else setWs('image')
     patch({
-      prompt: m.prompt, negative: m.negative || '', width: m.width || 768, height: m.height || 1152,
+      editMask: mask, ...(mask ? { useRef: false, chain: false } : {}),
+      prompt: m.prompt, negative: m.negative || '', width, height,
       steps: m.steps || 35, cfg: m.cfg || 5, seed: m.seed != null ? String(m.seed) : '-1', gpu: m.gpu || 'A100',
       ...(m.kind === 'video'
-        ? { workflow: (m.workflow as 't2va') || 't2va', frames: m.num_frames || 124, offload: m.offload_mode || 'auto' }
+        ? { workflow: (m.workflow as 't2va') || 't2va', videoTask: m.video_task || 'images', videoUseImages: !!m.has_image,
+          useFirstFrame: m.has_image !== false, frames: m.num_frames || 124, offload: m.offload_mode || 'auto' }
         : comfy ? { engine: 'comfyui', ...comfy } : { engine: 'diffusers', model: m.model }),
       loras: m.loras || [],
     })
@@ -152,11 +172,25 @@ function ActionBar({ round }: { round: Round }) {
     try {
       const r = await api.useRound(round.id, slot)
       const st = useStore.getState().status; if (st) useStore.setState({ status: { ...st, references: r.references } })
-      if (slot === 'first') patch({ useRef: true, chain: false })
+      if (slot === 'first') patch({ useRef: true, chain: false, editMask: null, useFirstFrame: true })
+      else { setWs('video'); patch({ workflow: 'fl2va' }) }
       toast(slot === 'last' ? '已设为尾帧' : '已设为参考图', 'ok')
-    } catch (e) { toast(e instanceof Error ? e.message : '设置失败', 'err') }
+      return true
+    } catch (e) { toast(e instanceof Error ? e.message : '设置失败', 'err'); return false }
   }
-  const toVideo = async () => { await asRef('first'); setWs('video'); patch({ workflow: 'fl2va' }) }
+  const toVideo = async () => { if (await asRef('first')) { setWs('video'); patch({ workflow: 'fl2va' }) } }
+  const editVideo = async (videoTask: 'edit' | 'continue') => {
+    if (!await setVideoRef(round.id)) return
+    setWs('video')
+    const lim = useStore.getState().cfg!.limits
+    const w = round.width || 1280, h = round.height || 768
+    const scale = Math.min(lim.size_max / Math.max(w, h), Math.max(1, lim.size_min / Math.min(w, h)))
+    const fit = (n: number) => Math.max(lim.size_min, Math.min(lim.size_max, Math.round(n * scale / lim.size_step) * lim.size_step))
+    const frames = round.num_frames || (round.media_duration_s && 5 + 17 * Math.ceil((round.media_duration_s * 24 - 5) / 17))
+    patch({ workflow: 'ref2va', videoTask, videoUseImages: false, width: fit(w), height: fit(h),
+      ...(videoTask === 'edit' && frames ? { frames: Math.min(lim.frames_max, Math.max(124, frames)) } : {}) })
+    toast(`已选 ${rid(round.id)}，请填写${videoTask === 'edit' ? '要修改的内容' : '下一段的动作'}`, 'ok')
+  }
   const copy = async () => { try { await navigator.clipboard.writeText(round.prompt); toast('提示词已复制', 'ok') } catch { toast('复制失败', 'err') } }
 
   return (
@@ -168,10 +202,17 @@ function ActionBar({ round }: { round: Round }) {
       <div className="ab-actions">
         <button className={cx('btn sm', round.starred && 'starred')} onClick={star} title="收藏 (S)"><Star size={14} />{round.starred ? '已收藏' : '收藏'}</button>
         {round.kind === 'image' && <button className="btn sm" onClick={() => asRef('first')}><ImageIcon size={14} />设为参考</button>}
+        {round.kind === 'image' && <button className="btn sm" onClick={() => open('mask', { id: round.id })}><Brush size={14} />局部改图</button>}
+        {round.kind === 'image' && <button className="btn sm" onClick={() => open('crop', { id: round.id })}><Crop size={14} />裁图</button>}
         {round.kind === 'image' && <button className="btn sm" onClick={() => asRef('last')}><Film size={14} />设为尾帧</button>}
         {round.kind === 'image' && <button className="btn sm" onClick={toVideo}><ClapperIcon />做成视频</button>}
+        {round.kind === 'video' && <>
+          <button className="btn sm" disabled={videoRefBusy} onClick={() => editVideo('edit')}><Film size={14} />翻修视频</button>
+          <button className="btn sm" disabled={videoRefBusy} onClick={() => editVideo('continue')}><ChevronRight size={14} />续拍下一段</button>
+          <button className="btn sm" onClick={() => open('clip', { id: round.id })}><Scissors size={14} />取帧与裁段</button>
+        </>}
         {round.kind === 'image' && <button className="btn sm" onClick={() => open('compare', { id: round.id })}><GitCompare size={14} />对比</button>}
-        <button className="btn sm" onClick={reuse}><RefreshCw size={14} />复用参数</button>
+        {round.workflow !== 'stitch' && !['import', 'frame', 'clip', 'crop'].includes(round.media_operation || '') && <button className="btn sm" onClick={reuse}><RefreshCw size={14} />复用参数</button>}
         <a className="btn sm" href={media.download(round.id)} download><Download size={14} />下载</a>
         <button className="btn sm danger" onClick={del}><Trash2 size={14} />删除</button>
         <button className="btn sm ghost" onClick={() => setViewing(null)} title="收起"><X size={14} /></button>
@@ -184,10 +225,30 @@ function ActionBar({ round }: { round: Round }) {
         {round.gpu && <span className="tag">{round.gpu}</span>}
         {round.workflow && <span className="tag">{round.workflow}</span>}
         {round.num_frames != null && <span className="tag">{round.num_frames} 帧</span>}
-        {round.duration_s != null && <span className="tag">{round.duration_s}s</span>}
+        {round.media_duration_s != null && <span className="tag">片长 {+round.media_duration_s.toFixed(2)} 秒</span>}
+        {round.duration_s != null && round.workflow !== 'stitch' && <span className="tag">生成用时 {round.duration_s} 秒</span>}
+        {round.source_rounds?.map(id => <span key={id} className="tag">来源 {rid(id)}</span>)}
         {(round.loras || []).map((l, i) => <span className="tag" key={i}>{l.repo_id.split('/').pop()} ×{l.scale}</span>)}
       </div>
     </div>
   )
 }
 function ClapperIcon() { return <Film size={14} /> }
+
+function FailedJobs() {
+  const history = useStore(s => s.status?.history) || EMPTY_QUEUE
+  const [pending, setPending] = useState('')
+  const failed = history.filter(j => j.retryable)
+  if (!failed.length) return null
+  const retry = async (job: Job) => {
+    const s = useStore.getState()
+    setPending(job.id)
+    try { await api.retry(job.id); await s.refresh(); s.toast('已按原参数和素材重新排队', 'ok') }
+    catch (e) { s.toast(e instanceof Error ? e.message : '重试失败', 'err') }
+    finally { setPending('') }
+  }
+  return <section className="queue glass"><b>可重试的任务</b>{failed.map(j => <div key={j.id} className="qrow">
+    <span className="failed-detail"><span>{j.prompt}</span><small className="dim">{j.error}</small></span>
+    <button className="btn sm" disabled={!!pending} onClick={() => retry(j)}><RefreshCw size={13} />{pending === j.id ? '提交中' : '重试'}</button>
+  </div>)}</section>
+}

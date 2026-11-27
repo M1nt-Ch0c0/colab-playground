@@ -335,6 +335,71 @@ class StudioV3Tests(unittest.TestCase):
         self.assertIs(video_job["auto_offload"], False)
         self.assertEqual(video_job["offload_mode"], "none")
 
+    def test_video_node_inherits_gallery_clip_and_character_from_h3_step(self):
+        clip = self.tmp / "blocking.mp4"
+        make_mp4_via_ffmpeg(clip, dur_s=2)
+        clip_id = self.store.save(clip, "video", {})
+        character = self.tmp / "character.png"
+        character.write_bytes(make_png(color=(220, 10, 100)))
+        character_id = self.store.save(character, "image", {})
+        sentinel = make_png(color=(20, 70, 50))
+        self.studio.set_ref("first", sentinel, "user")
+        run = self.wf.create_run({"topic": "follow the turn", "workflow": {"name": "动作参考", "steps": [
+            {"id": "character", "type": "asset_input", "config": {"round_ids": [character_id]}},
+            {"id": "prompt", "type": "h3_prompt", "config": {"workflow": "ref2va", "video_round_id": clip_id,
+             "video_task": "motion", "extra_ref_sources": ["character"]}},
+            {"id": "video", "type": "video_gen", "config": {"workflow": "ref2va", "prompts_from": "prompt"}},
+        ]}})
+        uploads = {}
+        def record(session, path, dest):
+            uploads[dest] = path.read_bytes()
+        with mock.patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "follow the turn"}) as writer, \
+             mock.patch.object(self.colab, "upload_file", side_effect=record):
+            self.wf.start_run(run["id"])
+            finished = self._wait_run_not_running(run["id"])
+        self.assertEqual(finished["status"], "done", finished["error"])
+        self.assertEqual(writer.call_args.kwargs["video_task"], "motion")
+        self.assertEqual(writer.call_args.kwargs["override_images"], [("<Picture 1>", character.read_bytes())])
+        self.assertEqual(uploads["content/reference_video.mp4"], clip.read_bytes())
+        self.assertEqual(uploads["content/reference.bin"], character.read_bytes())
+        self.assertEqual(json.loads(uploads["content/job.json"])["workflow"], "ref2va")
+        self.assertEqual(self.studio.ref_blobs(), [sentinel])
+        self.assertIsNone(self.studio.refs_report()["video"])
+        self.store.delete([clip_id])
+        self.wf.start_run(run["id"], from_step_id="video", single_step=True)
+        stale = self._wait_run_not_running(run["id"])
+        self.assertEqual(stale["step_states"]["video"]["status"], "error")
+        self.assertIn("已移除", stale["step_states"]["video"]["error"])
+
+    def test_video_steps_chain_upstream_clips_by_scene(self):
+        clip = self.tmp / "source.mp4"
+        make_mp4_via_ffmpeg(clip, dur_s=2)
+        self.colab._mp4 = clip.read_bytes()
+        scenes = [{"index": i, "title": title, "video_prompt": title} for i, title in [(4, "turn"), (9, "walk")]]
+        steps = [
+            {"id": "outline", "type": "llm_script"},
+            {"id": "originals", "type": "video_gen", "config": {"workflow": "t2va", "scenes_from": "outline"}},
+            {"id": "reverse", "type": "llm_script"},
+            {"id": "retouch", "type": "h3_prompt", "config": {"workflow": "ref2va", "scenes_from": "reverse",
+             "video_from": "originals", "video_task": "edit"}},
+            {"id": "edited", "type": "video_gen", "config": {"workflow": "ref2va", "prompts_from": "retouch"}},
+            {"id": "next", "type": "video_gen", "config": {"workflow": "ref2va", "video_from": "edited", "video_task": "continue"}},
+        ]
+        run = self.wf.create_run({"topic": "follow her", "workflow": {"name": "逐镜续拍", "steps": steps}})
+        with mock.patch.object(self.wf, "_exec_llm_script", side_effect=[{"scenes": scenes}, {"scenes": scenes[::-1]}]), \
+             mock.patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "change the coat"}):
+            self.wf.start_run(run["id"])
+            done = self._wait_run_not_running(run["id"])
+        self.assertEqual(done["status"], "done", done["error"])
+        outputs = {sid: state["output"] for sid, state in done["step_states"].items()}
+        inputs = [item["video_round_id"] for item in outputs["retouch"]["items"]]
+        self.assertEqual(inputs, outputs["originals"]["round_ids"][::-1])
+        self.assertEqual([item["scene_index"] for item in outputs["next"]["items"]], [9, 4])
+        jobs = self.colab.uploaded_jobs
+        self.assertEqual([(j["video_task"], j["video_round_id"]) for j in jobs[2:]],
+                         [("edit", rid) for rid in inputs] + [("continue", rid) for rid in outputs["edited"]["round_ids"]])
+        self.assertFalse(self.studio.refs_report()["video"])
+
     def _wait_run_not_running(self, run_id: str, timeout: float = 20.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:

@@ -12,6 +12,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import FileResponse, JSONResponse, Response
 
 from ..runtime import Runtime
+from ..generation.catalog import LIMITS
 
 COOKIE = "qp_auth"
 MAX_BODY = 16 * 1024 * 1024
@@ -74,22 +75,24 @@ class HttpBoundary:
         if path.startswith("/api/") and path != "/api/login" and not authenticated(Request(scope)):
             return await JSONResponse({"error": "需要登录"}, 401)(scope, receive, send_headers)
         if scope["method"] in {"POST", "PATCH", "DELETE"}:
+            media_upload = path in ("/api/video-reference", "/api/rounds/import") and scope["method"] == "POST"
+            limit = LIMITS["video_upload_max_mb"] * 1048576 if media_upload else MAX_BODY
             try:
                 length = int(headers.get("content-length", 0))
                 if length < 0:
                     raise ValueError
             except ValueError:
                 return await JSONResponse({"error": "无效的 Content-Length"}, 400)(scope, receive, send_headers)
-            if length > MAX_BODY:
-                return await JSONResponse({"error": "请求体超过 16MB"}, 413)(scope, receive, send_headers)
+            if length > limit:
+                return await JSONResponse({"error": f"请求体超过 {limit // 1048576}MB"}, 413)(scope, receive, send_headers)
             # Enforce the same limit for chunked requests as for Content-Length.
             received = 0
             async def bounded_receive():
                 nonlocal received
                 message = await receive()
                 received += len(message.get("body", b""))
-                if received > MAX_BODY:
-                    raise HTTPException(413, "请求体超过 16MB")
+                if received > limit:
+                    raise HTTPException(413, f"请求体超过 {limit // 1048576}MB")
                 return message
             return await self.app(scope, bounded_receive, send_headers)
         await self.app(scope, receive, send_headers)
