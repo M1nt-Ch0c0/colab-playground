@@ -32,7 +32,7 @@ jobs:
       group: '${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}'
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 15
     permissions:
       contents: read
       issues: write
@@ -116,7 +116,7 @@ jobs:
           settings: |-
             {
               "model": {
-                "maxSessionTurns": 25
+                "maxSessionTurns": 15
               },
               "telemetry": {
                 "enabled": true,
