@@ -49,15 +49,16 @@ class MaskedEdit:
         draw = ImageDraw.Draw(self.mask)
         for stroke in mask["strokes"]:
             diameter = max(1, round(stroke["size"] * min(w, h)))
-            radius = (diameter - 1) / 2
             points = [(round(x * (w - 1)), round(y * (h - 1))) for x, y in stroke["points"]]
             if len(points) > 1:
                 draw.line(points, fill=255, width=diameter, joint="curve")
             if diameter == 1:
                 draw.point(points, fill=255)
                 continue
+            before = diameter // 2
+            after = diameter - before - 1
             for x, y in points:
-                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
+                draw.ellipse((x - before, y - before, x + after, y + after), fill=255)
         x0, y0, x1, y1 = self.mask.getbbox()
         pad = max(24, round(max(x1 - x0, y1 - y0) * 0.3))
         self.box = (max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad))

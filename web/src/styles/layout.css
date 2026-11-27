@@ -325,8 +325,10 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
 .crop-canvas { position: relative; overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
 .crop-canvas img { display: block; width: 100%; height: auto; pointer-events: none; }
 .crop-selection { position: absolute; cursor: move; border: 1px solid white; box-shadow: 0 0 0 100vmax rgb(0 0 0 / 60%); }
-.crop-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; }
+.crop-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .crop-fields input { width: 100%; }
+.crop-controls .chip, .crop-controls .mini-link { min-height: 36px; }
+.crop-controls + .help { color: var(--fg-soft); }
 .edit-toolbar, .brush-width, .mask-source { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .edit-toolbar { justify-content: space-between; }
 .lib-import-row { display: flex; align-items: center; gap: 6px; }
@@ -361,6 +363,8 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
   .topbar .brand small { display: none; }
 }
 @media (max-width: 520px) {
+  .crop-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .crop-controls .chip, .crop-controls .mini-link { min-height: 44px; min-width: 44px; }
   .topbar { overflow-x: auto; }
   .seg button { padding: 0 9px; }
   .ab-actions .btn span { display: none; }

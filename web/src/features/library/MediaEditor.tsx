@@ -79,7 +79,7 @@ function CropEditor({ round }: { round: Round }) {
       {selection && <div className="crop-selection" style={{ left: `${100 * box.x / w}%`, top: `${100 * box.y / h}%`,
         width: `${100 * box.width / w}%`, height: `${100 * box.height / h}%` }} />}
     </div></div>
-    <div className="edit-toolbar">
+    <div className="edit-toolbar crop-controls">
       <div className="chips" role="group" aria-label="裁剪比例">
         {([[1, '1:1'], [16 / 9, '16:9'], [9 / 16, '9:16']] as const).map(([ratio, label]) =>
           <button key={label} className="chip" disabled={!size || busy} onClick={() => preset(ratio)}>{label}</button>)}

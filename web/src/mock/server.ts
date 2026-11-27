@@ -280,6 +280,7 @@ function addRound(partial: Partial<Round> & { prompt: string; kind: 'image' | 'v
     seed: partial.seed, num_frames: partial.num_frames ?? null, loras: partial.loras || [], has_image: !!partial.has_image,
     chain: !!partial.chain, duration_s: partial.duration_s, media_duration_s: partial.media_duration_s, job_id: partial.job_id, idea: partial.idea, engine: partial.engine,
     comfy: partial.comfy, offload_mode: partial.offload_mode, video_task: partial.video_task,
+    video_reference_source: partial.video_reference_source, source_rounds: partial.source_rounds,
   }
   S.rounds.unshift(r); bumpRev(); return r
 }
@@ -400,20 +401,34 @@ function execStep(r: WfRun, st: WfStep): Record<string, unknown> {
     })
     return { items, round_ids: items.map(it => it.round_id), count: items.length }
   }
-  if (st.type === 'h3_prompt') {
-    const sc = (prev('llm_script')?.scenes as { title: string; video_prompt: string; audio_notes: string }[]) || []
-    const kf = (prev('image_gen')?.items as { round_id: string }[]) || []
-    const items = (sc.length ? sc : [{ title: '镜头 1', video_prompt: r.topic, audio_notes: '' }]).map((s, i) => ({
-      scene_index: i + 1, title: s.title, keyframe_round_id: kf[i]?.round_id || null,
-      video_prompt: `【画面】${s.video_prompt || r.topic}\n【运镜】平稳推进，主体保持在画面三分线\n【声音】${s.audio_notes || '自然环境音'}`,
-    }))
-    return { workflow: cfg.workflow || 'fl2va', num_frames: cfg.num_frames || 124, items, count: items.length }
-  }
-  if (st.type === 'video_gen') {
-    const prompts = (prev('h3_prompt')?.items as { title: string; video_prompt: string }[]) || (prev('llm_script')?.scenes as { title: string; video_prompt: string }[]) || []
-    const items = (prompts.length ? prompts : [{ title: '片段 1', video_prompt: r.topic }]).map((s, i) => {
-      const round = addRound({ kind: 'video', prompt: s.video_prompt || r.topic, model: 'MiniMax-H3', width: +cfg.width || 1280, height: +cfg.height || 768, gpu: String(cfg.gpu || 'H100'), steps: +cfg.steps || 30, workflow: String(cfg.workflow || 'fl2va'), num_frames: +cfg.num_frames || 124, media_duration_s: Math.round((+cfg.num_frames || 124) / 24 * 10) / 10 })
-      return { round_id: round.id, title: s.title, scene_index: i + 1 }
+  if (st.type === 'h3_prompt' || st.type === 'video_gen') {
+    const state = r.step_states
+    const source = cfg.workflow === 'ref2va' && cfg.video_from ? state[cfg.video_from] : null
+    const clips: { scene_index: number; round_id: string; title?: string }[] = source?.output.final_round_id
+      ? [{ scene_index: 1, round_id: source.output.final_round_id }] : source?.output.items || []
+    if (cfg.workflow === 'ref2va' && cfg.video_from && (source?.status !== 'done' || !clips.length)) throw Error('上游步骤没有可用的视频产出')
+    const prompts = state[cfg.prompts_from]?.output.items || []
+    const keyframes = state[cfg.keyframe_from]?.output.items || []
+    const scenes = state[cfg.scenes_from]?.output.scenes || []
+    const shots = Array.from({ length: Math.max(scenes.length, prompts.length, keyframes.length) || clips.length || 1 }, (_, i) => {
+      const scene = scenes[i] || {}, prompt = prompts[i] || {}, keyframe = keyframes[i] || {}
+      const index = prompt.scene_index || scene.index || keyframe.scene_index || clips[i]?.scene_index || i + 1
+      const clip = clips.length === 1 ? clips[0] : clips.find(c => c.scene_index === index)
+      if (clips.length && !clip) throw Error(`上游视频步骤没有镜头 ${index} 的片段`)
+      const id = cfg.workflow === 'ref2va' && (clip?.round_id || cfg.video_round_id || prompt.video_round_id)
+      if (id && !S.rounds.some(r => r.id === id && r.kind === 'video')) throw Error('参考视频已移除')
+      const text = prompt.video_prompt || scene.video_prompt || r.topic
+      return { scene_index: index, title: prompt.title || scene.title || keyframe.title || clips[i]?.title || `镜头 ${index}`,
+        keyframe_round_id: prompt.keyframe_round_id || keyframe.round_id || null,
+        ...(id ? { video_round_id: id, video_task: clip || cfg.video_round_id ? cfg.video_task : prompt.video_task } : {}),
+        video_prompt: st.type === 'h3_prompt' ? `【画面】${text}\n【运镜】平稳推进，主体保持在画面三分线\n【声音】${scene.audio_notes || '自然环境音'}` : text }
+    })
+    if (st.type === 'h3_prompt') return { workflow: cfg.workflow, num_frames: cfg.num_frames || 124, items: shots, count: shots.length }
+    const items = shots.map(s => {
+      const round = addRound({ kind: 'video', prompt: s.video_prompt, model: 'MiniMax-H3', width: +cfg.width || 1280, height: +cfg.height || 768, gpu: String(cfg.gpu || 'H100'), steps: +cfg.steps || 30,
+        workflow: cfg.workflow, num_frames: +cfg.num_frames || 124, media_duration_s: Math.round((+cfg.num_frames || 124) / 24 * 10) / 10,
+        ...(s.video_round_id ? { video_task: s.video_task, video_reference_source: `round:${s.video_round_id}`, source_rounds: [s.video_round_id] } : {}) })
+      return { round_id: round.id, title: s.title, scene_index: s.scene_index }
     })
     return { items, round_ids: items.map(it => it.round_id), count: items.length }
   }
