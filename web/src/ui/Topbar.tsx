@@ -1,6 +1,7 @@
 // 顶栏：品牌、工作台切换、算力状态、主题、日志、设置。
 import { AnimatePresence, motion } from 'motion/react'
 import { Clapperboard, Film, Image as ImageIcon, LayoutGrid, LogOut, Moon, ScrollText, Settings, Sun, Timer, Zap } from 'lucide-react'
+import { useSyncExternalStore } from 'react'
 import { api } from '../api/client'
 import { useStore } from '../store/store'
 import { Seg, useTick } from './Overlay'
@@ -17,8 +18,6 @@ export function Topbar() {
   const ws = useStore(s => s.workspace)
   const setWs = useStore(s => s.setWorkspace)
   const open = useStore(s => s.openSheet)
-  const theme = useStore(s => s.theme)
-  const setTheme = useStore(s => s.setTheme)
   const logs = useStore(s => s.logs)
   const libOpen = useStore(s => s.libraryOpen)
   const setLibOpen = useStore(s => s.setLibraryOpen)
@@ -65,7 +64,7 @@ export function Topbar() {
         </button>
       )}
       <button className="iconbtn" onClick={() => open('logs')} title="实时日志 (L)"><ScrollText size={16} />{logs.length > 0 && <span className="badge-dot" />}</button>
-      <button className="iconbtn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换亮色 / 暗色"><ThemeIcon theme={theme} /></button>
+      <ThemeToggle />
       <button className="iconbtn" onClick={() => open('settings')} title="设置"><Settings size={16} /></button>
       <button className="iconbtn" title="退出登录" onClick={async () => {
         try { await api.logout(); location.hash = 'login' }
@@ -74,6 +73,22 @@ export function Topbar() {
     </header>
   )
 }
-function ThemeIcon({ theme }: { theme: string }) {
-  return theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />
+
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)')
+function subscribeToSystemTheme(onChange: () => void) {
+  systemDark.addEventListener('change', onChange)
+  return () => systemDark.removeEventListener('change', onChange)
+}
+
+function ThemeToggle() {
+  const theme = useStore(s => s.theme)
+  const setTheme = useStore(s => s.setTheme)
+  const prefersDark = useSyncExternalStore(subscribeToSystemTheme, () => systemDark.matches)
+  const isDark = theme === 'system' ? prefersDark : theme === 'dark'
+  return (
+    <button className="iconbtn" onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      title="切换亮色 / 暗色" aria-label={isDark ? '切换到亮色' : '切换到暗色'}>
+      {isDark ? <Sun size={16} /> : <Moon size={16} />}
+    </button>
+  )
 }

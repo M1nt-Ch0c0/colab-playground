@@ -72,6 +72,7 @@ interface Store {
   loadLlm: () => Promise<void>
   setLibraryOpen: (v: boolean) => void
   grabPool: string[]; pollRounds: number; pollAllProxies: boolean
+  setGrabPool: (pool: string[]) => void
 
   boot: () => Promise<void>
   refresh: () => Promise<void>
@@ -94,6 +95,7 @@ interface Store {
 let toastSeq = 1
 let saveTimer = 0
 let booting: Promise<void> | null = null
+const initialTheme = document.documentElement.dataset.theme
 
 export const useStore = create<Store>((set, get) => ({
   booted: false, bootError: '', statusError: '',
@@ -108,7 +110,7 @@ export const useStore = create<Store>((set, get) => ({
   selected: [], selecting: false,
   promptHist: lsGet<string[]>('cs.phist', []),
   toasts: [],
-  theme: lsGet<Store['theme']>('cs.theme', 'system'),
+  theme: initialTheme === 'light' || initialTheme === 'dark' ? initialTheme : 'system',
   wfData: null, wfRun: null,
   llm: null,
   // 作品库默认收起，和旧版一致；展开状态按浏览器记住
@@ -116,6 +118,7 @@ export const useStore = create<Store>((set, get) => ({
   loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch (e) { if (!(e instanceof ApiError && e.status === 401)) get().toast(e instanceof Error ? e.message : '加载改写模型失败', 'err') } },
   setLibraryOpen: v => { lsSet('cs.libopen', v); set({ libraryOpen: v }) },
   grabPool: lsGet<string[]>('cs.grab', ['A100', 'H100']),
+  setGrabPool: pool => { lsSet('cs.grab', pool); set({ grabPool: pool }) },
   pollRounds: lsGet<number>('cs.rounds', 2),
   pollAllProxies: lsGet<boolean>('cs.pollpx', false),
 
@@ -168,7 +171,12 @@ export const useStore = create<Store>((set, get) => ({
     setTimeout(() => get().dismissToast(id), undo ? 6000 : 3200)
   },
   dismissToast: id => set({ toasts: get().toasts.filter(t => t.id !== id) }),
-  setTheme: t => { lsSet('cs.theme', t); set({ theme: t }); applyTheme(t) },
+  setTheme: theme => {
+    if (theme === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = theme
+    lsSet('cs.theme', theme)
+    set({ theme })
+  },
   setViewing: id => set({ viewing: id }),
   toggleSelect: id => {
     const s = new Set(get().selected)
@@ -234,13 +242,6 @@ export const useStore = create<Store>((set, get) => ({
 export function busy() {
   const st = useStore.getState().status
   return !!(st && (st.current || st.queue.length || st.phase === 'stopping' || st.phase === 'starting' || st.workflow_active?.status === 'running'))
-}
-
-export function applyTheme(t: Store['theme']) {
-  const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-  document.documentElement.dataset.theme = t === 'system' ? '' : t
-  if (t === 'system') document.documentElement.removeAttribute('data-theme')
-  else document.documentElement.dataset.theme = dark && t === 'dark' ? 'dark' : t
 }
 
 export const selectRefs = (s: Store): References | null => s.status?.references || null

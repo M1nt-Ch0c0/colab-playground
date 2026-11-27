@@ -47,6 +47,82 @@ def signed_in_browser():
 
 
 class BrowserTest(unittest.TestCase):
+    def test_grab_order_moves_persists_and_reaches_the_backend(self):
+        with signed_in_browser() as (rt, driver, url):
+            status = {**rt.colab.status_report(), "authed": True}
+            with patch.object(rt.colab, "status_report", return_value=status), \
+                 patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "grab_card") as grab:
+                driver.execute_script("localStorage.setItem('cs.grab', JSON.stringify(['G4', 'H100', 'A100']))")
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+                g4 = "G4 · RTX PRO 6000"
+
+                def open_settings():
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="设置"]'))).click()
+                    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".grab-row")))
+
+                def labels():
+                    return [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".grab-row .gpu-main b")]
+
+                def arrow(gpu, direction):
+                    selector = f'.grab-row:has([aria-label="选择 {gpu}"]) button[aria-label="{direction}"]'
+                    return driver.find_element(By.CSS_SELECTOR, selector)
+
+                open_settings()
+                self.assertEqual(labels(), [g4, "H100", "A100", "L4", "T4"])
+                self.assertFalse(arrow(g4, "上移").is_enabled())
+                self.assertFalse(arrow("A100", "下移").is_enabled())
+                arrow(g4, "下移").click()
+                self.assertEqual(labels(), ["H100", g4, "A100", "L4", "T4"])
+                driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+                    "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True,
+                })
+                arrow("A100", "上移").click()
+                expected = ["H100", "A100", g4, "L4", "T4"]
+                self.assertEqual(labels(), expected)
+                driver.refresh()
+                open_settings()
+                self.assertEqual(labels(), expected)
+                self.assertEqual([e.text for e in driver.find_elements(By.CSS_SELECTOR, ".grab-row .ord")], ["1", "2", "3"])
+                driver.find_element(By.XPATH, "//button[normalize-space(.)='开始抢卡']").click()
+                wait.until(lambda _: grab.called)
+                self.assertEqual(grab.call_args.kwargs["gpu_pool"], ["H100", "A100", "G4"])
+
+    def test_theme_toggle_uses_the_displayed_scheme(self):
+        with signed_in_browser() as (_, driver, url):
+            wait = WebDriverWait(driver, 10)
+            toggle = (By.CSS_SELECTOR, 'button[title="切换亮色 / 暗色"]')
+
+            def system_scheme(value):
+                driver.execute_cdp_cmd("Emulation.setEmulatedMedia", {
+                    "features": [{"name": "prefers-color-scheme", "value": value}],
+                })
+
+            def scheme():
+                return driver.execute_script("return getComputedStyle(document.documentElement).colorScheme")
+
+            system_scheme("dark")
+            driver.get(url)
+            button = wait.until(EC.element_to_be_clickable(toggle))
+            self.assertEqual(scheme(), "dark")
+            button.click()
+            self.assertEqual(scheme(), "light")
+            driver.refresh()
+            button = wait.until(EC.element_to_be_clickable(toggle))
+            self.assertEqual(scheme(), "light")
+            button.click()
+            self.assertEqual(scheme(), "dark")
+
+            driver.find_element(By.CSS_SELECTOR, 'button[title="设置"]').click()
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='跟随系统']"))).click()
+            driver.find_element(By.CSS_SELECTOR, 'button[aria-label="关闭"]').click()
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".scrim")))
+            system_scheme("light")
+            wait.until(lambda _: scheme() == "light" and button.get_attribute("aria-label") == "切换到暗色")
+            button.click()
+            self.assertEqual(scheme(), "dark")
+
     def test_studio(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

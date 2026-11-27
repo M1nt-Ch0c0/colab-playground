@@ -135,6 +135,7 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
 .ord { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; font-weight: 650; display: grid; place-items: center; }
 .ord-btns { display: flex; gap: 2px; }
 .ord-btns button { border: 0; background: var(--shade-2); border-radius: 6px; width: 22px; height: 22px; font-size: 12px; color: var(--fg-soft); }
+.ord-btns button:disabled { opacity: .35; cursor: not-allowed; }
 .sess-list { display: flex; flex-direction: column; gap: 4px; }
 .sess { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .grow-btn { flex: 1; justify-content: center; }

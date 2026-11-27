@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { useStore, applyTheme, busy } from './store/store'
+import { useStore, busy } from './store/store'
 import { Topbar } from './ui/Topbar'
 import { ConfirmHost } from './ui/Overlay'
 import { Composer } from './features/studio/Composer'
@@ -27,7 +27,6 @@ function Studio() {
   const boot = useStore(s => s.boot)
   const ws = useStore(s => s.workspace)
   const sheet = useStore(s => s.sheet)
-  const theme = useStore(s => s.theme)
   const libOpen = useStore(s => s.libraryOpen)
 
   useEffect(() => { boot() }, [boot])
@@ -44,7 +43,6 @@ function Studio() {
     schedule()
     return () => { active = false; clearTimeout(timer) }
   }, [booted])
-  useEffect(() => { applyTheme(theme) }, [theme])
   useShortcuts()
   usePasteUpload()
 

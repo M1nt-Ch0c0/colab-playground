@@ -271,7 +271,7 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 @media (max-width: 760px) {
   .hide-sm { display: none !important; }
-  .topbar { margin: 6px 0 0; gap: 6px; padding: 0 8px; }
+  .topbar { flex-wrap: wrap; height: auto; min-height: var(--top); margin: 6px 0 0; gap: 6px; padding: 6px 8px; }
   .workspace { padding: 8px 0 0; }
   .g3 { grid-template-columns: 1fr 1fr; }
 }
