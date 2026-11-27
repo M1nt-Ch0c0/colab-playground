@@ -100,9 +100,9 @@ export function Field({ label, hint, children }: { label: ReactNode; hint?: Reac
   return <label className="field"><span className="fl">{label}{hint && <span className="dim">{hint}</span>}</span>{children}</label>
 }
 
-export function Toggle({ on, onChange, children, title }: { on: boolean; onChange: (v: boolean) => void; children: ReactNode; title?: string }) {
+export function Toggle({ on, onChange, children, title, disabled }: { on: boolean; onChange: (v: boolean) => void; children: ReactNode; title?: string; disabled?: boolean }) {
   return (
-    <button type="button" role="switch" aria-checked={on} className={cx('switch', on && 'on')} onClick={() => onChange(!on)} title={title}>
+    <button type="button" role="switch" aria-checked={on} disabled={disabled} className={cx('switch', on && 'on')} onClick={() => onChange(!on)} title={title}>
       <span className="knob" />{children}
     </button>
   )

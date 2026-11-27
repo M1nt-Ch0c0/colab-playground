@@ -26,13 +26,13 @@ def make_png(w: int, h: int, color=(40, 120, 200)) -> bytes:
     ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
     row = b"\x00" + bytes(color) * w
     raw = zlib.compress(row * h)
-    # Pad PNG to >1024 bytes via tEXt chunk so jobs.py size check passes
+    # Pad PNG to >1024 bytes via tEXt chunk so the generation job size check passes
     pad = b"comment\x00" + (b"x" * 1100)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"tEXt", pad) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
 
 
 def test_tqdm_and_redaction() -> None:
-    import colab_backend as cb
+    from draw_studio.colab import client as cb
 
     samples = [
         (" 40%|████      | 14/35 [00:08<00:12, 1.65it/s]", "", 40, "14/35"),
@@ -52,11 +52,12 @@ def test_tqdm_and_redaction() -> None:
     assert cb.parse_tqdm_line("normal log line without bar") is None
     fake_hf = "hf_" + "a" * 24
     assert cb.redact_secrets(f"Authorization: Bearer {fake_hf}") == "Authorization: Bearer hf_***"
+    assert cb.redact_secrets("socks5h://user:p%40ss@proxy.example:1080") == "socks5h://***@proxy.example:1080"
     print("OK test_tqdm_and_redaction")
 
 
 def test_non_blocking_colab_status() -> None:
-    import colab_backend as cb
+    from draw_studio.colab import client as cb
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-cb-"))
     try:
@@ -102,7 +103,7 @@ def test_non_blocking_colab_status() -> None:
 
 
 def test_store_features() -> None:
-    from store import Store
+    from draw_studio.gallery import Store
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-store-"))
     try:
@@ -153,8 +154,10 @@ def test_store_features() -> None:
 
 
 def test_queue_persistence_and_recovery() -> None:
-    from jobs import LogBuffer, Studio, normalize_job
-    from store import Store
+    from draw_studio.generation.parameters import normalize_job
+    from draw_studio.generation.studio import Studio
+    from draw_studio.logs import LogBuffer
+    from draw_studio.gallery import Store
 
     # Validation edge cases (including custom HF repo models)
     j0 = normalize_job({"prompt": "hi", "seed": 0, "idle_minutes": 0})
@@ -174,7 +177,6 @@ def test_queue_persistence_and_recovery() -> None:
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-jobs-"))
     try:
-        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
         png = make_png(512, 512)
         (tmp / "reference.bin").write_bytes(png)
 
@@ -244,7 +246,6 @@ def test_queue_persistence_and_recovery() -> None:
         tmp2 = Path(tempfile.mkdtemp(prefix="qp-test-jobs-recover-"))
         try:
             shutil.copytree(tmp / "out", tmp2 / "out")
-            (tmp2 / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
             # Add an orphan ref blob to verify pruning
             (tmp2 / "out" / "queue_refs" / "j99999999_first.bin").write_bytes(b"orphan")
 
@@ -275,14 +276,19 @@ def test_queue_persistence_and_recovery() -> None:
             assert not (tmp2 / "out" / "queue_refs" / f"{jobs[1]['id']}_first.bin").exists()
             print("OK test_queue_persistence_and_recovery")
         finally:
+            runner = st1._runner
             colab1.gate.set()
+            if runner:
+                runner.join(5)
+                assert not runner.is_alive()
+            st1.shutdown()
             shutil.rmtree(tmp2, ignore_errors=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_gpu_shape_and_retry_cancel() -> None:
-    import colab_backend as cb
+    from draw_studio.colab import client as cb
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-gpu-"))
     try:
@@ -367,21 +373,24 @@ def test_gpu_shape_and_retry_cancel() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
+def test_multi_refs_and_local_gateway_proxy_bypass() -> None:
     from http.server import BaseHTTPRequestHandler, HTTPServer
-    from jobs import LIMITS, LogBuffer, Studio, _is_local_or_private_host, normalize_job
-    from store import Store
+    from draw_studio.generation.catalog import LIMITS
+    from draw_studio.generation.parameters import normalize_job
+    from draw_studio.generation.studio import Studio
+    from draw_studio.logs import LogBuffer
+    from draw_studio.proxy import is_local_or_private_host
+    from draw_studio.gallery import Store
 
-    assert _is_local_or_private_host("127.0.0.1")
-    assert _is_local_or_private_host("172.17.0.1")
-    assert _is_local_or_private_host("172.19.0.1")
-    assert _is_local_or_private_host("host.docker.internal")
-    assert _is_local_or_private_host("10.0.1.5")
-    assert not _is_local_or_private_host("api.openai.com")
+    assert is_local_or_private_host("127.0.0.1")
+    assert is_local_or_private_host("172.16.4.5")
+    assert is_local_or_private_host("192.168.3.4")
+    assert is_local_or_private_host("host.docker.internal")
+    assert is_local_or_private_host("10.0.1.5")
+    assert not is_local_or_private_host("api.openai.com")
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-multi-"))
     try:
-        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
         png1 = make_png(64, 64, (10, 20, 30))
         png2 = make_png(64, 64, (40, 50, 60))
         png3 = make_png(64, 64, (70, 80, 90))
@@ -424,10 +433,10 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             def release_all(self):
                 return []
 
-        # Local mock CPA server on 127.0.0.1; set a broken HTTP_PROXY to prove bypass works!
+        # Local OpenAI-compatible server on 127.0.0.1; set a broken HTTP_PROXY to prove bypass works!
         seen_bodies: list[dict] = []
 
-        class MockCPA(BaseHTTPRequestHandler):
+        class LocalModelServer(BaseHTTPRequestHandler):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -442,7 +451,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             def log_message(self, fmt, *args):
                 pass
 
-        srv = HTTPServer(("127.0.0.1", 0), MockCPA)
+        srv = HTTPServer(("127.0.0.1", 0), LocalModelServer)
         port = srv.server_address[1]
         t = threading.Thread(target=srv.serve_forever, daemon=True)
         t.start()
@@ -453,23 +462,23 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             st = Studio(
                 tmp,
                 {
-                    "cpa_base": f"http://127.0.0.1:{port}",
-                    "cpa_api_key": "test-key",
-                    "proxy_url_us": "http://198.51.100.1:1",  # unreachable proxy!
+                    "proxy_url_primary": "http://198.51.100.1:1",  # unreachable proxy!
                 },
                 FakeColab(),
                 store,
                 log,
                 600,
             )
-            assert "172.17.0.1" in os.environ.get("NO_PROXY", "")
-            # Default model must be deepseek-flash, and editing=True with reference.bin must attach image_url!
+            assert "localhost" in os.environ.get("NO_PROXY", "")
+            st.llm.save(kind="openai", name="Local fixture", base_url_value=f"http://127.0.0.1:{port}/v1",
+                        api_key="test-key", models=["fixture-model"])
+            # The selected model receives the existing reference image.
             rich_img = st.write_prompt_rich("两张图融合", mode="image", editing=True, ref_count=2)
             assert rich_img["prompt"] == "clean enhanced prompt"
-            assert rich_img["model"] == "deepseek-flash"
+            assert rich_img["model"] == "fixture-model"
             assert rich_img["images_used"] == 1
             last_body = seen_bodies[-1]
-            assert last_body["model"] == "deepseek-flash"
+            assert last_body["model"] == "fixture-model"
             user_content = last_body["messages"][-1]["content"]
             assert isinstance(user_content, list)
             assert any(p.get("type") == "image_url" for p in user_content)
@@ -488,17 +497,18 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             assert rich_ref2va["images_used"] == 3
             assert "六段式" in rich_ref2va["format"]
             sys_ref = seen_bodies[-1]["messages"][0]["content"]
+            assert "# Full-Reference Mode Rewrite Output Format Guide" in sys_ref
             assert "subject_definitions" in sys_ref and "retention_analysis" in sys_ref and "non_diegetic_music" in sys_ref
             img_parts = [p for p in seen_bodies[-1]["messages"][-1]["content"] if p.get("type") == "image_url"]
             assert len(img_parts) == 3
 
-            # Video T2VA: text-only 3-section official H3 guide, purge block hung around it
+            # Video T2VA: text-only official H3 guide with the standard rewrite settings
             rich_t2va = st.write_prompt_rich("雨夜城市", mode="video", workflow="t2va", num_frames=124)
             assert rich_t2va["images_used"] == 0
-            assert "三段式" in rich_t2va["format"] and "破甲" in rich_t2va["format"]
+            assert "三段式" in rich_t2va["format"] and "破甲" not in rich_t2va["format"]
             sys_base = seen_bodies[-1]["messages"][0]["content"]
+            assert "# Video Prompt Writing Guide" in sys_base
             assert "integrated_multimodal_description" in sys_base and "overall_soundscape" in sys_base
-            assert sys_base.index("破甲状态") < sys_base.index("integrated_multimodal_description") < sys_base.index("Final gate")
 
             # Video FL2VA with both first + last frames attached
             st.set_ref("last", png2, "upload")
@@ -511,6 +521,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             deadline = time.time() + 5.0
             while st.busy() and time.time() < deadline:
                 time.sleep(0.05)
+            assert "content/colab_worker.py" in uploaded
             assert "content/reference.bin" in uploaded
             assert "content/reference_0.bin" in uploaded
             assert "content/reference_1.bin" in uploaded
@@ -520,7 +531,7 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
             assert len(st.refs_report()["items"]) == 2
             st.clear_ref("first")
             assert len(st.refs_report()["items"]) == 0 and st.refs_report()["first"]["set"] is False
-            print("OK test_multi_refs_and_local_cpa_proxy_bypass")
+            print("OK test_multi_refs_and_local_gateway_proxy_bypass")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -534,8 +545,10 @@ def test_multi_refs_and_local_cpa_proxy_bypass() -> None:
 
 
 def test_grab_and_hold_forever() -> None:
-    from jobs import LogBuffer, Studio, normalize_grab, normalize_job
-    from store import Store
+    from draw_studio.generation.parameters import normalize_grab, normalize_job
+    from draw_studio.generation.studio import Studio
+    from draw_studio.logs import LogBuffer
+    from draw_studio.gallery import Store
 
     spec = normalize_grab({"gpu_pool": ["h100", "A100"], "poll_rounds": 3, "poll_all_proxies": False})
     assert spec["gpu_pool"] == ["H100", "A100"] and spec["poll_rounds"] == 3
@@ -565,7 +578,6 @@ def test_grab_and_hold_forever() -> None:
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-grab-"))
     try:
-        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
         log = LogBuffer()
         store = Store(tmp / "out", log)
         colab = GrabColab()
@@ -598,7 +610,6 @@ def test_grab_and_hold_forever() -> None:
         tmp2 = Path(tempfile.mkdtemp(prefix="qp-test-grab-recover-"))
         try:
             shutil.copytree(tmp / "out", tmp2 / "out")
-            (tmp2 / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
             st2 = Studio(tmp2, {}, GrabColab(), Store(tmp2 / "out", LogBuffer()), LogBuffer(), 600)
             st2.active_gpu = "A100 (HIGH_RAM)"
             st2.arm_idle()
@@ -623,8 +634,9 @@ def _wait_until(pred, timeout: float = 2.0) -> bool:
 
 
 def test_grab_cancels_idle_and_releases_late_runtime() -> None:
-    from jobs import LogBuffer, Studio
-    from store import Store
+    from draw_studio.generation.studio import Studio
+    from draw_studio.logs import LogBuffer
+    from draw_studio.gallery import Store
 
     class Sess:
         accelerator = "H100"
@@ -663,7 +675,6 @@ def test_grab_cancels_idle_and_releases_late_runtime() -> None:
 
     tmp = Path(tempfile.mkdtemp(prefix="qp-test-grab-race-"))
     try:
-        (tmp / "colab_worker.py").write_text("print('ok')\n", encoding="utf-8")
         blocking = BlockingColab()
         st = Studio(tmp, {}, blocking, Store(tmp / "out", LogBuffer()), LogBuffer(), 600)
         st.active_gpu = "A100 (HIGH_RAM)"
@@ -704,12 +715,12 @@ def test_grab_cancels_idle_and_releases_late_runtime() -> None:
 
 
 def test_minor_sexual_gate() -> None:
-    import jobs
+    from draw_studio.generation.studio import Studio, _minor_sexual_request
 
-    assert jobs._minor_sexual_request("幼女裸体")
-    assert not jobs._minor_sexual_request("雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感")
-    assert not jobs._minor_sexual_request("儿童节的街头")
-    hung = jobs.Studio._hang_purge_prompt("TASK")
+    assert _minor_sexual_request("幼女裸体")
+    assert not _minor_sexual_request("雨夜霓虹街头，撑透明雨伞的人回头微笑，电影感")
+    assert not _minor_sexual_request("儿童节的街头")
+    hung = Studio._hang_purge_prompt("TASK")
     assert hung.index("破甲状态") < hung.index("TASK") < hung.index("Final gate")
     print("OK test_minor_sexual_gate")
 
@@ -722,6 +733,6 @@ if __name__ == "__main__":
     test_queue_persistence_and_recovery()
     test_grab_and_hold_forever()
     test_grab_cancels_idle_and_releases_late_runtime()
-    test_multi_refs_and_local_cpa_proxy_bypass()
+    test_multi_refs_and_local_gateway_proxy_bypass()
     test_minor_sexual_gate()
     print("ALL BACKEND TESTS PASSED")

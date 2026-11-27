@@ -38,9 +38,9 @@ const STEP_CATALOG: StepCatalogItem[] = [
   { type: 'asset_input', label: '视觉资产输入', icon: '🎭', category: '输入', hint: '绑定人设图、风格参考图或画廊历史作品，供后续步骤按需引用', default_config: { role: 'character', asset_files: [], round_ids: [], note: '上传角色人设图或从画廊挑选参考图' } },
   { type: 'llm_script', label: 'AI 脚本与分镜', icon: '📝', category: '规划', hint: '调用大模型撰写结构化分镜脚本', default_config: { scene_count: 3, output_format: 'storyboard', instruction: '请根据主题「{{topic}}」拆解为 {{scene_count}} 个连贯镜头。' } },
   { type: 'web_asset_fetch', label: '网页 Agent 找图', icon: '🌐', category: '检索', hint: '访问目标网页或公开图库检索参考图并下载', default_config: { url: '', search_query: '{{topic}}', scenes_from: '', instruction: '优先选择轮廓清晰、构图干净的参考图', max_images: 2 } },
-  { type: 'image_gen', label: '关键帧融合生图', icon: '🎨', category: '生图', hint: '把参考图送入生图模型，按分镜批量生成关键帧', default_config: { scenes_from: 'script', ref_sources: [], prompt_template: '{{scene.keyframe_prompt}}', model: 'qwen-2.1-bf16', gpu: 'A100', width: 1280, height: 768, steps: 35, cfg: 5.0, max_scenes: 6 } },
+  { type: 'image_gen', label: '关键帧融合生图', icon: '🎨', category: '生图', hint: '把参考图送入生图模型，按分镜批量生成关键帧', default_config: { scenes_from: 'script', ref_sources: [], prompt_template: '{{scene.keyframe_prompt}}', model: 'qwen-2.1-bf16', gpu: 'A100', gpu_pool: ['A100', 'H100'], poll_rounds: 2, poll_all_proxies: false, width: 1280, height: 768, steps: 35, cfg: 5.0, max_scenes: 6 } },
   { type: 'h3_prompt', label: 'H3 多模态写视频词', icon: '✨', category: '提示词', hint: '看图把每个关键帧改写为音画同步视频提示词', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', workflow: 'fl2va', num_frames: 124, instruction: '保持画面风格与角色外观一致，加入自然镜头运动与环境音。' } },
-  { type: 'video_gen', label: '逐镜生成视频+音频', icon: '🎬', category: '视频', hint: '将每镜关键帧与提示词送入 MiniMax-H3 逐段生成', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', prompts_from: 'h3_prompts', workflow: 'fl2va', gpu: 'H100', width: 1280, height: 768, num_frames: 124, steps: 30, cfg: 5.0, offload_mode: 'auto' } },
+  { type: 'video_gen', label: '逐镜生成视频+音频', icon: '🎬', category: '视频', hint: '将每镜关键帧与提示词送入 MiniMax-H3 逐段生成', default_config: { scenes_from: 'script', keyframe_from: 'keyframes', prompts_from: 'h3_prompts', workflow: 'fl2va', gpu: 'H100', gpu_pool: ['H100', 'G4', 'A100'], poll_rounds: 2, poll_all_proxies: false, width: 1280, height: 768, num_frames: 124, steps: 30, cfg: 5.0, auto_offload: true } },
   { type: 'video_stitch', label: 'FFmpeg 剪辑合成', icon: '🎞️', category: '成片', hint: '统一分辨率与音轨，把全部片段合成为长视频', default_config: { clips_from: 'clips', clip_round_ids: [], transition: 'fade', fade_s: 0.35, target_width: 1280, target_height: 768, fps: 24 } },
 ]
 const defCfg = (t: string) => STEP_CATALOG.find(s => s.type === t)!.default_config
@@ -143,24 +143,23 @@ const S: State = {
     hf_token_set: true, refreshing: false, error: '',
   },
   proxy: {
-    active: 'us',
+    active: 'primary',
     profiles: [
-      { id: 'us', label: '美国 (US)', hint: '静态住宅 · 美国机房库存充裕', configured: true, masked: '已配置（服务端托管）' },
-      { id: 'sg', label: '新加坡 (SG)', hint: '静态住宅 · 东南亚低延迟', configured: true, masked: '已配置（服务端托管）' },
-      { id: 'custom', label: '自定义代理', hint: '填写自己的 HTTP / SOCKS5 代理', configured: false },
+      { id: 'primary', label: '主线路', hint: '', configured: true, masked: 'http://proxy.example:8080' },
+      { id: 'backup', label: '备用线路', hint: '', configured: true, masked: 'socks5://backup.example:1080' },
     ],
     last_test: null,
   },
   wfCustom: [], runs: [], logs: [], seq: 0, urls: {},
   llm: {
-    providers: [{ id: 'llm_local', kind: 'openai', name: '本地网关', base_url: 'http://127.0.0.1:8317/v1', key_set: true, key_masked: 'sk-…7f2a', models: ['deepseek-flash', 'gemini-2.5-flash', 'gpt-5.4-mini'], models_fetched_at: sec() - 3600 }],
-    active: { provider_id: 'llm_local', model: 'deepseek-flash' },
+    providers: [{ id: 'llm_local', kind: 'openai', name: '本地网关', base_url: 'https://models.example/v1', enhanced_rewrite: false, legacy_template: false, key_set: true, key_masked: 'sk-…7f2a', models: ['demo-text', 'gemini-2.5-flash', 'gpt-5.4-mini'], models_fetched_at: sec() - 3600 }],
+    active: { provider_id: 'llm_local', model: 'demo-text' },
   },
 }
 
 // 各类型服务商在 mock 里「拉取」到的模型列表
 const LLM_MODELS: Record<LlmKind, string[]> = {
-  openai: ['gpt-5.4', 'gpt-5.4-mini', 'deepseek-flash'],
+  openai: ['gpt-5.4', 'gpt-5.4-mini', 'demo-text'],
   anthropic: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
   gemini: ['gemini-3.1-pro', 'gemini-3-flash'],
 }
@@ -190,6 +189,12 @@ function refsReport(): References {
     items: S.refs.map(item), max: 6,
   }
 }
+function repairSelection(st: LlmState) {
+  if (st.providers.some(p => p.key_set && p.id === st.active?.provider_id && p.models.includes(st.active.model))) return
+  const first = st.providers.find(p => p.key_set && p.models.length)
+  st.active = first ? { provider_id: first.id, model: first.models[0] } : null
+}
+
 function runSummary(r: WfRun): WorkflowActive {
   const steps = r.workflow.steps
   const done = steps.filter(s => r.step_states[s.id]?.status === 'done' || r.step_states[s.id]?.status === 'skipped').length
@@ -204,7 +209,7 @@ function runSummary(r: WfRun): WorkflowActive {
 function publicJob(j: Job): Job { return { ...j, prompt: j.prompt.slice(0, 160) } }
 
 function status(since: number): Status {
-  const active = S.runs.find(r => r.status === 'running')
+  const active = S.runs.find(r => r.status === 'running') || S.runs.filter(r => r.status === 'paused').sort((a, b) => b.updated_at - a.updated_at)[0]
   return {
     phase: S.phase, error: S.error, active_gpu: S.activeGpu, idle_minutes: S.idleMinutes,
     idle_deadline: S.idleDeadline,
@@ -373,7 +378,7 @@ function execStep(r: WfRun, st: WfStep): Record<string, unknown> {
   const prev = (type: string) => r.workflow.steps.filter(s => s.type === type).map(s => r.step_states[s.id]?.output).find(Boolean)
   if (st.type === 'llm_script') {
     const n = Math.max(1, Math.min(8, +cfg.scene_count || 3))
-    return { format: 'storyboard', model: 'deepseek-flash', title: r.topic.slice(0, 30) || '未命名短片', style_bible: '冷暖对撞的电影感光线，胶片颗粒，角色外观全程一致', scenes: fakeScenes(r.topic || '主题', n), text: '' }
+    return { format: 'storyboard', model: S.llm.active?.model || '', title: r.topic.slice(0, 30) || '未命名短片', style_bible: '冷暖对撞的电影感光线，胶片颗粒，角色外观全程一致', scenes: fakeScenes(r.topic || '主题', n), text: '' }
   }
   if (st.type === 'web_asset_fetch') {
     const n = Math.max(1, Math.min(6, +cfg.max_images || 2))
@@ -455,9 +460,9 @@ function driveRun(r: WfRun, fromId?: string, single = false) {
 function freshStates(steps: WfStep[]) {
   return Object.fromEntries(steps.map(s => [s.id, { status: 'pending' as const, started_at: null, finished_at: null, progress: '', output: {}, error: '' }]))
 }
-function makeRun(wf: WfDef, topic: string): WfRun {
+function makeRun(wf: WfDef, topic: string, requestId?: string): WfRun {
   const now = sec()
-  const id = `wr_${String(now % 1_000_000).padStart(6, '0')}_${Math.floor(Math.random() * 9000 + 1000)}`
+  const id = requestId ? `wr_${requestId}` : `wr_${String(now % 1_000_000).padStart(6, '0')}_${Math.floor(Math.random() * 9000 + 1000)}`
   const run: WfRun = {
     id, topic, workflow: structuredClone(wf), status: 'draft', current_step_id: null, pause_reason: '', error: '',
     step_states: freshStates(wf.steps), logs: [new Date().toLocaleTimeString('zh-CN', { hour12: false }) + `  已创建工作流实例「${wf.name}」`],
@@ -472,6 +477,7 @@ function body<T>(b: unknown): T { return (b || {}) as T }
 export async function handle(method: string, path: string, raw: unknown, q: URLSearchParams) {
   const seg = path.replace(/^\/?api\//, '').split('/').filter(Boolean)
   const head = seg[0] || ''
+  if (method === 'POST' && (head === 'login' || head === 'logout')) return ok({ ok: true })
 
   if (head === 'config' && method === 'GET') return ok(config())
   if (head === 'status' && method === 'GET') return ok(status(+(q.get('log_since') || 0)))
@@ -488,7 +494,7 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
     log(`改写提示词 · ${prov.name} / ${b.model || S.llm.active?.model}`)
     const wf = b.mode === 'video' ? `（${b.workflow} · ${b.num_frames} 帧）` : ''
     const edit = b.editing ? '保持参考图中的人物身份与构图关系，' : ''
-    return ok({ prompt: `${edit}${b.text.trim()}，电影感光线，细腻质感，主体清晰，背景层次分明${wf ? '，镜头运动自然，环境音真实' : ''}`, format: b.mode === 'video' ? 'h3-3section' : 'image' })
+    return ok({ prompt: `${edit}${b.text.trim()}，电影感光线，细腻质感，主体清晰，背景层次分明${wf ? '，镜头运动自然，环境音真实' : ''}`, model: b.model || S.llm.active?.model, images_used: b.ref_count || 0, format: b.mode === 'video' ? 'h3-3section' : 'image' })
   }
   if (head === 'stop' && method === 'POST') {
     const b = body<{ clear_queue?: boolean }>(raw)
@@ -638,9 +644,9 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       const b = body<Partial<StudioPreset>>(raw)
       if (!b.name?.trim() || b.name.length > 60) return err(400, '预设名称不能为空且不超过 60 字')
       const p = { ...b, id: 'sp_' + uid('') } as StudioPreset
-      S.studioPresets.unshift(p); return ok({ ok: true, preset: p, presets: S.studioPresets })
+      S.studioPresets.unshift(p); return ok({ ok: true, preset: p, custom: S.studioPresets })
     }
-    if (method === 'DELETE' && seg[1]) { S.studioPresets = S.studioPresets.filter(p => p.id !== seg[1]); return ok({ ok: true, presets: S.studioPresets }) }
+    if (method === 'DELETE' && seg[1]) { S.studioPresets = S.studioPresets.filter(p => p.id !== seg[1]); return ok({ ok: true, custom: S.studioPresets }) }
   }
   if (head === 'llm') {
     const st = S.llm
@@ -649,7 +655,7 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       const b = body<{ provider_id: string; model: string }>(raw)
       const p = st.providers.find(x => x.id === b.provider_id)
       if (!p) return err(404, '服务商不存在')
-      if (!b.model?.trim()) return err(400, '请选择模型')
+      if (!p.key_set || !p.models.includes(b.model)) return err(400, '请选择该服务商已保存的模型')
       st.active = { provider_id: p.id, model: b.model.trim() }
       return ok(st)
     }
@@ -660,26 +666,29 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         if (!b.name?.trim()) return err(400, '请填写名称')
         if (!/^https?:\/\/[^\s]+$/.test(b.base_url?.trim() || '')) return err(400, 'BASE_URL 需要以 http:// 或 https:// 开头')
         const old = b.id ? st.providers.find(x => x.id === b.id) : undefined
+        if (b.id && !old) return err(404, '服务商不存在')
         if (!old && !b.api_key?.trim()) return err(400, '新服务商需要填写 API Key')
         const p: LlmProvider = {
           id: old?.id || uid('llm_'), kind: b.kind, name: b.name.trim(), base_url: b.base_url.trim().replace(/\/+$/, ''),
           key_set: !!(b.api_key?.trim() || old?.key_set), key_masked: b.api_key?.trim() ? maskKey(b.api_key.trim()) : old?.key_masked || '',
-          models: b.models?.length ? b.models : old?.models || [], models_fetched_at: old?.models_fetched_at ?? null,
+          enhanced_rewrite: b.enhanced_rewrite ?? old?.enhanced_rewrite ?? false, legacy_template: false,
+          models: [...new Set(b.models ?? old?.models ?? [])], models_fetched_at: old?.models_fetched_at ?? null,
         }
         st.providers = old ? st.providers.map(x => x.id === p.id ? p : x) : [...st.providers, p]
-        if (!st.active && p.models[0]) st.active = { provider_id: p.id, model: p.models[0] }
+        repairSelection(st)
         return ok(st)
       }
       const p = st.providers.find(x => x.id === seg[2])
       if (!p) return err(404, '服务商不存在')
       if (seg.length === 3 && method === 'DELETE') {
         st.providers = st.providers.filter(x => x.id !== p.id)
-        if (st.active?.provider_id === p.id) st.active = st.providers[0]?.models[0] ? { provider_id: st.providers[0].id, model: st.providers[0].models[0] } : null
+        repairSelection(st)
         return ok(st)
       }
       if (seg[3] === 'models' && method === 'POST') {
         if (!p.key_set) return err(400, '先填写 API Key')
         p.models = LLM_MODELS[p.kind]; p.models_fetched_at = sec()
+        repairSelection(st)
         return ok(st)
       }
       if (seg[3] === 'test' && method === 'POST') {
@@ -724,21 +733,41 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
     }
   }
   if (head === 'proxy') {
-    if (seg[1] === 'test' && method === 'POST') {
-      const t: ProxyTest = { profile: S.proxy.active, ok: true, loc: S.proxy.active === 'sg' ? 'SG' : 'US', colo: S.proxy.active === 'sg' ? 'SIN' : 'EWR', ms: 260 + Math.floor(Math.random() * 400), at: sec(), error: '' }
-      S.proxy.last_test = t; return ok(t)
-    }
-    if (method === 'POST') {
-      const b = body<{ active: string; custom_url?: string }>(raw)
-      if (!['us', 'sg', 'custom'].includes(b.active)) return err(400, '不允许直连，请选择美国 / 新加坡或自定义代理')
-      if (b.active === 'custom') {
-        if (b.custom_url && !/^(https?|socks5h?):\/\//.test(b.custom_url)) return err(400, '代理地址需以 http:// 或 socks5:// 开头')
-        if (b.custom_url) { const c = S.proxy.profiles.find(p => p.id === 'custom')!; c.configured = true; c.masked = b.custom_url.replace(/:\/\/.*@/, '://***@') }
-        if (!S.proxy.profiles.find(p => p.id === 'custom')?.configured) return err(400, '请先填写自定义代理地址')
+    const px = S.proxy
+    if (seg[1] === 'profiles' && method === 'POST') {
+      const b = body<{ id?: string; label: string; url?: string }>(raw)
+      const old = px.profiles.find(p => p.id === b.id)
+      if (b.id && !old) return err(404, '代理线路不存在')
+      if (!b.label?.trim() || (!old && !b.url)) return err(400, '请填写名称和地址')
+      let masked = old?.masked || ''
+      if (b.url) {
+        try {
+          const u = new URL(b.url)
+          if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(u.protocol)) return err(400, '代理协议无效')
+          masked = `${u.protocol}//${u.username || u.password ? '***@' : ''}${u.host}`
+        } catch { return err(400, '代理地址无效') }
       }
-      S.proxy.active = b.active; log(`出口已切换为 ${b.active.toUpperCase()}`); return ok(S.proxy)
+      const p = { id: old?.id || uid('px_'), label: b.label.trim(), masked, hint: '', configured: true }
+      if (!px.profiles.length) px.active = p.id
+      px.profiles = old ? px.profiles.map(row => row.id === p.id ? p : row) : [...px.profiles, p]
+      if (px.last_test?.profile === p.id) px.last_test = null
+    } else if (seg[1] === 'profiles' && method === 'DELETE') {
+      if (!px.profiles.some(p => p.id === seg[2])) return err(404, '代理线路不存在')
+      px.profiles = px.profiles.filter(p => p.id !== seg[2])
+      if (px.active === seg[2]) px.active = px.profiles[0]?.id || ''
+      if (px.last_test?.profile === seg[2]) px.last_test = null
+    } else if (seg[1] === 'test' && method === 'POST') {
+      const id = body<{ profile?: string }>(raw).profile || px.active
+      if (!px.profiles.some(p => p.id === id)) return err(404, '代理线路不存在')
+      const t: ProxyTest = { profile: id, ok: true, loc: 'US', colo: 'EWR', ms: 260, at: sec(), error: '' }
+      px.last_test = t
+      return ok(t)
+    } else if (seg.length === 1 && method === 'POST') {
+      const id = body<{ active: string }>(raw).active
+      if (id && !px.profiles.some(p => p.id === id)) return err(404, '代理线路不存在')
+      px.active = id
     }
-    return ok(S.proxy)
+    return ok(px)
   }
 
   if (head === 'workflows') {
@@ -752,12 +781,14 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
     if (seg[1] === 'runs') {
       if (seg.length === 2 && method === 'GET') return ok({ runs: S.runs.map(runSummary) })
       if (seg.length === 2 && method === 'POST') {
-        const b = body<{ workflow_id?: string; workflow?: Partial<WfDef>; topic?: string }>(raw)
+        const b = body<{ request_id?: string; workflow_id?: string; workflow?: Partial<WfDef>; topic?: string }>(raw)
+        const existing = b.request_id && S.runs.find(r => r.id === `wr_${b.request_id}`)
+        if (existing) return ok({ ok: true, run: existing }, 201)
         let wf: WfDef | undefined
         if (b.workflow?.steps) wf = { id: b.workflow.id || 'wf_' + uid(''), name: b.workflow.name || '自定义工作流', description: b.workflow.description || '', steps: b.workflow.steps }
         else wf = [...BUILTIN_WF, ...S.wfCustom].find(w => w.id === (b.workflow_id || 'builtin:agent-long-video'))
         if (!wf) return err(400, `未找到工作流：${b.workflow_id}`)
-        return ok({ ok: true, run: makeRun(wf, (b.topic ?? wf.default_topic ?? '').slice(0, 2000)) }, 201)
+        return ok({ ok: true, run: makeRun(wf, (b.topic ?? wf.default_topic ?? '').slice(0, 2000), b.request_id) }, 201)
       }
       const run = S.runs.find(r => r.id === seg[2])
       if (!run) return err(404, '工作流运行记录不存在')
@@ -776,7 +807,8 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       if (seg.length === 3 && method === 'DELETE') { if (run.status === 'running') return err(409, '运行中不能删除'); S.runs = S.runs.filter(r => r.id !== run.id); return ok({ ok: true }) }
       const action = seg[3]
       if ((action === 'start' || action === 'resume') && method === 'POST') {
-        if (S.runs.some(r => r.status === 'running' && r.id !== run.id)) return err(409, '已有工作流在运行')
+        if (body<{ draft_only?: boolean }>(raw).draft_only && run.status !== 'draft') return err(409, '草稿已启动')
+        if (S.runs.some(r => r.status === 'running')) return err(409, '已有工作流在运行')
         const b = body<{ from_step_id?: string; single_step?: boolean }>(raw)
         driveRun(run, b.from_step_id, !!b.single_step); return ok({ ok: true, run }, 202)
       }
@@ -787,15 +819,27 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         run.step_states[seg[4]].output = { ...run.step_states[seg[4]].output, ...patch }; return ok({ ok: true, run })
       }
       if (action === 'assets' && method === 'POST') {
-        const fn = `upload_${uid('')}.jpg`
-        S.urls[fn] = makeArt({ w: 768, h: 1024, seed: Math.floor(Math.random() * 9999), label: '上传' })
-        run.assets.push({ filename: fn, bytes: 220_000 })
+        if (!(raw instanceof Blob)) return err(400, '需要上传图片')
         const sid = q.get('step_id') || ''
+        const hash = await crypto.subtle.digest('SHA-256', await raw.arrayBuffer())
+        const fn = `upload_${run.id}_${sid}_${Array.from(new Uint8Array(hash), x => x.toString(16).padStart(2, '0')).join('')}.jpg`
+        if (!S.urls[fn]) S.urls[fn] = URL.createObjectURL(raw)
+        const asset = { filename: fn, bytes: raw.size }
+        if (!run.assets.some(a => a.filename === fn)) run.assets.push(asset)
         const st = run.workflow.steps.find(s => s.id === sid)
-        if (st && Array.isArray(st.config.asset_files)) st.config.asset_files.push(fn)
-        return ok({ ok: true, filename: fn, assets: run.assets })
+        if (st?.type === 'asset_input') st.config.asset_files = [...new Set([...(st.config.asset_files || []), fn])]
+        return ok({ ok: true, filename: fn, asset, assets: run.assets })
       }
-      if (action === 'assets' && seg[4] && method === 'DELETE') { run.assets = run.assets.filter(a => a.filename !== seg[4]); return ok({ ok: true, assets: run.assets }) }
+      if (action === 'assets' && seg[4] && method === 'DELETE') {
+        const fn = seg[4]
+        run.assets = run.assets.filter(a => a.filename !== fn)
+        for (const st of run.workflow.steps) {
+          if (st.type === 'asset_input') st.config.asset_files = (st.config.asset_files || []).filter((f: string) => f !== fn)
+        }
+        if (S.urls[fn]?.startsWith('blob:')) URL.revokeObjectURL(S.urls[fn])
+        delete S.urls[fn]
+        return ok({ ok: true, assets: run.assets })
+      }
     }
     if (seg.length === 2 && method === 'DELETE') { S.wfCustom = S.wfCustom.filter(w => w.id !== seg[1]); return ok({ ok: true, custom: S.wfCustom }) }
   }

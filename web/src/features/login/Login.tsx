@@ -1,8 +1,7 @@
-// 登录页。真实环境下 Python 后端在 /login 渲染自己的页面；
-// 前后端分离后可由这里接管：POST login（表单字段 password），成功后回到首页。
 import { motion } from 'motion/react'
 import { Zap } from 'lucide-react'
 import { useState } from 'react'
+import { api } from '../../api/client'
 
 export function Login() {
   const [pw, setPw] = useState('')
@@ -12,12 +11,13 @@ export function Login() {
     e.preventDefault()
     if (!pw) return
     setBusy(true); setErr('')
-    if (__MOCK__) { await new Promise(r => setTimeout(r, 500)); location.hash = ''; return }
     try {
-      const res = await fetch('login', { method: 'POST', body: new URLSearchParams({ password: pw }), credentials: 'same-origin', redirect: 'manual' })
-      if (res.type === 'opaqueredirect' || res.ok) location.href = './'
-      else setErr('密码不对')
-    } catch { setErr('连不上服务') }
+      await api.login(pw)
+      history.replaceState(null, '', location.pathname + location.search)
+      location.reload()
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : '连不上服务')
+    }
     setBusy(false)
   }
   return (

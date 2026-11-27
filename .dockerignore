@@ -1,0 +1,21 @@
+# Only the Python application and the Vite build inputs enter the build context.
+**
+!app.py
+!requirements.txt
+!draw_studio/**
+!web/package*.json
+!web/tsconfig*.json
+!web/vite.config.ts
+!web/index.html
+!web/src/**
+**/__pycache__/
+**/*.py[cod]
+**/*.env
+**/.env*
+**/private/
+**/out/
+**/colab_token.json
+**/colab_sessions.json*
+**/hf_token.txt
+**/proxy_custom.txt
+**/AGENTS.md

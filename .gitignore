@@ -25,3 +25,13 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.log
+
+# Local single-worker state and model provider credentials
+/private/
+/.studio.lock*
+/refs/
+/workflows/
+
+# Local workspace instructions and notes
+AGENTS.md
+/docs/frontend-backend-gaps.md

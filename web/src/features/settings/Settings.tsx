@@ -1,11 +1,13 @@
 // 设置抽屉：Colab 账号、抢卡、出口代理、空闲释放、HF Token、存储与外观。
-import { Bot, Cpu, Globe, HardDrive, KeyRound, LogOut, Palette, Pencil, Plus, Power, RefreshCw, Settings as Gear, Timer, Trash2, Zap } from 'lucide-react'
+import { Bot, Cpu, HardDrive, KeyRound, LogOut, Palette, Pencil, Plus, Power, RefreshCw, Settings as Gear, Timer, Trash2, Zap } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { LlmKind, LlmProvider } from '../../api/types'
 import { ago, cx, fmtBytes, lsSet } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Drawer, Seg, Toggle, useConfirm } from '../../ui/Overlay'
+
+import { ProxyBox } from './ProxyBox'
 
 const IDLE = [0, 5, 10, 20, 30, 60]
 
@@ -150,30 +152,6 @@ function IdleBox() {
   )
 }
 
-function ProxyBox() {
-  const px = useStore(s => s.status?.proxy)
-  const toast = useStore(s => s.toast)
-  const refresh = useStore(s => s.refresh)
-  const [custom, setCustom] = useState(''); const [testing, setTesting] = useState(false)
-  if (!px) return null
-  const set = async (id: string, url?: string) => { try { await api.proxy.set(id, url); toast('出口已切换', 'ok'); refresh(); setCustom('') } catch (e) { toast(e instanceof Error ? e.message : '切换失败', 'err') } }
-  const test = async () => { setTesting(true); try { const r = await api.proxy.test(); toast(r.ok ? `连通 · ${r.loc} ${r.colo} · ${r.ms}ms` : r.error, r.ok ? 'ok' : 'err'); refresh() } catch (e) { toast(e instanceof Error ? e.message : '测试失败', 'err') } setTesting(false) }
-  const t = px.last_test
-  return (
-    <section className="sect card">
-      <h4><Globe size={14} />出口线路</h4>
-      <div className="px-list">{px.profiles.map(p => (
-        <button key={p.id} className={cx('gpu-item', px.active === p.id && 'on')} disabled={!p.configured && p.id !== 'custom'} onClick={() => p.configured ? set(p.id) : undefined}>
-          <span className={cx('radio', px.active === p.id && 'on')} />
-          <span className="gpu-main"><b>{p.label}</b><small>{p.configured ? p.masked || p.hint : p.hint}</small></span>
-        </button>
-      ))}</div>
-      <div className="row"><input type="text" value={custom} placeholder="自定义代理，如 socks5://user:pass@host:1080" onChange={e => setCustom(e.target.value)} /><button className="btn sm" disabled={!custom.trim()} onClick={() => set('custom', custom.trim())}>保存并使用</button></div>
-      <div className="row"><button className="btn sm" disabled={testing} onClick={test}>{testing ? <span className="spinner" /> : null}测试连通</button>{t && <span className={cx('dim', !t.ok && 'bad-text')}>{t.ok ? `${t.loc} · ${t.colo} · ${t.ms}ms` : t.error} · {ago(t.at)}</span>}</div>
-    </section>
-  )
-}
-
 const KINDS: { id: LlmKind; label: string; base: string; keyHint: string }[] = [
   { id: 'openai', label: 'OpenAI', base: 'https://api.openai.com/v1', keyHint: 'sk-…，兼容 OpenAI 协议的网关也选这个' },
   { id: 'anthropic', label: 'Anthropic', base: 'https://api.anthropic.com', keyHint: 'sk-ant-…' },
@@ -231,7 +209,7 @@ function LlmBox() {
                 </div>
                 <div className="llm-acts">
                   <button className="iconbtn sm" title="拉取模型列表" disabled={!!busy || !p.key_set} onClick={() => fetchModels(p)}>{busy === 'm' + p.id ? <span className="spinner" /> : <RefreshCw size={14} />}</button>
-                  <button className="btn sm ghost" disabled={!!busy || !p.key_set} onClick={() => test(p)}>{busy === 't' + p.id ? <span className="spinner" /> : '测试'}</button>
+                  <button className="btn sm ghost" disabled={!!busy || !p.key_set || !p.models.length} onClick={() => test(p)}>{busy === 't' + p.id ? <span className="spinner" /> : '测试'}</button>
                   <button className="iconbtn sm" title="编辑" onClick={() => setEditing(p)}><Pencil size={14} /></button>
                   <button className="iconbtn sm" title="删除" disabled={!!busy} onClick={() => remove(p)}><Trash2 size={14} /></button>
                 </div>
@@ -256,6 +234,7 @@ function LlmForm({ initial, onDone }: { initial: LlmProvider | null; onDone: () 
   const [base, setBase] = useState(initial?.base_url || KINDS[0].base)
   const [key, setKey] = useState('')
   const [models, setModels] = useState((initial?.models || []).join(', '))
+  const [enhanced, setEnhanced] = useState(initial?.enhanced_rewrite || false)
   const [saving, setSaving] = useState(false)
   const meta = KINDS.find(k => k.id === kind)!
   // 切换类型时，如果 BASE_URL 还是上一个类型的默认值，就跟着换
@@ -267,7 +246,7 @@ function LlmForm({ initial, onDone }: { initial: LlmProvider | null; onDone: () 
     setSaving(true)
     try {
       const list = models.split(/[,，\s]+/).map(m => m.trim()).filter(Boolean)
-      const st = await api.llm.save({ id: initial?.id, kind, name: name.trim() || meta.label, base_url: base.trim(), api_key: key.trim() || undefined, models: list.length ? list : undefined })
+      const st = await api.llm.save({ id: initial?.id, kind, name: name.trim() || meta.label, base_url: base.trim(), api_key: key.trim() || undefined, models: list, enhanced_rewrite: enhanced })
       useStore.setState({ llm: st })
       toast(initial ? '已保存' : `已添加「${name.trim() || meta.label}」`, 'ok')
       onDone()
@@ -282,7 +261,11 @@ function LlmForm({ initial, onDone }: { initial: LlmProvider | null; onDone: () 
       <label className="field"><span className="fl">API_KEY{initial?.key_set && <span className="dim">已保存 {initial.key_masked}，留空不改</span>}</span>
         <input id="llm-key" type="password" value={key} placeholder={meta.keyHint} autoComplete="off" onChange={e => setKey(e.target.value)} spellCheck={false} /></label>
       <label className="field"><span className="fl">模型<span className="dim">留空则保存后点刷新按钮拉取；也可以手填，逗号分隔</span></span>
-        <input id="llm-models" type="text" value={models} placeholder="例如 gpt-5.4-mini, deepseek-flash" onChange={e => setModels(e.target.value)} spellCheck={false} /></label>
+        <input id="llm-models" type="text" value={models} placeholder="填写服务商返回的模型 ID，多个用逗号分隔" onChange={e => setModels(e.target.value)} spellCheck={false} /></label>
+      <Toggle on={enhanced} onChange={setEnhanced}>增强改写（破甲）</Toggle>
+      <small className="dim">{initial?.legacy_template
+        ? '此服务商沿用旧版破甲模板。关闭时使用标准改写。'
+        : '加强画面细节和输出格式，适用于创作台改写和工作流 H3 提示词。'}</small>
       <div className="row end">
         <button className="btn sm ghost" onClick={onDone}>取消</button>
         <button className="btn sm primary" disabled={saving || !base.trim() || (!initial && !key.trim())} onClick={save}>{saving ? <span className="spinner" /> : null}{initial ? '保存' : '添加'}</button>

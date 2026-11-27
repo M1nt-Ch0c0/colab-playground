@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { useStore, applyTheme } from './store/store'
+import { useStore, applyTheme, busy } from './store/store'
 import { Topbar } from './ui/Topbar'
 import { ConfirmHost } from './ui/Overlay'
 import { Composer } from './features/studio/Composer'
@@ -31,6 +31,19 @@ function Studio() {
   const libOpen = useStore(s => s.libraryOpen)
 
   useEffect(() => { boot() }, [boot])
+  useEffect(() => {
+    if (!booted) return
+    let active = true
+    let timer: number
+    const schedule = () => {
+      timer = window.setTimeout(async () => {
+        await useStore.getState().refresh()
+        if (active) schedule()
+      }, document.hidden ? 10000 : busy() ? 1300 : 5000)
+    }
+    schedule()
+    return () => { active = false; clearTimeout(timer) }
+  }, [booted])
   useEffect(() => { applyTheme(theme) }, [theme])
   useShortcuts()
   usePasteUpload()

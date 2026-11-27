@@ -1,8 +1,8 @@
-# Colab Studio（colab-playground）接口文档 · v2.1
+# Colab Studio（colab-playground）HTTP 接口文档
 
 服务地址：`https://your-domain.example.com`（服务器本机是 `http://127.0.0.1:8787`）
 
-网页 playground 就是用下面这些接口做的，脚本也可以直接调。
+当前服务的机器可读契约为 `GET /api/openapi.json`（需要登录）。工作流素材上传、缩略图、草稿重试和全部改写服务商接口见[后端设计与运行说明](backend-redesign.md)。
 
 ---
 
@@ -13,7 +13,7 @@
 | 认证 | 二选一：① 浏览器 Cookie `qp_auth`（`POST /login` 拿到）；② 请求头 `Authorization: Bearer <token>`，token 就是 `secret.env` 里的 `token`（和 Cookie 的值一样） |
 | 请求体 | 除上传图片外都是 JSON，要带 `Content-Type: application/json` |
 | 成功 | `200`，异步任务返回 `202`，媒体缓存命中返回 `304` |
-| 失败 | 统一返回 `{"error": "中文说明"}`。常见状态码：`400` 参数错误，`401` 没登录，`404` 不存在，`409` 冲突（比如队列满了），`413` 请求体超过 16MB，`416` Range 无效，`429` 登录失败次数太多，`502` 上游（CPA / HF）出错 |
+| 失败 | 统一返回 `{"error": "中文说明"}`。常见状态码：`400` 参数错误，`401` 没登录，`404` 不存在，`409` 冲突（比如队列满了），`413` 请求体超过 16MB，`416` Range 无效，`429` 登录失败次数太多，`502` 模型服务商或 Hugging Face 请求失败 |
 | 作品编号 | `id` 是 3–7 位数字字符串，比如 `"007"`。编号只增不减，删掉的编号**不会再用**，所以媒体地址可以长期缓存 |
 | 时间 | 都是 Unix 秒 |
 
@@ -25,15 +25,18 @@ H="Authorization: Bearer $QP_TOKEN"
 
 ---
 
-## 2. 登录和健康检查（不需要认证）
+## 2. 网页入口、登录和健康检查
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/healthz` | `{"ok":true,"backend":"colab","version":"2.1"}` |
+| GET | `/healthz` | `{"ok":true,"backend":"colab","version":"3.1","busy":false,"queue_len":0,"workflow_running":false}` |
 | GET | `/login` | 登录页 |
 | POST | `/login` | 表单 `password=...`。成功返回 `302`，并下发 `qp_auth` Cookie（30 天）。同一 IP 10 分钟内失败 8 次后返回 `429` |
 | GET | `/logout` | 清掉 Cookie，跳回登录页 |
-| GET | `/` | Playground 页面（没登录会跳到 `/login`） |
+| GET | `/` | React 工作台，浏览器收到 API 的 401 后显示 `#login` |
+| POST | `/api/login` | JSON `{"password":"…"}`，成功设置 Cookie 并返回 `{"ok":true}`。认证失败 401，限流 429。 |
+| POST | `/api/logout` | 已登录时清除 Cookie，返回 `{"ok":true}` |
+| GET | `/legacy` | 旧工作台，需要登录 |
 
 ---
 
@@ -45,7 +48,7 @@ H="Authorization: Bearer $QP_TOKEN"
 
 ```json
 {
-  "version": "2.1",
+  "version": "3.1",
   "gpus": [{"id":"A100","label":"A100 · High-RAM","vram":40,"hint":"推荐，性价比最高"}],
   "image_models": [{"id":"qwen-2.1-bf16"},{"id":"qwen-2.1-q5"},{"id":"flux2-dev"}],
   "recent_models": ["black-forest-labs/FLUX.1-dev", "qwen-2.1-bf16"],
@@ -61,7 +64,7 @@ H="Authorization: Bearer $QP_TOKEN"
   "limits": {"size_min":512,"size_max":1536,"size_step":64,"steps_min":2,"steps_max":60,
              "cfg_min":1.0,"cfg_max":12.0,"frames_min":120,"frames_max":360,"count_max":4,
              "loras_max":4,"lora_scale_max":2.5,"idle_minutes_min":5,"idle_minutes_max":60,
-             "prompt_max":2500,"negative_max":1200,"upload_max_mb":12,"queue_max":12},
+             "prompt_max":12000,"negative_max":1200,"upload_max_mb":12,"queue_max":12},
   "defaults": {"image":{},"video":{},"gpu":"A100","idle_minutes":10},
   "trash_retention_days": 7
 }
@@ -86,8 +89,9 @@ H="Authorization: Bearer $QP_TOKEN"
 | `references` | `{"first":{set,bytes,source,updated_at},"last":{...}}`。`source` 取值：`upload`，`round:<id>`，`legacy` |
 | `recent_models` | 最近使用/保存的生图模型列表（最多 16 个，持久化在 `out/queue.json`） |
 | `comfy_presets` | 用户保存的 ComfyUI 三件套组合方案列表（最多 32 个，持久化在 `out/queue.json`） |
-| `proxy` | 当前出站代理状态：`active`（`us` / `sg` / `custom`，不含直连）、`profiles[]`（脱敏列表，不回显凭据）、`last_test` |
+| `proxy` | 当前出站代理状态：`active`（线路 ID，空字符串表示系统网络）、`profiles[]`（脱敏列表，不回显凭据）、`last_test` |
 | `colab` | Colab 账号状态：`authed, ok, email, balance, rate_per_hour, sessions[], any_running, eligible_gpus[], eligible_tpus[], gpu_health{}, hf_token_set, refreshing, error`（后台异步刷新，不阻塞轮询；`gpu_health` 记录 30 分钟内各 GPU 最近一次分配实测结果 `ok/unavailable/error`） |
+| `workflow_active` | 当前运行实例的摘要，或最近更新的暂停实例，均无时为 null。带 `status, done_steps, total_steps`。 |
 | `server_time` | 服务器时间 |
 
 ### `GET /api/storage`
@@ -121,13 +125,17 @@ H="Authorization: Bearer $QP_TOKEN"
 - `POST /api/comfy/presets` body `{"name": "Omni BF16 + Turbo 8步", "template": "qwen-image-2.1", "diffusion": "...", "text_encoder": "...", "vae": "...", "sampler": "euler", "scheduler": "simple", "steps": 8, "cfg": 1.0, "width": 1024, "height": 1536, "loras": [...]}` → 返回 `{"ok": true, "preset": {...}, "presets": [...]}`
 - `DELETE /api/comfy/presets/<id>` → 删除自定义组合方案，返回 `{"ok": true, "presets": [...]}`
 
-### `GET / POST /api/proxy` 与 `POST /api/proxy/test`
+### 出口代理线路
 
-热切换 Google Colab 出站代理线路（支持 `us` 美国 / `sg` 新加坡 / `custom` 自定义，禁用直连，本机回环仍直连 CPA，响应中绝不回显代理密码）：
+| 方法与路径 | 请求与返回 |
+|---|---|
+| GET `/api/proxy` | 返回 `{active, profiles, last_test}`，每条线路包含 `id, label, configured, masked, hint`。接口只返回脱敏地址。 |
+| POST `/api/proxy/profiles` | `{"label":"主线路","url":"socks5://proxy.example:1080"}`，返回完整状态。带 `id` 则更新，编辑时地址留空或省略会保留原地址及凭据。 |
+| DELETE `/api/proxy/profiles/{id}` | 删除线路并返回完整状态。删除当前线路后选择剩余的第一条，列表清空时恢复系统网络。 |
+| POST `/api/proxy` | `{"active":"<线路 ID>"}` 选用已保存的线路，`{"active":""}` 使用系统网络。旧版请求体的 `custom_url` 仍可更新单条自定义线路。 |
+| POST `/api/proxy/test` | `{"profile":"<线路 ID>"}`，省略时测试当前线路。返回 `{profile, ok, loc, colo, ms, at, error}`。 |
 
-- `GET /api/proxy` → `{"active": "us", "profiles": [...], "last_test": {...}}`
-- `POST /api/proxy` body `{"active": "us"|"sg"|"custom", "custom_url": "可选，http:// 或 socks5:// 代理"}` → 切换并持久化到 `out/queue.json`（自定义地址存 `proxy_custom.txt` 0600），同时重置各 GPU 503 缓存
-- `POST /api/proxy/test` body `{"profile": "可选，默认当前 active"}` → 返回 `{"profile": "us", "ok": true, "loc": "US", "colo": "EWR", "ms": 1100, "at": 0, "error": ""}`
+首次保存的线路自动启用。线路地址和当前选择保存在 `private/proxies.json`，权限 0600。使用系统网络时沿用进程的代理环境变量。模型请求访问本机及内网网关时直连。
 
 ### `POST /api/settings`
 
@@ -150,14 +158,14 @@ H="Authorization: Bearer $QP_TOKEN"
 
 ## 4. 生成
 
-### `POST /api/prompt`：用 CPA 把一句话改写成提示词
+### `POST /api/prompt`：使用所选模型改写提示词
 
 ```json
 {"text": "雨夜霓虹街头，回头微笑", "mode": "image", "editing": false}
 ```
 - `mode`：`image` 或 `video`
 - `editing`：`true` 表示这是改已有图片的指令
-- 返回 `{"prompt": "..."}`。CPA 出错时返回 `502`
+- 可选的 `provider_id` 和 `model` 成对指定，省略时使用当前选择。返回 `{prompt, model, format, images_used}`。未配置模型返回 400，上游失败返回 502。
 
 ### `POST /api/generate`：提交任务（进持久化队列，异步执行）
 
@@ -166,12 +174,12 @@ H="Authorization: Bearer $QP_TOKEN"
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `mode` | string | `image` | `image` 或 `video` |
-| `prompt` | string | 必填 | ≤ 2500 字 |
+| `prompt` | string | 必填 | ≤ 12000 字 |
 | `negative` | string | `""` | 负面提示词，≤ 1200 字 |
 | `gpu` | string | `A100` | `A100` / `H100` / `G4` / `L4` / `T4` |
 | `gpu_pool` | array | `[gpu]` | 指定轮询的 GPU 列表（按顺序优先，如 `["G4","H100"]`） |
 | `poll_rounds` | int | 1 | 轮询轮数（1–10） |
-| `poll_all_proxies` | bool | false | `true` 时每轮依次切换全部已配置的代理（US / SG / 自定义，绝不直连） |
+| `poll_all_proxies` | bool | false | `true` 时每轮依次切换全部已配置的代理 |
 | `auto_fallback` | bool | false | 兼容旧版：`gpu_pool` 仅 1 张卡且为 `true` 时自动顺延尝试其余有权限的 GPU |
 | `width`, `height` | int | 看模式 | 512–1536，会自动对齐到 64 的倍数 |
 | `steps` | int | 图 35 / 视频 30 | 2–60 |

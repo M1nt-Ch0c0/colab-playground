@@ -1,4 +1,9 @@
-// 与 docs/API.md 及 jobs.py / workflows.py / store.py 的返回结构一一对应。
+import type { components } from './schema'
+
+type Wire = components['schemas']
+export type AssetUpload = Wire['AssetUpload']
+
+// 与 docs/API.md 及 draw_studio 的生成、工作流、作品库接口 的返回结构一一对应。
 // 后端适配时只需保证字段一致，组件层不直接接触 fetch。
 
 export type Mode = 'image' | 'video'
@@ -27,7 +32,7 @@ export interface ComfyPreset {
 export interface StudioPreset {
   id: string; name: string; builtin?: boolean; mode: Mode; gpu?: string
   width: number; height: number; steps: number; cfg: number; loras?: Lora[]
-  model?: string; workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean
+  engine?: Engine; comfy?: GeneratePayload['comfy']; model?: string; workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean
 }
 
 export interface Limits {
@@ -72,13 +77,14 @@ export interface Job {
 export interface ColabSession { name: string; gpu: string; shape: string; endpoint: string }
 export interface GpuHealth { status: 'ok' | 'unavailable' | 'error'; at: number; code?: number }
 export interface ColabStatus {
-  authed: boolean; ok: boolean; email: string; balance: number | null; rate_per_hour: number
+  authed: boolean; ok: boolean; email: string; balance: number | null; rate_per_hour: number | null
   sessions: ColabSession[]; any_running: boolean; eligible_gpus: string[]; eligible_tpus: string[]
   gpu_health: Record<string, GpuHealth>; hf_token_set: boolean; refreshing: boolean; error: string
 }
-export interface ProxyProfile { id: 'us' | 'sg' | 'custom'; label: string; hint: string; configured: boolean; masked?: string }
-export interface ProxyTest { profile: string; ok: boolean; loc: string; colo: string; ms: number; at: number; error: string }
-export interface ProxyState { active: string; profiles: ProxyProfile[]; last_test: ProxyTest | null }
+export type ProxyProfile = Wire['ProxyInfo']
+export type ProxyProfileBody = Wire['ProfileInput']
+export type ProxyTest = Wire['ProxyTest']
+export type ProxyState = Wire['ProxyState']
 
 export interface RefItem { id: string; bytes: number; source: string; updated_at: number }
 export interface RefSlot { set: boolean; bytes: number; source: string; updated_at: number }
@@ -130,22 +136,16 @@ export interface GeneratePayload {
   custom_transformer_repo?: string; custom_transformer_file?: string
   workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean; has_last_image?: boolean
 }
-export interface RewriteBody {
-  text: string; mode: Mode; workflow: VideoWorkflow; num_frames: number
-  editing: boolean; chain: boolean; has_last_image: boolean; ref_count: number
-  provider_id?: string; model?: string
-}
+export type RewriteBody = Wire['Rewrite']
+export type RewriteResult = Wire['RewriteResult']
+export type ProbeResult = Wire['ProbeResult']
+export type SessionResult = Wire['Ok']
 export interface LinkSpec { source: string; repo_id: string; filename: string; revision: string; url: string; basename: string; ext: string; format: string }
 
-// ── 改写用大模型（新接口，见 docs/frontend-backend-gaps.md G1） ──
-export type LlmKind = 'openai' | 'anthropic' | 'gemini'
-export interface LlmProvider {
-  id: string; kind: LlmKind; name: string; base_url: string
-  key_set: boolean; key_masked: string
-  models: string[]; models_fetched_at: number | null
-}
-export interface LlmState { providers: LlmProvider[]; active: { provider_id: string; model: string } | null }
-export interface LlmProviderBody { id?: string; kind: LlmKind; name: string; base_url: string; api_key?: string; models?: string[] }
+export type LlmProvider = Wire['ProviderInfo']
+export type LlmKind = LlmProvider['kind']
+export type LlmState = Wire['LlmState']
+export type LlmProviderBody = Wire['ProviderInput']
 
 // ── Workflow Studio ──
 export type StepType = 'asset_input' | 'llm_script' | 'web_asset_fetch' | 'image_gen' | 'h3_prompt' | 'video_gen' | 'video_stitch'

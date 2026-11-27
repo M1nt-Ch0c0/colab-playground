@@ -13,9 +13,7 @@ on:
         default: false
 
 env:
-  GCP_REGION: asia-east1
-  AR_REGISTRY: asia-east1-docker.pkg.dev
-  IMAGE_REPO: asia-east1-docker.pkg.dev/cpa-platform-e9b3/cpa-images/colab-playground
+  IMAGE_REPO: ${{ vars.IMAGE_REPO }}
 
 jobs:
   test:
@@ -34,15 +32,24 @@ jobs:
       - name: Install runtime dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt selenium
+
+      - name: Build production frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run api:check
+          npm run build
 
       - name: Syntax, JS, and unit tests
         run: |
-          python3 -m py_compile app.py jobs.py workflows.py colab_worker.py ui.py store.py colab_backend.py
-          python3 -c 'import subprocess, ui; p = subprocess.run(["node", "--check"], input=ui._JS.encode("utf-8"), capture_output=True); assert p.returncode == 0, p.stderr.decode(); print("JS_OK")'
+          python3 -m compileall -q app.py draw_studio
+          python3 -c 'import subprocess; from draw_studio import legacy_ui as ui; p = subprocess.run(["node", "--check"], input=ui._JS.encode("utf-8"), capture_output=True); assert p.returncode == 0, p.stderr.decode(); print("JS_OK")'
           python3 tests/test_backend_v21.py .
           python3 tests/test_comfy_mode.py .
           python3 tests/test_workflows.py .
+          python3 tests/test_web_api.py .
+          python3 tests/test_web_browser.py .
 
   build-and-deploy:
     needs: test
@@ -51,23 +58,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check secrets
+      - name: Check release configuration
         id: check_secrets
         env:
           GCP_KEY: ${{ secrets.GCP_AR_SA_KEY }}
           DOK_KEY: ${{ secrets.DOKPLOY_API_KEY }}
           DOK_APP: ${{ secrets.DOKPLOY_APP_ID }}
+          DOK_URL: ${{ vars.DOKPLOY_URL }}
+          HEALTH_URL: ${{ vars.APP_HEALTH_URL }}
+          FORCE_DEPLOY: ${{ inputs.force_deploy }}
         run: |
-          if [ -n "${GCP_KEY}" ]; then
+          if [ -n "${GCP_KEY}" ] && [ -n "${IMAGE_REPO}" ]; then
             echo "gcp_ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "gcp_ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Secret GCP_AR_SA_KEY is not configured yet; skipping push & deploy."
+            echo "::notice::Set the IMAGE_REPO variable and GCP_AR_SA_KEY secret to publish images."
           fi
-          if [ -n "${GCP_KEY}" ] && [ -n "${DOK_KEY}" ] && [ -n "${DOK_APP}" ]; then
+          if [[ -n "$GCP_KEY" && -n "$IMAGE_REPO" && -n "$DOK_KEY" && -n "$DOK_APP" && -n "$DOK_URL" && ( -n "$HEALTH_URL" || "$FORCE_DEPLOY" == "true" ) ]]; then
             echo "dokploy_ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "dokploy_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Automatic deployment requires the Dokploy credentials, DOKPLOY_URL and APP_HEALTH_URL."
           fi
 
       - name: Authenticate to Google Cloud
@@ -79,7 +90,7 @@ jobs:
       - name: Configure Docker for Artifact Registry
         if: steps.check_secrets.outputs.gcp_ready == 'true'
         run: |
-          gcloud auth configure-docker "${AR_REGISTRY}" --quiet
+          gcloud auth configure-docker "${IMAGE_REPO%%/*}" --quiet
 
       - name: Compute image tag
         id: meta
@@ -116,7 +127,7 @@ jobs:
       - name: Wait for idle before Dokploy deploy
         if: steps.check_secrets.outputs.dokploy_ready == 'true'
         env:
-          APP_HEALTH_URL: https://draw.m1ntch0c0.com/healthz
+          APP_HEALTH_URL: ${{ vars.APP_HEALTH_URL }}
           FORCE_DEPLOY: ${{ github.event.inputs.force_deploy }}
         run: |
           if [ "${FORCE_DEPLOY}" = "true" ]; then
@@ -127,30 +138,28 @@ jobs:
           INTERVAL=15
           ELAPSED=0
           while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-            BODY=$(curl -sS --max-time 8 "$APP_HEALTH_URL" || true)
-            BUSY=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print("true" if d.get("busy") else "false")' "$BODY" 2>/dev/null || echo "false")
-            if [ "$BUSY" != "true" ]; then
-              echo "Service is idle (healthz: ${BODY:-n/a}); proceeding with deployment."
+            BODY=$(curl -fsS --max-time 8 "$APP_HEALTH_URL" || true)
+            if python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("ok") is True and d.get("busy") is False else 1)' <<< "$BODY" 2>/dev/null; then
+              echo "Service is idle; proceeding with deployment."
               exit 0
             fi
-            echo "Active GPU or workflow job detected (${BODY}); waiting ${INTERVAL}s (${ELAPSED}/${MAX_WAIT}s)..."
+            echo "Service busy or health endpoint unavailable; waiting ${INTERVAL}s (${ELAPSED}/${MAX_WAIT}s)..."
             sleep "$INTERVAL"
             ELAPSED=$((ELAPSED + INTERVAL))
           done
-          echo "::error::Timed out waiting ${MAX_WAIT}s for active GPU/workflow job to finish. Re-run later or use workflow_dispatch with force_deploy=true."
+          echo "::error::Could not confirm an idle service within ${MAX_WAIT}s. Check APP_HEALTH_URL and running jobs, or dispatch with force_deploy=true."
           exit 1
 
       - name: Trigger Dokploy deployment (optional)
         if: steps.check_secrets.outputs.dokploy_ready == 'true'
         env:
-          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+          DOKPLOY_URL: ${{ vars.DOKPLOY_URL }}
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
           DOKPLOY_APP_ID: ${{ secrets.DOKPLOY_APP_ID }}
           CF_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           FULL_IMAGE: ${{ steps.meta.outputs.full_image }}
         run: |
-          BASE_URL="${DOKPLOY_URL:-https://ops.m1ntch0c0.com}"
           HDRS=(-H "Content-Type: application/json" -H "x-api-key: ${DOKPLOY_API_KEY}")
           if [ -n "${CF_ID}" ] && [ -n "${CF_SECRET}" ]; then
             HDRS+=(-H "CF-Access-Client-Id: ${CF_ID}" -H "CF-Access-Client-Secret: ${CF_SECRET}")
@@ -159,17 +168,15 @@ jobs:
           call_dokploy() {
             local ep="$1"
             local body="$2"
-            local out="/tmp/dokploy_resp.txt"
             local code
-            code=$(curl -sS -o "$out" -w "%{http_code}" -X POST "${BASE_URL%/}/api/${ep}" "${HDRS[@]}" -d "$body")
+            code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "${DOKPLOY_URL%/}/api/${ep}" "${HDRS[@]}" -d "$body")
             echo "POST /api/${ep} -> HTTP ${code}"
             if [ "$code" = "302" ] || [ "$code" = "403" ]; then
-              echo "::error::Cloudflare Zero Trust blocked /api/${ep} (HTTP ${code}). Ensure the Service Token policy on ops.m1ntch0c0.com uses Action = 'Service Auth' (not 'Allow')."
+              echo "::error::Deployment endpoint denied access (HTTP ${code}). Check the configured endpoint and access policy."
               exit 1
             fi
             if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
-              head -c 500 "$out" || true
-              echo ""
+              echo "::error::Dokploy returned HTTP ${code} for /api/${ep}."
               exit 1
             fi
           }

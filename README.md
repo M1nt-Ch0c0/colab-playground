@@ -2,7 +2,7 @@
 
 轻量级、单机自托管的 **Google Colab 云端 GPU 生图 / 改图 / 生视频工作台**。
 
-无前端构建步骤、无数据库依赖，整个服务端仅由 **6 个 Python 文件**构成；直接以 SDK 方式调用官方 `google-colab-cli` 协议，按需租用 Google Colab GPU（G4 / H100 / A100 / L4 / T4），模型常驻云端显存复用，空闲超时自动释放停止计费。
+React 工作台由 Python FastAPI 同源托管。服务端通过 `google-colab-cli` 按需申请 GPU，复用常驻模型，并按空闲计时释放实例。设置里可配置 OpenAI 兼容、Anthropic 和 Gemini 改写模型，增强改写可按服务商开启。
 
 ---
 
@@ -15,7 +15,7 @@
 - **参考图改图 & 连续编辑**：支持上传/拖拽/粘贴参考图，以及「接着改」（自动取最新作品为参考图）。
 - **多卡轮询 + 跨代理热切换**
   - 实时展示账号可用 GPU、运行复用状态与 30 分钟内分配实测状态；
-  - 支持勾选指定多张 GPU 按顺序轮询、设置轮询轮数（1–10 轮）、开启跨全部已配代理（US / SG / 自定义）轮询，并支持 `High-RAM → Standard` 503 自动降级；
+  - 支持勾选指定多张 GPU 按顺序轮询、设置轮询轮数（1–10 轮）、开启跨已保存的代理线路轮询，并支持 `High-RAM → Standard` 503 自动降级；
   - 取消任务时真正向 Colab Jupyter Kernel 发 `interrupt`（必要时自动 2 秒重启 Kernel，保留 GPU 实例与磁盘已下载模型）。
 - **任务队列与作品库**：磁盘持久化队列与历史（服务重启自动恢复）、批量出图（1–4 张种子递增）、实时进度条与日志、收藏/搜索/筛选/复用参数、7 天回收站与按天数/数量/空间上限清理。
 - **亮色 / 暗色双主题**：默认亮色模式，支持一键切换暗色并本地持久化；桌面端自适应双栏独立滚动布局。
@@ -30,7 +30,7 @@
                                        │
        ┌───────────────────────────────┼───────────────────────────────┐
        ▼                               ▼                               ▼
- OpenAI 兼容接口（可选）        本地磁盘 out/                   出站代理（US/SG/自定义）
+ 改写模型服务商（可选）        本地磁盘 out/                   可配置的出站代理
  AI 提示词改写                 作品库 / 回收站 / 队列           仅走 Colab 控制面与回图
                                                                        │
                                                                        ▼
@@ -44,18 +44,24 @@
 
 ### 目录结构
 
-| 路径 | 说明 |
-|---|---|
-| `app.py` | 标准库 `ThreadingHTTPServer`、登录/Token 鉴权、全部 `/api/*` 路由与优雅停机 |
-| `ui.py` | 单文件内嵌 HTML/CSS/JS 前端（无构建步骤、无外部 CDN） |
-| `jobs.py` | 持久化任务队列、参数校验、HF 链接解析、ComfyUI 组合方案、代理热切换、空闲自动释放与 AI 改写 |
-| `store.py` | 作品库、图片尺寸探测、存储统计、收藏、批量清理、7 天回收站、`ETag`/`Range` 媒体流 |
-| `colab_backend.py` | 基于 `google-colab-cli` 内部类的 OAuth2 授权、异步 CU 查询、多卡/多代理轮询、Kernel 中断与日志脱敏 |
-| `colab_worker.py` | 上传到 Colab GPU 执行的远端 Worker（Diffusers + ComfyUI 双引擎与显存互斥管理） |
-| `docs/API.md` | 完整 HTTP REST API 文档 |
-| `Dockerfile` / `docker-compose.yml` | 容器化部署配置 |
-| `deploy/colab-playground.service` | Linux systemd 服务单元示例 |
-| `tests/` | 后端与 ComfyUI 单元测试 |
+```text
+app.py                       启动入口，也可供 uvicorn app:app 加载
+draw_studio/
+  application.py             FastAPI 应用、路由装配与静态页面
+  runtime.py                 服务初始化、队列恢复和数据卷锁
+  api/                       工作台、作品库、工作流和改写模型的 HTTP 接口
+  generation/                生成队列、模型目录、参数校验和 H3 写作指南
+  workflows/                 模板定义、运行引擎、网页素材和 FFmpeg 拼接
+  colab/                     宿主机客户端 client.py、上传到 GPU 的独立 worker.py
+  gallery.py                 作品文件、索引、缩略图和回收站
+  llm.py                     模型服务商配置与协议适配
+  legacy_ui.py               /legacy 页面
+web/                         React / TypeScript 工作台
+tests/                       领域测试、HTTP 契约与浏览器联调
+deploy/                      systemd 示例
+```
+
+运行数据由 `QP_ROOT` 指定。默认是仓库根目录，容器内是 `/data`。源码中的 `draw_studio/workflows/` 定义工作流，用户的运行记录保存在 `$QP_ROOT/workflows/runs/`。[后端设计与运行说明](docs/backend-redesign.md) · [HTTP API](docs/API.md)
 
 ---
 
@@ -67,22 +73,24 @@
 mkdir -p data
 cp secret.env.example data/secret.env
 chmod 600 data/secret.env
-# 编辑 data/secret.env，修改 password 和 token（及可选的代理 / AI 改写配置）
+# 编辑 data/secret.env，修改 password 和 token
 vim data/secret.env
 
 docker compose up -d --build
 ```
 
-打开浏览器访问 `http://127.0.0.1:8787`，登录后在右上角「设置」中完成 Google Colab OAuth 授权即可使用。
+打开浏览器访问 `http://127.0.0.1:8787`，在右上角「设置」中完成 Google Colab OAuth 授权。改写服务商和代理线路也在设置中添加。每条代理可以单独命名、测试、切换和删除，编辑时地址留空会保留已保存的凭据。
 
 ### 方式二：Python 虚拟环境直接运行
 
-需要 Python 3.11+（推荐 3.13）：
+使用 Python 3.13 和 Node.js 22.12+ 构建。
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+npm --prefix web ci
+npm --prefix web run build
 
 cp secret.env.example secret.env
 chmod 600 secret.env
@@ -104,9 +112,24 @@ python3 app.py
 
 ---
 
+## GitHub 自动发布
+
+推送 `v*` 标签或手动运行 `Build, Push to GCP Artifact Registry & Deploy` 会执行测试。镜像发布目标由 GitHub 仓库的 **Settings → Secrets and variables → Actions** 提供。
+
+| 类型 | 名称 | 用途 |
+|---|---|---|
+| Variable | `IMAGE_REPO` | 完整 Artifact Registry 镜像路径，格式为 `LOCATION-docker.pkg.dev/PROJECT/REPOSITORY/IMAGE`，省略标签 |
+| Secret | `GCP_AR_SA_KEY` | 有镜像推送权限的服务账号凭据 |
+| Variable | `DOKPLOY_URL` | 可选部署的 Dokploy HTTPS 根地址 |
+| Variable | `APP_HEALTH_URL` | 目标应用完整的 `/healthz` 地址，部署前用于等待空闲 |
+| Secrets | `DOKPLOY_API_KEY`、`DOKPLOY_APP_ID` | 目标 Dokploy 应用的部署凭据和 ID |
+| Secrets | `CF_ACCESS_CLIENT_ID`、`CF_ACCESS_CLIENT_SECRET` | 可选，仅用于受 Cloudflare Access 保护的 Dokploy 入口 |
+
+配置前两项即会自动推送带版本标签和 `:latest` 的镜像。补齐部署配置后，工作流会在镜像推送成功、目标服务空闲时调用 Dokploy。手动触发的 `force_deploy` 可跳过空闲等待。
+
 ## 安全与运维提示
 
-- **凭据保护**：`secret.env`、`colab_token.json`、`hf_token.txt`、`proxy_custom.txt` 均只存服务端且权限为 `0600`，日志自动脱敏 Hugging Face Token 与代理账密，网页端绝不回显代理密码。
+- **凭据保护**：`secret.env`、`colab_token.json`、`hf_token.txt` 和 `private/` 下的模型与代理配置 均只存服务端且权限为 `0600`，日志自动脱敏 Hugging Face Token 与代理账密，网页端绝不回显代理密码。
 - **反暴力登录**：同一 IP 10 分钟内输错密码 8 次自动限流（HTTP 429）。
 - **接口文档**：所有接口均支持浏览器 Cookie 或 `Authorization: Bearer <token>` 自动化调用，详见 [docs/API.md](docs/API.md)。
 

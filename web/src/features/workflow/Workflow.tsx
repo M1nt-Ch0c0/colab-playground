@@ -17,7 +17,8 @@ const UPSTREAM: Record<string, string[]> = {
 }
 const LABELS: Record<string, string> = {
   role: '资产角色', note: '备注', scene_count: '镜头数', output_format: '输出格式', instruction: '指令', url: '目标网页', search_query: '搜索词',
-  max_images: '最多张数', scenes_from: '分镜来源', ref_sources: '引用上游参考图', prompt_template: '提示词模板', model: '模型', gpu: 'GPU',
+  max_images: '最多张数', scenes_from: '分镜来源', ref_sources: '引用上游参考图', prompt_template: '提示词模板', model: '模型', gpu: '首选 GPU',
+  gpu_pool: '候补 GPU（按选择顺序）', poll_rounds: '轮询轮数', poll_all_proxies: '每轮使用全部代理', auto_offload: '自动显存卸载',
   width: '宽', height: '高', steps: '步数', cfg: 'CFG', max_scenes: '最多镜头', keyframe_from: '关键帧来源', workflow: '视频模式',
   num_frames: '帧数', prompts_from: '提示词来源', offload_mode: '显存卸载', clips_from: '片段来源', transition: '转场', fade_s: '转场秒数',
   target_width: '成片宽', target_height: '成片高', fps: '帧率', clip_round_ids: '追加作品编号', round_ids: '画廊作品编号',
@@ -31,35 +32,62 @@ export function WorkflowWorkspace() {
   const setRun = useStore(s => s.setWfRun)
   // 点模板只是本地草稿，点「运行」才真正建运行记录
   const [draft, setDraft] = useState<WfDef | null>(null)
-  const openTpl = (d: WfDef) => { setRun(null); setDraft(d) }
+  const selection = useRef(0)
+  const openTpl = (d: WfDef) => { selection.current++; setRun(null); setDraft(d) }
   const activeStatus = useStore(s => s.status?.workflow_active?.status)
   const activeId = useStore(s => s.status?.workflow_active?.id)
   const toast = useStore(s => s.toast)
 
-  useEffect(() => { loadWf() }, [loadWf])
-  // 运行中 1.2s 轮询当前实例
+  const openRun = async (id: string) => {
+    const version = ++selection.current
+    try {
+      const r = await api.wf.run(id)
+      if (selection.current === version) { setDraft(null); setRun(r.run) }
+    } catch (e) { toast(e instanceof Error ? e.message : '打开记录失败', 'err') }
+  }
+  useEffect(() => {
+    const version = selection.current
+    loadWf().then(() => {
+      const state = useStore.getState()
+      const id = state.status?.workflow_active?.id || state.wfData?.runs[0]?.id
+      if (id && !state.wfRun && selection.current === version) void openRun(id)
+    })
+    return () => { selection.current++ }
+  }, [loadWf]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!run || run.status !== 'running') return
+    let fetching = false
+    let active = true
     const id = setInterval(async () => {
+      if (fetching) return
+      fetching = true
       try {
         const r = await api.wf.run(run.id)
-        const prev = useStore.getState().wfRun?.status
+        if (!active || useStore.getState().wfRun?.id !== run.id) return
         setRun(r.run)
-        if (prev === 'running' && r.run.status !== 'running') {
+        if (r.run.status !== 'running') {
           loadWf()
           if (r.run.status === 'done') toast('工作流完成，成片已存入作品库', 'ok')
           else if (r.run.status === 'paused') toast(r.run.pause_reason || '已暂停，检查后继续', '')
           else if (r.run.status === 'error') toast(r.run.error || '工作流失败', 'err')
         }
-      } catch { /* 下一轮重试 */ }
+      } catch (e) { if (active) toast(e instanceof Error ? e.message : '读取工作流失败', 'err') }
+      finally { fetching = false }
     }, 1200)
-    return () => clearInterval(id)
+    return () => { active = false; clearInterval(id) }
   }, [run?.id, run?.status]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (activeId && run && activeId === run.id && activeStatus !== run.status) api.wf.run(run.id).then(r => setRun(r.run)).catch(() => {}) }, [activeStatus]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!run || activeId !== run.id || activeStatus === run.status || run.status === 'running') return
+    let active = true
+    api.wf.run(run.id).then(r => { if (active) setRun(r.run) })
+      .catch(e => { if (active) toast(e.message, 'err') })
+    return () => { active = false }
+  }, [activeId, activeStatus, run?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="wf">
-      <WfSidebar draft={draft} onOpen={openTpl} />
+      <WfSidebar draft={draft} onOpen={openTpl} openRun={openRun} />
       <div className="wf-main">
         {!data ? <div className="empty"><span className="spinner" /></div>
           : run ? <RunCanvas key={run.id} run={run} /> : draft ? <DraftCanvas key={draft.id || 'blank'} tpl={draft} /> : (
@@ -70,13 +98,35 @@ export function WorkflowWorkspace() {
   )
 }
 
+type DraftFiles = { files: File[]; change: (next: File[]) => void }
+type RunAction = (fn: () => Promise<{ run: WfRun }>, msg?: string) => void
+
+function LocalImage({ file, remove }: { file: File; remove: () => void }) {
+  const [url, setUrl] = useState('')
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(file)
+    setUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [file])
+  return <figure className="ref-tile">{url && <img src={url} alt={file.name} />}
+    <button className="ref-x" aria-label={`移除 ${file.name}`} onClick={remove}><X size={12} /></button></figure>
+}
+
+function templateSteps(steps: WfStep[]): WfStep[] {
+  // Uploaded filenames belong to a run. Gallery round IDs can be reused across runs.
+  return steps.map(s => s.type === 'asset_input' ? { ...s, config: { ...s.config, asset_files: [] } } : s)
+}
+
 /** 未落库的模板草稿：编辑主题和步骤，点运行时才创建运行记录 */
 function DraftCanvas({ tpl }: { tpl: WfDef }) {
   const data = useStore(s => s.wfData)!
   const setRun = useStore(s => s.setWfRun)
   const loadWf = useStore(s => s.loadWf)
   const toast = useStore(s => s.toast)
-  const [wf, setWf] = useState(tpl)
+  const [wf, setWf] = useState(() => ({ ...tpl, steps: templateSteps(tpl.steps) }))
+  const [files, setFiles] = useState<Record<string, File[]>>({})
+  const [requestId] = useState(() => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''))
+  const attempted = useRef(false)
   const [topic, setTopic] = useState('')
   const [starting, setStarting] = useState(false)
   const setSteps = (steps: WfStep[]) => setWf({ ...wf, steps })
@@ -89,17 +139,35 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
   const start = async () => {
     setStarting(true)
     try {
-      const r = await api.wf.createRun(tpl.builtin ? { workflow_id: tpl.id, topic } : { workflow: wf, topic })
-      // 内置模板的步骤是服务端规范化的，草稿里的改动要写回去
-      const run = tpl.builtin ? (await api.wf.update(r.run.id, { topic, workflow: wf })).run : r.run
-      // 用 start 返回的状态，页面立刻显示「运行中」并开始轮询
-      setRun((await api.wf.start(run.id)).run); await loadWf()
+      const retry = attempted.current
+      attempted.current = true
+      const { run } = await api.wf.createRun({ workflow: wf, topic, request_id: requestId })
+      if (run.status !== 'draft') { setRun(run); await loadWf(); return }
+      // An interrupted upload can be retried on this same run, including after a lost response.
+      if (retry) await api.wf.update(run.id, { topic, workflow: wf })
+      const selectedFiles = new Set<string>()
+      for (const step of wf.steps) {
+        for (const file of files[step.id] || []) {
+          const upload = await api.wf.uploadAsset(run.id, file, step.id)
+          selectedFiles.add(upload.filename)
+        }
+      }
+      if (retry) {
+        // A previous partial submit may contain a file removed from the local draft.
+        for (const step of run.workflow.steps.filter(s => s.type === 'asset_input')) {
+          for (const filename of step.config.asset_files || []) {
+            if (!selectedFiles.has(filename)) await api.wf.deleteAsset(run.id, filename)
+          }
+        }
+      }
+      setRun((await api.wf.start(run.id, undefined, true)).run)
+      await loadWf()
       toast(`「${wf.name}」已开始运行`, 'ok')
     } catch (e) { toast(e instanceof Error ? e.message : '启动失败', 'err') }
-    setStarting(false)
+    finally { setStarting(false) }
   }
   return (
-    <div className="run">
+    <div className="run" inert={starting}>
       <div className="run-head glass">
         <div className="row between">
           <div className="run-title"><h2>{wf.name}</h2><span className="tag">模板</span><span className="dim tabular">{wf.steps.length} 步</span></div>
@@ -112,9 +180,13 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
       <ol className="rail">
         {wf.steps.map((step, i) => (
           <StepCard key={step.id} draft={wf} step={step} idx={i}
+            local={{ files: files[step.id] || [], change: next => setFiles(all => ({ ...all, [step.id]: next })) }}
             onChange={next => setSteps(wf.steps.map(x => x.id === step.id ? next : x))}
             onMove={d => { const j = i + d; if (j < 0 || j >= wf.steps.length) return; const a = [...wf.steps]; [a[i], a[j]] = [a[j], a[i]]; setSteps(a) }}
-            onRemove={() => setSteps(wf.steps.filter(x => x.id !== step.id))} />
+            onRemove={() => {
+              setSteps(wf.steps.filter(x => x.id !== step.id))
+              setFiles(all => { const next = { ...all }; delete next[step.id]; return next })
+            }} />
         ))}
       </ol>
       <div className="add-step glass">
@@ -125,10 +197,9 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
   )
 }
 
-function WfSidebar({ draft, onOpen }: { draft: WfDef | null; onOpen: (d: WfDef) => void }) {
+function WfSidebar({ draft, onOpen, openRun }: { draft: WfDef | null; onOpen: (d: WfDef) => void; openRun: (id: string) => void }) {
   const data = useStore(s => s.wfData)
   const run = useStore(s => s.wfRun)
-  const openRun = useStore(s => s.openRun)
   const setRun = useStore(s => s.setWfRun)
   const loadWf = useStore(s => s.loadWf)
   const toast = useStore(s => s.toast)
@@ -188,22 +259,44 @@ function RunCanvas({ run }: { run: WfRun }) {
   const [savingTpl, setSavingTpl] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const timer = useRef(0)
+  const pending = useRef<Pick<WfRun, 'topic' | 'workflow'> | null>(null)
+  const writing = useRef<Promise<unknown> | null>(null)
+  const [acting, setActing] = useState(false)
   const running = run.status === 'running'
   useEffect(() => { if (!running) setTopic(run.topic) }, [run.topic]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const flush = async () => {
+    clearTimeout(timer.current)
+    if (writing.current) await writing.current
+    const change = pending.current
+    if (!change) return
+    const write = api.wf.update(run.id, change)
+    writing.current = write
+    try {
+      await write
+      if (pending.current === change) pending.current = null
+    } finally {
+      if (writing.current === write) writing.current = null
+    }
+  }
   const save = (next: Partial<Pick<WfRun, 'topic' | 'workflow'>>) => {
     const merged = { ...run, ...next }
+    pending.current = { topic: merged.topic, workflow: merged.workflow }
     setRun(merged)
     clearTimeout(timer.current)
-    timer.current = window.setTimeout(async () => {
-      try { const r = await api.wf.update(run.id, { topic: merged.topic, workflow: merged.workflow }); setRun(r.run) }
-      catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }
-    }, 450)
+    timer.current = window.setTimeout(() => { flush().catch(e => toast(e.message, 'err')) }, 450)
   }
   const setSteps = (steps: WfStep[]) => save({ workflow: { ...run.workflow, steps } })
-  const act = async (fn: () => Promise<{ run: WfRun }>, msg?: string) => {
-    try { clearTimeout(timer.current); await api.wf.update(run.id, { topic, workflow: run.workflow }).catch(() => {}); const r = await fn(); setRun(r.run); loadWf(); if (msg) toast(msg, 'ok') }
-    catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'err') }
+  const act: RunAction = async (fn, msg) => {
+    setActing(true)
+    try {
+      await flush()
+      const r = await fn()
+      if (useStore.getState().wfRun?.id === run.id) setRun(r.run)
+      await loadWf()
+      if (msg) toast(msg, 'ok')
+    } catch (e) { toast(e instanceof Error ? e.message : '操作失败', 'err') }
+    finally { setActing(false) }
   }
   const addStep = (type: WfStep['type']) => {
     const cat = data.step_catalog.find(c => c.type === type)!
@@ -212,7 +305,7 @@ function RunCanvas({ run }: { run: WfRun }) {
     setSteps([...run.workflow.steps, { id, type, name: `${run.workflow.steps.length + 1}. ${cat.label}`, enabled: true, pause_after: false, config: structuredClone(cat.default_config) }])
   }
   const saveTpl = async (name: string) => {
-    try { await api.wf.saveTemplate({ name, description: run.workflow.description, steps: run.workflow.steps }); toast('已存为模板', 'ok'); loadWf() }
+    try { await api.wf.saveTemplate({ name, description: run.workflow.description, steps: templateSteps(run.workflow.steps) }); toast('已存为模板', 'ok'); loadWf() }
     catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }
     setSavingTpl(false)
   }
@@ -220,7 +313,7 @@ function RunCanvas({ run }: { run: WfRun }) {
   const finalRid = [...run.workflow.steps].reverse().map(s => run.step_states[s.id]?.output?.final_round_id).find(Boolean) as string | undefined
 
   return (
-    <div className="run">
+    <div className="run" inert={acting}>
       <div className="run-head glass">
         <div className="row between">
           <div className="run-title"><h2>{run.workflow.name}</h2><span className={cx('tag', RUN_TAG[run.status])}>{RUN_ZH[run.status]}</span><span className="dim tabular">{done}/{run.workflow.steps.length} 步</span></div>
@@ -229,7 +322,7 @@ function RunCanvas({ run }: { run: WfRun }) {
           <button className="btn sm ghost" onClick={() => setSavingTpl(true)} disabled={running}><Save size={13} />存为模板</button>
           {running ? <button className="btn sm danger" onClick={() => act(() => api.wf.cancel(run.id), '已终止')}><Square size={13} />终止</button>
             : run.status === 'paused' ? <button className="btn sm primary" onClick={() => act(() => api.wf.resume(run.id))}><Play size={13} />继续</button>
-            : <button className="btn sm primary" onClick={() => act(() => api.wf.start(run.id), '开始执行')}><Play size={13} />{run.status === 'draft' ? '运行' : '从头再跑'}</button>}
+            : <button className="btn sm primary" onClick={() => act(() => api.wf.start(run.id, run.status === 'draft' ? undefined : run.workflow.steps[0]?.id), '开始执行')}><Play size={13} />{run.status === 'draft' ? '运行' : '从头再跑'}</button>}
         </div>
         <p className="dim">{run.workflow.description}</p>
         <textarea rows={2} value={topic} disabled={running} placeholder="写下这条流水线的主题，例如：雨夜霓虹街头的 3 镜头短片"
@@ -275,11 +368,10 @@ function FinalCut({ id }: { id: string }) {
   )
 }
 
-function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, draft }: {
+function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, draft, local }: {
   run?: WfRun; step: WfStep; idx: number; state?: StepState
   onChange: (s: WfStep) => void; onMove: (d: number) => void; onRemove: () => void
-  onAct?: (fn: () => Promise<{ run: WfRun }>, msg?: string) => void
-  /** 模板草稿：没有运行记录，上传和单步执行要等点了「运行」之后 */
+  onAct?: RunAction; local?: DraftFiles
   draft?: { steps: WfStep[] }
 }) {
   const catIcon = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.icon)
@@ -307,12 +399,12 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, dr
             <motion.div className="step-b" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.22 }}>
               <div className="step-inner">
                 {state?.error && <div className="warnbox bad">{state.error}</div>}
-                <div className="row wrap">
+                <div className="row wrap" inert={running}>
                   <input type="text" className="step-name" value={step.name} disabled={running} onChange={e => onChange({ ...step, name: e.target.value })} aria-label="步骤名" />
                   <Toggle on={step.enabled} onChange={v => onChange({ ...step, enabled: v })}>启用</Toggle>
                   <Toggle on={step.pause_after} onChange={v => onChange({ ...step, pause_after: v })}>完成后暂停</Toggle>
                 </div>
-                {run ? <StepConfig run={run} step={step} idx={idx} disabled={running} onChange={onChange} /> : <StepConfig steps={steps} step={step} idx={idx} disabled={running} onChange={onChange} />}
+                <StepConfig run={run} steps={steps} step={step} idx={idx} disabled={running} onChange={onChange} local={local} onAct={onAct} />
                 {run && hasOut && <StepOutput run={run} step={step} state={state!} disabled={running} />}
                 <div className="row wrap step-actions">
                   {run && <><button className="btn sm" disabled={running} onClick={() => onAct!(() => api.wf.retry(run.id, step.id, true), '只跑这一步')}><RotateCcw size={13} />只跑这一步</button>
@@ -331,21 +423,31 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, dr
   )
 }
 
-function StepConfig({ run, steps, step, idx, disabled, onChange }: { run?: WfRun; steps?: WfStep[]; step: WfStep; idx: number; disabled: boolean; onChange: (s: WfStep) => void }) {
+function StepConfig({ run, steps, step, idx, disabled, onChange, local, onAct }: {
+  run?: WfRun; steps: WfStep[]; step: WfStep; idx: number; disabled: boolean; onChange: (s: WfStep) => void
+  local?: DraftFiles; onAct?: RunAction
+}) {
   const cfg = useStore(s => s.cfg)
   const toast = useStore(s => s.toast)
   const open = useStore(s => s.openSheet)
-  const setRun = useStore(s => s.setWfRun)
   const fileRef = useRef<HTMLInputElement>(null)
-  const prev = (run?.workflow.steps || steps || []).slice(0, idx)
+  const prev = steps.slice(0, idx)
   const set = (k: string, v: unknown) => onChange({ ...step, config: { ...step.config, [k]: v } })
-  const upload = async (files: FileList) => {
-    if (!run) return
-    for (const f of [...files]) {
-      try { const r = await api.wf.uploadAsset(run.id, f, step.id); set('asset_files', [...(step.config.asset_files || []), r.filename]) }
-      catch (e) { toast(e instanceof Error ? e.message : '上传失败', 'err') }
+  const setPool = (pool: string[]) => onChange({ ...step, config: { ...step.config, gpu: pool[0], gpu_pool: pool } })
+  const defaults = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.default_config)
+  const upload = (files: File[]) => {
+    if (!files.length) return
+    if (files.some(f => !['image/png', 'image/jpeg', 'image/webp'].includes(f.type) || f.size > (cfg?.limits.upload_max_mb || 12) * 1048576)) {
+      toast('请使用 12 MB 以内的 PNG、JPEG 或 WebP 图片', 'err')
+      return
     }
-    api.wf.run(run.id).then(r => setRun(r.run)).catch(() => {})
+    if (local) local.change([...local.files, ...files])
+    else if (run && onAct) onAct(async () => {
+      try {
+        for (const file of files) await api.wf.uploadAsset(run.id, file, step.id)
+      } catch (e) { toast(e instanceof Error ? e.message : '上传失败', 'err') }
+      return api.wf.run(run.id)
+    })
   }
   const field = (k: string, v: unknown) => {
     const label = LABELS[k] || k
@@ -364,12 +466,30 @@ function StepConfig({ run, steps, step, idx, disabled, onChange }: { run?: WfRun
         })}{!prev.length && <span className="dim">前面没有可引用的步骤</span>}</div></div>
     )
     if (k === 'model') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}>{cfg?.image_models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
-    if (k === 'gpu') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}>{cfg?.gpus.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}</select></label>
+    if (k === 'gpu') return <label className="field" key={k}><span className="fl">{label}</span>
+      <select value={String(v)} disabled={disabled} onChange={e => setPool([e.target.value])} title="切换首选 GPU 会重置候补列表">
+        {cfg?.gpus.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
+      </select></label>
+    if (k === 'gpu_pool') {
+      const primary = step.config.gpu
+      const backups: string[] = Array.isArray(v) ? v.filter(id => id !== primary) : []
+      return <div className="field wide" key={k}><span className="fl">{label}</span>
+        <div className="chips" role="group" aria-label={label}>{cfg?.gpus.filter(g => g.id !== primary).map(g => {
+          const pos = backups.indexOf(g.id)
+          return <button type="button" key={g.id} className={cx('chip', pos >= 0 && 'on')} disabled={disabled}
+            aria-label={g.label} aria-pressed={pos >= 0} onClick={() => setPool([primary, ...(pos >= 0 ? backups.filter(id => id !== g.id) : [...backups, g.id])])}>
+            {g.label}{pos >= 0 && ` · ${pos + 1}`}
+          </button>
+        })}</div></div>
+    }
     if (k === 'workflow') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}>{cfg?.video_workflows.map(w => <option key={w.id} value={w.id}>{w.label}</option>)}</select></label>
-    if (k === 'offload_mode') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}>{cfg?.video_offload_modes.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>
+    if (k === 'offload_mode') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => onChange({ ...step, config: { ...step.config, offload_mode: e.target.value, auto_offload: e.target.value !== 'none' } })}>{cfg?.video_offload_modes.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}</select></label>
     if (k === 'output_format') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}><option value="storyboard">结构化分镜</option><option value="text">纯文本</option></select></label>
-    if (k === 'transition') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}><option value="fade">淡入淡出</option><option value="none">硬切</option></select></label>
+    if (k === 'transition') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}><option value="fade">淡入淡出</option><option value="cut">硬切</option></select></label>
     if (k === 'role') return <label className="field" key={k}><span className="fl">{label}</span><select value={String(v)} disabled={disabled} onChange={e => set(k, e.target.value)}><option value="character">角色人设</option><option value="style">风格参考</option><option value="scene">场景参考</option></select></label>
+    if (k === 'auto_offload' && step.config.offload_mode) return null
+    if (typeof v === 'boolean' || typeof defaults?.[k] === 'boolean') return <div className="field" key={k}>
+      <Toggle on={v === true} disabled={disabled} onChange={on => set(k, on)}>{label}</Toggle></div>
     if (Array.isArray(v)) return <label className="field" key={k}><span className="fl">{label}</span><input type="text" disabled={disabled} value={(v as string[]).join(', ')} placeholder="逗号分隔" onChange={e => set(k, e.target.value.split(/[,，\s]+/).filter(Boolean))} /></label>
     if (typeof v === 'number') return <label className="field" key={k}><span className="fl">{label}</span><input type="number" disabled={disabled} value={v} step={k === 'cfg' || k === 'fade_s' ? 0.05 : 1} onChange={e => set(k, +e.target.value)} /></label>
     const long = ['instruction', 'prompt_template', 'note'].includes(k)
@@ -383,14 +503,17 @@ function StepConfig({ run, steps, step, idx, disabled, onChange }: { run?: WfRun
         <div className="field wide"><span className="fl">素材</span>
           <div className="asset-row">
             {run && (step.config.asset_files as string[] || []).map(f => (
-              <figure key={f} className="ref-tile"><img src={media.asset(run.id, f)} alt="" />
-                {!disabled && <button className="ref-x" onClick={() => { set('asset_files', (step.config.asset_files as string[]).filter(x => x !== f)); api.wf.deleteAsset(run.id, f).catch(() => {}) }} aria-label="移除"><X size={12} /></button>}</figure>
+              <figure key={f} className="ref-tile"><img src={media.assetThumb(run.id, f)} alt="" />
+                {!disabled && <button className="ref-x" onClick={() => onAct?.(async () => {
+                  await api.wf.deleteAsset(run.id, f)
+                  return api.wf.run(run.id)
+                })} aria-label="移除"><X size={12} /></button>}</figure>
             ))}
-            {!disabled && run && <button className="ref-add" onClick={() => fileRef.current?.click()}><Upload size={15} /><span>上传</span></button>}
+            {local?.files.map((file, i) => <LocalImage key={i} file={file} remove={() => local.change(local.files.filter((_, n) => n !== i))} />)}
+            {!disabled && <button className="ref-add" onClick={() => fileRef.current?.click()}><Upload size={15} /><span>上传</span></button>}
             {!disabled && <button className="ref-add" onClick={() => open('picker', { onPick: (r: { id: string }) => set('round_ids', [...(step.config.round_ids || []), r.id]) })}><Copy size={15} /><span>从作品库</span></button>}
           </div>
-          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={e => { if (e.target.files) upload(e.target.files); e.target.value = '' }} />
-          {!run && <span className="help">本地上传要先点「运行」建好记录；现在可以先从作品库挑。</span>}
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={e => { if (e.target.files) upload([...e.target.files]); e.target.value = '' }} />
         </div>
       )}
       {Object.entries(step.config).filter(([k]) => !HIDDEN.has(k)).map(([k, v]) => field(k, v))}
@@ -426,7 +549,7 @@ function StepOutput({ run, step, state, disabled }: { run: WfRun; step: WfStep; 
       )}
       {step.type === 'llm_script' && out.format === 'text' && <pre className="logbox sm">{out.text}</pre>}
       {step.type === 'web_asset_fetch' && Array.isArray(out.images) && (
-        <div className="out-grid">{(out.images as { filename: string; title: string }[]).map(im => <figure key={im.filename}><img src={media.asset(run.id, im.filename)} alt="" /><figcaption>{im.title}</figcaption></figure>)}</div>
+        <div className="out-grid">{(out.images as { filename: string; title: string }[]).map(im => <figure key={im.filename}><img src={media.assetThumb(run.id, im.filename)} alt="" /><figcaption>{im.title}</figcaption></figure>)}</div>
       )}
       {(step.type === 'image_gen' || step.type === 'video_gen') && Array.isArray(out.round_ids) && thumbs(out.round_ids)}
       {step.type === 'h3_prompt' && Array.isArray(out.items) && (

@@ -32,7 +32,7 @@ const EMPTY_DRAFT: Draft = {
 }
 
 interface Store {
-  booted: boolean; bootError: string
+  booted: boolean; bootError: string; statusError: string
   cfg: Config | null; status: Status | null; storage: Storage | null
   rounds: Round[]; roundsRev: number
   logSeq: number; logs: string[]
@@ -67,15 +67,15 @@ interface Store {
   generate: () => Promise<void>
   applyPreset: (p: StudioPreset) => void
   loadWf: () => Promise<void>
-  openRun: (id: string) => Promise<void>
   setWfRun: (r: WfRun | null) => void
 }
 
 let toastSeq = 1
 let saveTimer = 0
+let booting: Promise<void> | null = null
 
 export const useStore = create<Store>((set, get) => ({
-  booted: false, bootError: '',
+  booted: false, bootError: '', statusError: '',
   cfg: null, status: null, storage: null,
   rounds: [], roundsRev: -1,
   logSeq: 0, logs: [],
@@ -92,27 +92,25 @@ export const useStore = create<Store>((set, get) => ({
   llm: null,
   // 作品库默认收起，和旧版一致；展开状态按浏览器记住
   libraryOpen: lsGet<boolean>('cs.libopen', false),
-  loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch { /* 设置页会提示 */ } },
+  loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch (e) { if (!(e instanceof ApiError && e.status === 401)) get().toast(e instanceof Error ? e.message : '加载改写模型失败', 'err') } },
   setLibraryOpen: v => { lsSet('cs.libopen', v); set({ libraryOpen: v }) },
   grabPool: lsGet<string[]>('cs.grab', ['A100', 'H100']),
   pollRounds: lsGet<number>('cs.rounds', 2),
   pollAllProxies: lsGet<boolean>('cs.pollpx', false),
 
-  boot: async () => {
-    try {
-      const cfg = await api.config()
-      set({ cfg, booted: true })
-      await get().refresh()
-      get().loadRounds()
-      get().loadLlm()
-      api.storage().then(storage => set({ storage })).catch(() => {})
-      const loop = () => {
-        window.setTimeout(async () => { await get().refresh(); loop() }, document.hidden ? 10000 : busy() ? 1300 : 5000)
+  boot: () => {
+    if (booting) return booting
+    booting = (async () => {
+      try {
+        const cfg = await api.config()
+        set({ cfg, booted: true, bootError: '' })
+        await get().refresh()
+        await get().loadLlm()
+      } catch (e) {
+        set({ bootError: e instanceof Error ? e.message : '无法连接服务' })
       }
-      loop()
-    } catch (e) {
-      set({ bootError: e instanceof ApiError ? e.message : '无法连接服务' })
-    }
+    })().finally(() => { booting = null })
+    return booting
   },
   refresh: async () => {
     try {
@@ -121,10 +119,12 @@ export const useStore = create<Store>((set, get) => ({
       const logs = st.logs.length ? [...get().logs, ...st.logs].slice(-600) : get().logs
       const patch: Partial<Store> = { status: st, logs, logSeq: st.log_seq }
       if (st.gallery_rev !== get().roundsRev && get().booted) get().loadRounds()
-      set(patch)
+      set({ ...patch, bootError: '', statusError: '' })
       if (st.phase === 'error' && st.error && get().toasts.every(t => t.text !== st.error)) get().toast(st.error, 'err')
     } catch (e) {
-      if (e instanceof ApiError && e.status !== 401) { /* 断线时顶栏会显示状态 */ }
+      if (e instanceof ApiError && e.status === 401) return
+      const message = e instanceof Error ? e.message : '无法读取工作台状态'
+      set(get().status ? { statusError: message } : { bootError: message })
     }
   },
   loadRounds: async () => {
@@ -193,23 +193,27 @@ export const useStore = create<Store>((set, get) => ({
     const d: Partial<Draft> = { width: p.width, height: p.height, steps: p.steps, cfg: p.cfg, gpu: p.gpu || get().draft.gpu }
     if (p.loras) d.loras = p.loras
     if (p.mode === 'video') { d.workflow = p.workflow || 't2va'; d.frames = p.num_frames || 124; d.offload = p.offload_mode || 'auto'; set({ workspace: 'video' }) }
-    else { d.model = p.model || get().draft.model; d.engine = 'diffusers'; set({ workspace: 'image' }) }
+    else {
+      d.engine = p.engine || 'diffusers'
+      d.model = p.model || get().draft.model
+      if (d.engine === 'comfyui' && p.comfy) Object.assign(d, {
+        comfyTemplate: p.comfy.template, comfyDiff: p.comfy.diffusion, comfyTe: p.comfy.text_encoder,
+        comfyVae: p.comfy.vae, comfySampler: p.comfy.sampler, comfyScheduler: p.comfy.scheduler,
+      })
+      set({ workspace: 'image' })
+    }
     get().patchDraft(d); get().toast(`已套用「${p.name}」`, 'ok')
   },
   loadWf: async () => {
     try {
       const wfData = await api.wf.list()
       set({ wfData })
-      if (!get().wfRun && wfData.runs.length) await get().openRun(wfData.runs[0].id)
     } catch (e) { get().toast(e instanceof Error ? e.message : '加载工作流失败', 'err') }
-  },
-  openRun: async id => {
-    try { const r = await api.wf.run(id); set({ wfRun: r.run }) } catch (e) { get().toast(e instanceof Error ? e.message : '打开失败', 'err') }
   },
   setWfRun: r => set({ wfRun: r }),
 }))
 
-function busy() {
+export function busy() {
   const st = useStore.getState().status
   return !!(st && (st.current || st.queue.length || st.phase === 'stopping' || st.phase === 'starting' || st.workflow_active?.status === 'running'))
 }

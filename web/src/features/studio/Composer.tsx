@@ -56,9 +56,12 @@ export function Composer() {
       const r = await api.presets.save({
         name, mode: video ? 'video' : 'image', gpu: draft.gpu, width: draft.width, height: draft.height,
         steps: draft.steps, cfg: draft.cfg, loras: draft.loras.filter(l => l.repo_id),
-        ...(video ? { workflow: draft.workflow, num_frames: draft.frames, offload_mode: draft.offload } : { model: draft.model }),
+        ...(video ? { workflow: draft.workflow, num_frames: draft.frames, offload_mode: draft.offload } : draft.engine === 'comfyui' ? {
+          engine: draft.engine, comfy: { template: draft.comfyTemplate, diffusion: draft.comfyDiff, text_encoder: draft.comfyTe,
+            vae: draft.comfyVae, sampler: draft.comfySampler, scheduler: draft.comfyScheduler },
+        } : { engine: draft.engine, model: draft.model }),
       })
-      if (status) useStore.setState({ status: { ...status, studio_presets: r.presets } })
+      if (status) useStore.setState({ status: { ...status, studio_presets: r.custom } })
       toast(`已保存预设「${name}」`, 'ok')
     } catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }
     setSavingPreset(false)
@@ -213,7 +216,7 @@ function PresetBar({ video, onSave }: { video: boolean; onSave: () => void }) {
   const mode = video ? 'video' : 'image'
   const all = useMemo(() => [...(status?.studio_presets || []), ...(cfg?.studio_presets.builtin || [])].filter(p => p.mode === mode), [status, cfg, mode])
   const del = async (id: string) => {
-    try { const r = await api.presets.delete(id); if (status) useStore.setState({ status: { ...status, studio_presets: r.presets } }); toast('已删除预设', 'ok') }
+    try { const r = await api.presets.delete(id); if (status) useStore.setState({ status: { ...status, studio_presets: r.custom } }); toast('已删除预设', 'ok') }
     catch (e) { toast(e instanceof Error ? e.message : '删除失败', 'err') }
   }
   return (

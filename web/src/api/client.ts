@@ -1,9 +1,9 @@
 // 唯一的网络出口。组件只调用 api.xxx()，不直接 fetch。
 // mock 模式下请求交给 src/mock/server.ts，真实模式走同源 /api/*。
 import type {
-  CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, GeneratePayload, LinkSpec, ProxyState, ProxyTest,
+  AssetUpload, CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, GeneratePayload, LinkSpec, ProxyProfileBody, ProxyState, ProxyTest,
   References, RewriteBody, RoundsResponse, Round, Status, Storage, StudioPreset, TrashResponse, WfDef, WfRun, WorkflowsResponse,
-  LlmProviderBody, LlmState,
+  LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult,
 } from './types'
 
 export class ApiError extends Error {
@@ -32,9 +32,10 @@ async function request<T>(method: string, path: string, body?: Body): Promise<T>
     ;(init.headers as Record<string, string>)['Content-Type'] = 'application/json'
   }
   const res = await fetch(BASE + path, init)
-  if (res.status === 401) { location.href = 'login'; throw new ApiError(401, '需要登录') }
+  if (res.status === 401 && path !== 'api/login') location.hash = 'login'
   const ct = res.headers.get('content-type') || ''
-  const data = ct.includes('json') ? await res.json().catch(() => ({})) : {}
+  if (!ct.includes('json')) throw new ApiError(res.status, `服务返回了非 JSON 响应（HTTP ${res.status}）`)
+  const data = await res.json()
   if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`)
   return data as T
 }
@@ -52,19 +53,21 @@ export const media = {
   trashThumb: (r: Round) => (__MOCK__ ? mockMedia.thumb(r.id) : r.has_thumb ? `api/trash/${r.id}/thumb` : `api/trash/${r.id}`),
   ref: (id: string, t: number) => (__MOCK__ ? mockMedia.ref(id) : `api/reference?id=${enc(id)}&t=${t}`),
   slot: (slot: 'first' | 'last', t: number) => (__MOCK__ ? mockMedia.ref(slot) : `api/reference?slot=${slot}&t=${t}`),
-  asset: (runId: string, f: string) => (__MOCK__ ? mockMedia.ref(f) : `api/workflows/runs/${enc(runId)}/assets/${enc(f)}`),
+  assetThumb: (runId: string, f: string) => (__MOCK__ ? mockMedia.ref(f) : `api/workflows/runs/${enc(runId)}/assets/${enc(f)}?thumb=1`),
 }
 export const mockMedia = {
   round: (_id: string) => '', thumb: (_id: string) => '', ref: (_k: string) => '',
 }
 
 export const api = {
+  login: (password: string) => post<SessionResult>('api/login', { password }),
+  logout: () => post<SessionResult>('api/logout'),
   config: () => get<Config>('api/config'),
   status: (since: number) => get<Status>(`api/status?log_since=${since}`),
   storage: () => get<Storage>('api/storage'),
 
   generate: (p: GeneratePayload) => post<{ ok: true; jobs: { id: string; status: string }[] }>('api/generate', p),
-  rewrite: (b: RewriteBody) => post<{ prompt: string; format?: string }>('api/prompt', b),
+  rewrite: (b: RewriteBody) => post<RewriteResult>('api/prompt', b),
   stop: (clear_queue = false) => post('api/stop', { clear_queue }),
   release: () => post('api/release'),
   unqueue: (id: string) => del(`api/queue/${enc(id)}`),
@@ -94,8 +97,8 @@ export const api = {
     deletePreset: (id: string) => del<{ presets: ComfyPreset[] }>(`api/comfy/presets/${enc(id)}`),
   },
   presets: {
-    save: (p: Partial<StudioPreset>) => post<{ preset: StudioPreset; presets: StudioPreset[] }>('api/presets', p),
-    delete: (id: string) => del<{ presets: StudioPreset[] }>(`api/presets/${enc(id)}`),
+    save: (p: Partial<StudioPreset>) => post<{ preset: StudioPreset; custom: StudioPreset[] }>('api/presets', p),
+    delete: (id: string) => del<{ custom: StudioPreset[] }>(`api/presets/${enc(id)}`),
   },
   listLoras: (repo_id: string) => post<{ files: string[] }>('api/hf/list-loras', { repo_id }),
 
@@ -104,7 +107,7 @@ export const api = {
     save: (b: LlmProviderBody) => post<LlmState>('api/llm/providers', b),
     remove: (id: string) => del<LlmState>(`api/llm/providers/${enc(id)}`),
     fetchModels: (id: string) => post<LlmState>(`api/llm/providers/${enc(id)}/models`, {}),
-    test: (id: string, model?: string) => post<{ ok: boolean; ms: number; model: string; error: string }>(`api/llm/providers/${enc(id)}/test`, { model }),
+    test: (id: string, model?: string) => post<ProbeResult>(`api/llm/providers/${enc(id)}/test`, { model }),
     setActive: (provider_id: string, model: string) => post<LlmState>('api/llm/active', { provider_id, model }),
   },
 
@@ -117,24 +120,26 @@ export const api = {
     grab: (b: { gpu_pool: string[]; poll_rounds: number; poll_all_proxies: boolean }) => post('api/colab/grab', b),
   },
   proxy: {
-    set: (active: string, custom_url?: string) => post<ProxyState>('api/proxy', custom_url ? { active, custom_url } : { active }),
-    test: () => post<ProxyTest>('api/proxy/test', {}),
+    set: (active: string) => post<ProxyState>('api/proxy', { active }),
+    save: (b: ProxyProfileBody) => post<ProxyState>('api/proxy/profiles', b),
+    remove: (id: string) => del<ProxyState>(`api/proxy/profiles/${enc(id)}`),
+    test: (profile: string) => post<ProxyTest>('api/proxy/test', { profile }),
   },
 
   wf: {
     list: () => get<WorkflowsResponse>('api/workflows'),
     saveTemplate: (wf: Partial<WfDef>) => post<{ workflow: WfDef; custom: WfDef[] }>('api/workflows', wf),
     deleteTemplate: (id: string) => del<{ custom: WfDef[] }>(`api/workflows/${enc(id)}`),
-    createRun: (b: { workflow_id?: string; workflow?: Partial<WfDef>; topic?: string }) => post<{ run: WfRun }>('api/workflows/runs', b),
+    createRun: (b: { request_id?: string; workflow_id?: string; workflow?: Partial<WfDef>; topic?: string }) => post<{ run: WfRun }>('api/workflows/runs', b),
     run: (id: string) => get<{ run: WfRun }>(`api/workflows/runs/${enc(id)}`),
     update: (id: string, b: { topic?: string; workflow?: WfDef }) => patch<{ run: WfRun }>(`api/workflows/runs/${enc(id)}`, b),
     deleteRun: (id: string) => del(`api/workflows/runs/${enc(id)}`),
-    start: (id: string, from_step_id?: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/start`, { from_step_id }),
+    start: (id: string, from_step_id?: string, draft_only = false) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/start`, { from_step_id, draft_only }),
     resume: (id: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/resume`, {}),
     cancel: (id: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/cancel`, {}),
     retry: (id: string, step: string, single_step = true) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/retry`, { single_step }),
     saveOutput: (id: string, step: string, output: Record<string, unknown>) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/output`, { output }),
-    uploadAsset: (id: string, file: Blob, step_id: string) => request<{ assets: unknown[]; filename: string }>('POST', `api/workflows/runs/${enc(id)}/assets?step_id=${enc(step_id)}&label=upload`, file),
+    uploadAsset: (id: string, file: Blob, step_id: string) => request<AssetUpload>('POST', `api/workflows/runs/${enc(id)}/assets?step_id=${enc(step_id)}&label=upload`, file),
     deleteAsset: (id: string, f: string) => del(`api/workflows/runs/${enc(id)}/assets/${enc(f)}`),
   },
 }

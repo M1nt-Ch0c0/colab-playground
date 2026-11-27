@@ -41,11 +41,11 @@ from colab_cli.contents import ContentsClient
 from colab_cli.runtime import ColabRuntime
 from colab_cli.state import SessionState, StateStore
 
+from ..logs import redact_secrets
+
 TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
 STATUS_TTL_SECONDS = 15.0
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{10,}")
-PROXY_CRED_RE = re.compile(r"(https?://)([^:@/\s]+):([^@/\s]+)@")
 TQDM_RE = re.compile(
     r"^(?:(?P<label>[^|\r\n]*?)\s*:?\s*)?(?P<pct>\d{1,3})%\|[^|\r\n]*\|\s*(?P<detail>[^\[\r\n]*?)\s*(?P<rate>\[[^\]\r\n]*\])?\s*$"
 )
@@ -64,11 +64,6 @@ SINGLE_SHAPE_GPUS: frozenset[str] = frozenset({"H100", "G4", "L4"})
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
-
-
-def redact_secrets(text: str) -> str:
-    text = HF_TOKEN_RE.sub("hf_***", text)
-    return PROXY_CRED_RE.sub(r"\1***@", text)
 
 
 def parse_tqdm_line(raw: str) -> Optional[dict[str, Any]]:
