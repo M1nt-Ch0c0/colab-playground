@@ -1,10 +1,11 @@
 import { Brush, Crop, ImageIcon, Scissors, Undo2 } from 'lucide-react'
-import { useRef, useState, type PointerEvent } from 'react'
-import { api, media } from '../../api/client'
+import { useEffect, useRef, useState, type PointerEvent } from 'react'
+import { api, ApiError, media } from '../../api/client'
 import type { BrushStroke, CropBox, Round } from '../../api/types'
 import { clamp, rid } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Modal, Seg } from '../../ui/Overlay'
+import { AGENT_COPY as C, errorCopy } from '../workflow/agentCopy'
 
 export function MediaEditor({ mode }: { mode: 'mask' | 'crop' | 'clip' }) {
   const id = useStore(s => s.sheetArgs.id)
@@ -101,11 +102,24 @@ function MaskEditor({ round }: { round: Round }) {
   const existing = useStore(s => s.draft.editMask)
   const close = useStore(s => s.closeSheet)
   const toast = useStore(s => s.toast)
+  const maskId = useStore(s => s.sheetArgs.maskId)
   const [strokes, setStrokes] = useState<BrushStroke[]>(existing?.source_id === round.id ? existing.strokes : [])
+  const [saving, setSaving] = useState(false)
   const [size, setSize] = useState(8)
   const [loaded, setLoaded] = useState(false)
   const pointer = useRef<number | null>(null)
   const count = useRef(strokes.reduce((n, s) => n + s.points.length, 0))
+  const edited = useRef(false)
+  useEffect(() => {
+    if (typeof maskId !== 'string') return
+    let active = true
+    api.wf.mask(maskId).then(mask => {
+      if (!active || edited.current || mask.source_id !== round.id) return
+      setStrokes(mask.strokes)
+      count.current = mask.strokes.reduce((n, stroke) => n + stroke.points.length, 0)
+    }).catch(error => { if (active) toast(errorCopy(error instanceof ApiError ? error.code : undefined).text, 'err') })
+    return () => { active = false }
+  }, [maskId, round.id, toast])
   const w = round.width || 1, h = round.height || 1
   const point = (e: PointerEvent<SVGSVGElement>): [number, number] => {
     const bounds = e.currentTarget.getBoundingClientRect()
@@ -117,6 +131,7 @@ function MaskEditor({ round }: { round: Round }) {
     e.currentTarget.setPointerCapture(e.pointerId)
     pointer.current = e.pointerId
     const first = point(e)
+    edited.current = true
     count.current++
     setStrokes(old => [...old, { size: size / 100, points: [first] }])
   }
@@ -129,17 +144,26 @@ function MaskEditor({ round }: { round: Round }) {
       return [...old.slice(0, -1), { ...last, points: [...last.points, next] }]
     })
   }
-  const apply = () => {
-    const s = useStore.getState()
-    s.setWorkspace('image')
-    s.patchDraft({ editMask: { source_id: round.id, strokes }, useRef: false, chain: false })
-    close()
-    toast('选区已保存，请填写修改要求', 'ok')
-    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea[rows="4"]')?.focus())
+  const apply = async () => {
+    const editMask = { source_id: round.id, strokes }
+    const sheetArgs = useStore.getState().sheetArgs
+    setSaving(true)
+    try {
+      const mask = await api.wf.createMask(editMask)
+      const s = useStore.getState()
+      if (s.sheet !== 'mask' || s.sheetArgs !== sheetArgs) return
+      s.setWorkspace('image')
+      s.patchDraft({ editMask, maskId: mask.mask_id, useRef: false, chain: false })
+      close()
+      toast(C.toast.saved, 'ok')
+      requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea[rows="4"]')?.focus())
+    } catch (error) {
+      toast(errorCopy(error instanceof ApiError ? error.code : undefined).text, 'err')
+    } finally { setSaving(false) }
   }
 
   return <Modal wide title={`局部改图 · ${rid(round.id)}`} icon={<Brush size={16} />} onClose={close}
-    foot={<><button className="btn" onClick={close}>取消</button><button className="btn primary" disabled={!loaded || !strokes.length} onClick={apply}>使用这个选区</button></>}>
+    foot={<><button className="btn" onClick={close}>取消</button><button className="btn primary" disabled={!loaded || !strokes.length || saving} onClick={apply}>使用这个选区</button></>}>
     <div className="edit-surface">
       <svg className="mask-canvas" style={{ width: `min(100%, ${46 * w / h}dvh)` }} viewBox={`0 0 ${w} ${h}`} aria-label="在原图上涂抹修改区域"
         onPointerDown={start} onPointerMove={move} onLostPointerCapture={() => { pointer.current = null }}>

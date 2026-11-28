@@ -3,6 +3,111 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentConversation */
+        AgentConversation: {
+            /** Exchanges */
+            exchanges: components["schemas"]["AgentExchange"][];
+        };
+        /** AgentExchange */
+        AgentExchange: {
+            /** Id */
+            id: string;
+            /** User */
+            user: string;
+            /** Answer */
+            answer: string;
+            /** Tools */
+            tools: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * State
+             * @constant
+             */
+            state: "done";
+            /** Proposals */
+            proposals?: components["schemas"]["Proposal"][];
+            /** Operation Id */
+            operation_id?: string | null;
+        };
+        /** AgentInventory */
+        AgentInventory: {
+            /** Builtin Tools */
+            builtin_tools: {
+                [key: string]: string;
+            };
+            plugin: components["schemas"]["AgentPlugin"];
+        };
+        /** AgentMessage */
+        AgentMessage: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Text */
+            text: string;
+        };
+        /** AgentPlugin */
+        AgentPlugin: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Version */
+            version: string;
+            /** Description */
+            description: string;
+            /** Tool */
+            tool: string;
+            /** Installed */
+            installed: boolean;
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** AgentTurn */
+        AgentTurn: {
+            /** Message */
+            message: string;
+            /** History */
+            history?: components["schemas"]["AgentMessage"][];
+            /** Workflow */
+            workflow: {
+                [key: string]: unknown;
+            };
+            /**
+             * Topic
+             * @default
+             */
+            topic?: string;
+            /**
+             * Selected Step
+             * @default
+             */
+            selected_step?: string;
+            /** Selected Shot */
+            selected_shot?: string | null;
+            /**
+             * Workspace
+             * @default workflow
+             * @enum {string}
+             */
+            workspace?: "workflow" | "image" | "video";
+            composer?: components["schemas"]["ComposerContext"] | null;
+            /** Composer Scope */
+            composer_scope?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Draft Id */
+            draft_id?: string | null;
+            /** Turn Id */
+            turn_id?: string | null;
+            /**
+             * Reload Plugins
+             * @default false
+             */
+            reload_plugins?: boolean;
+        };
         /** AssetInfo */
         AssetInfo: {
             /** Filename */
@@ -34,6 +139,118 @@ export interface components {
              */
             mute?: boolean;
         };
+        /** ComposerContext */
+        ComposerContext: {
+            /** Prompt */
+            prompt?: string | null;
+            /** Idea */
+            idea?: string | null;
+            /** Negative */
+            negative?: string | null;
+            /** Mode */
+            mode?: ("image" | "video") | null;
+            /** Engine */
+            engine?: ("diffusers" | "comfyui") | null;
+            /** Model */
+            model?: string | null;
+            comfy?: components["schemas"]["CreativeComfy"] | null;
+            /** Loras */
+            loras?: components["schemas"]["CreativeLora"][] | null;
+            /** Custom Transformer Repo */
+            custom_transformer_repo?: string | null;
+            /** Custom Transformer File */
+            custom_transformer_file?: string | null;
+            /** Workflow */
+            workflow?: ("t2va" | "fl2va" | "ref2va") | null;
+            /** Video Task */
+            video_task?: ("edit" | "continue" | "motion" | "images") | null;
+            /** Num Frames */
+            num_frames?: number | null;
+            /** Offload Mode */
+            offload_mode?: ("auto" | "component" | "group" | "none") | null;
+            /** Width */
+            width?: number | null;
+            /** Height */
+            height?: number | null;
+            /** Steps */
+            steps?: number | null;
+            /** Cfg */
+            cfg?: number | null;
+            /** Seed */
+            seed?: number | null;
+            /** Count */
+            count?: number | null;
+            /** Chain */
+            chain?: boolean | null;
+            /** Has Image */
+            has_image?: boolean | null;
+            /** Has Last Image */
+            has_last_image?: boolean | null;
+            /** Reference Round Ids */
+            reference_round_ids?: string[] | null;
+            /** Last Frame Round Id */
+            last_frame_round_id?: string | null;
+            /** Video Round Id */
+            video_round_id?: string | null;
+            /** Video Reference Id */
+            video_reference_id?: string | null;
+            /** Mask Id */
+            mask_id?: string | null;
+            /** Revision */
+            revision?: string | null;
+        };
+        /** ComposerPrompt */
+        ComposerPrompt: {
+            /**
+             * Workspace
+             * @enum {string}
+             */
+            workspace: "image" | "video";
+            /** Prompt */
+            prompt: string;
+        };
+        /** ComposerWriteResult */
+        ComposerWriteResult: {
+            /**
+             * Workspace
+             * @enum {string}
+             */
+            workspace: "image" | "video";
+            /** Prompt */
+            prompt: string;
+            proposal: components["schemas"]["Proposal"];
+        };
+        /** CreativeComfy */
+        CreativeComfy: {
+            /** Template */
+            template?: string | null;
+            /** Diffusion */
+            diffusion?: string | null;
+            /** Text Encoder */
+            text_encoder?: string | null;
+            /** Vae */
+            vae?: string | null;
+            /** Sampler */
+            sampler?: string | null;
+            /** Scheduler */
+            scheduler?: string | null;
+            /** Clip Type */
+            clip_type?: string | null;
+            /** Denoise */
+            denoise?: number | null;
+        };
+        /** CreativeLora */
+        CreativeLora: {
+            /** Repo Id */
+            repo_id: string;
+            /** Weight Name */
+            weight_name: string;
+            /**
+             * Scale
+             * @default 1
+             */
+            scale?: number;
+        };
         /** CropRequest */
         CropRequest: {
             /** X */
@@ -59,16 +276,115 @@ export interface components {
              */
             time_s?: number;
         };
+        /** InterruptTurn */
+        InterruptTurn: {
+            /** Turn Id */
+            turn_id: string;
+        };
         /** LlmState */
         LlmState: {
             /** Providers */
             providers: components["schemas"]["ProviderInfo"][];
             active: components["schemas"]["Selection"] | null;
         };
+        /** MaskInput */
+        MaskInput: {
+            /** Source Id */
+            source_id: string;
+            /** Strokes */
+            strokes: components["schemas"]["MaskStroke"][];
+        };
+        /** MaskRecord */
+        MaskRecord: {
+            /** Source Id */
+            source_id: string;
+            /** Strokes */
+            strokes: components["schemas"]["MaskStroke"][];
+            /** Mask Id */
+            mask_id: string;
+            /** Created At */
+            created_at: number;
+            /** Expires At */
+            expires_at: number;
+        };
+        /** MaskStroke */
+        MaskStroke: {
+            /** Size */
+            size: number;
+            /** Points */
+            points: [
+                number,
+                number
+            ][];
+        };
         /** Ok */
         Ok: {
             /** Ok */
             ok: boolean;
+        };
+        /** Operation */
+        Operation: {
+            /** Operation Id */
+            operation_id: string;
+            /** Scope Key */
+            scope_key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "image" | "video";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "awaiting_approval" | "queued" | "running" | "partial" | "done" | "failed" | "canceled" | "unknown";
+            /** Total */
+            total: number;
+            /** Done */
+            done: number;
+            /** Model */
+            model: string;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Num Frames */
+            num_frames?: number | null;
+            /** References */
+            references: components["schemas"]["ReferenceUsed"][];
+            /** Results */
+            results: components["schemas"]["ReferenceUsed"][];
+            /** Items */
+            items: components["schemas"]["OperationItem"][];
+            /** Needs Compute */
+            needs_compute: boolean;
+            /** Created At */
+            created_at: number;
+            /** Updated At */
+            updated_at: number;
+        };
+        /** OperationItem */
+        OperationItem: {
+            /** Item Key */
+            item_key: string;
+            /** Seq */
+            seq: number;
+            /** Job Id */
+            job_id: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "awaiting_approval" | "queued" | "running" | "done" | "failed" | "canceled" | "unknown";
+            /** Round Id */
+            round_id: string | null;
+            /** Error Code */
+            error_code?: ("invalid_argument" | "not_found" | "revision_conflict" | "shot_conflict" | "busy" | "running_locked" | "draft_already_saved" | "model_unconfigured" | "model_error" | "turn_stopped" | "turn_timeout" | "plugin_unavailable" | "approval_required" | "queue_full" | "colab_unauthed" | "media_invalid" | "tool_limit_reached" | "internal_error") | null;
+        };
+        /** OperationList */
+        OperationList: {
+            /** Operations */
+            operations: components["schemas"]["Operation"][];
         };
         /** Password */
         Password: {
@@ -77,6 +393,14 @@ export interface components {
              * Format: password
              */
             password: string;
+        };
+        /** PluginAction */
+        PluginAction: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "install" | "enable" | "disable" | "remove";
         };
         /** Probe */
         Probe: {
@@ -102,6 +426,82 @@ export interface components {
             label: string;
             /** Url */
             url?: string | null;
+        };
+        /** Proposal */
+        Proposal: {
+            /** Proposal Id */
+            proposal_id: string;
+            /** Scope Key */
+            scope_key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "shots" | "composer";
+            /** Run Id */
+            run_id: string | null;
+            /** Step Id */
+            step_id: string | null;
+            target: components["schemas"]["ProposalTarget"];
+            /** Readset */
+            readset: components["schemas"]["ShotVersion"][];
+            /** Writeset */
+            writeset: components["schemas"]["ShotEdit"][];
+            /** Before */
+            before: components["schemas"]["ProposalText"][];
+            /** After */
+            after: components["schemas"]["ProposalText"][];
+            /** References Used */
+            references_used: components["schemas"]["ReferenceUsed"][];
+            /** Model */
+            model: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "applied" | "rejected" | "undone" | "expired";
+            /** Undo Id */
+            undo_id: string | null;
+            /** Created At */
+            created_at: number;
+            /** Expires At */
+            expires_at: number;
+        };
+        /** ProposalAction */
+        ProposalAction: {
+            /**
+             * Atomicity
+             * @default all
+             * @enum {string}
+             */
+            atomicity?: "all" | "per_shot";
+        };
+        /** ProposalTarget */
+        ProposalTarget: {
+            /** Shot Ids */
+            shot_ids: string[];
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "keyframe_prompt" | "video_prompt" | "prompt";
+            /** Instruction */
+            instruction: string;
+            /** Reference Round Ids */
+            reference_round_ids: string[];
+            /** Conflicts */
+            conflicts?: components["schemas"]["ShotConflict"][];
+            /** Workspace */
+            workspace?: ("image" | "video") | null;
+        };
+        /** ProposalText */
+        ProposalText: {
+            /** Shot Id */
+            shot_id: string | null;
+            /** N */
+            n: number;
+            /** Text */
+            text: string;
         };
         /** ProviderInfo */
         ProviderInfo: {
@@ -194,6 +594,20 @@ export interface components {
             /** Error */
             error: string;
         };
+        /** ReferenceUsed */
+        ReferenceUsed: {
+            /** Id */
+            id: string;
+            /** Thumb */
+            thumb: string;
+            /** Label */
+            label: string;
+        };
+        /** RetryItems */
+        RetryItems: {
+            /** Item Keys */
+            item_keys?: string[] | null;
+        };
         /** Rewrite */
         Rewrite: {
             /** Text */
@@ -249,6 +663,17 @@ export interface components {
             /** Model */
             model?: string | null;
         };
+        /** RewriteInput */
+        RewriteInput: {
+            /** Shot Ids */
+            shot_ids?: string[];
+            /** Field */
+            field?: ("keyframe_prompt" | "video_prompt" | "prompt") | null;
+            /** Instruction */
+            instruction: string;
+            /** Reference Round Ids */
+            reference_round_ids?: string[];
+        };
         /** RewriteResult */
         RewriteResult: {
             /** Prompt */
@@ -260,6 +685,15 @@ export interface components {
             /** Images Used */
             images_used: number;
         };
+        /** RunShotUpdate */
+        RunShotUpdate: {
+            /** Run Id */
+            run_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Changes */
+            changes: components["schemas"]["ShotChange"][];
+        };
         /** Selection */
         Selection: {
             /** Provider Id */
@@ -267,13 +701,191 @@ export interface components {
             /** Model */
             model: string;
         };
+        /** Shot */
+        Shot: {
+            /** Run Id */
+            run_id: string;
+            /** Step Id */
+            step_id: string;
+            /** Shot Id */
+            shot_id: string;
+            /** Generation */
+            generation: number;
+            /** Seq */
+            seq: number;
+            /** Title */
+            title: string;
+            /** Fields */
+            fields: {
+                [key: string]: string;
+            };
+            /** Field Versions */
+            field_versions: {
+                [key: string]: number;
+            };
+            /** Keyframe Round Id */
+            keyframe_round_id: string | null;
+            /** Clip Round Id */
+            clip_round_id: string | null;
+        };
+        /** ShotChange */
+        ShotChange: {
+            /** Shot Id */
+            shot_id: string;
+            /** N */
+            n: number;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "keyframe_prompt" | "video_prompt" | "prompt" | "audio_notes" | "search_query";
+            /** Generation */
+            generation: number;
+            /** Version */
+            version: number;
+            /** Value */
+            value: string;
+        };
+        /** ShotConflict */
+        ShotConflict: {
+            /** Shot Id */
+            shot_id: string;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "keyframe_prompt" | "video_prompt" | "prompt" | "audio_notes" | "search_query";
+            /** Expected Version */
+            expected_version: number;
+            /** Current Version */
+            current_version: number | null;
+            /** Expected Generation */
+            expected_generation: number;
+            /** Current Generation */
+            current_generation: number | null;
+            /** N */
+            n?: number | null;
+        };
+        /** ShotEdit */
+        ShotEdit: {
+            /** Shot Id */
+            shot_id: string;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "keyframe_prompt" | "video_prompt" | "prompt" | "audio_notes" | "search_query";
+            /** Generation */
+            generation: number;
+            /** Expected Version */
+            expected_version: number;
+            /** Value */
+            value: string;
+        };
+        /** ShotVersion */
+        ShotVersion: {
+            /** Shot Id */
+            shot_id: string;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "keyframe_prompt" | "video_prompt" | "prompt" | "audio_notes" | "search_query";
+            /** Generation */
+            generation: number;
+            /** Expected Version */
+            expected_version: number;
+        };
+        /** ShotWriteResult */
+        ShotWriteResult: {
+            /** Applied */
+            applied: components["schemas"]["ShotChange"][];
+            /** Conflicts */
+            conflicts: components["schemas"]["ShotConflict"][];
+            /** Undo Id */
+            undo_id: string | null;
+            /** Step Output */
+            step_output: {
+                [key: string]: unknown;
+            };
+            run_updated: components["schemas"]["RunShotUpdate"];
+            proposal?: components["schemas"]["Proposal"] | null;
+        };
+        /** Shots */
+        Shots: {
+            /** Shots */
+            shots: components["schemas"]["Shot"][];
+        };
+        /** StopResult */
+        StopResult: {
+            /** Stopped */
+            stopped: boolean;
+        };
+        /** Telemetry */
+        Telemetry: {
+            /** Total */
+            total: number;
+            /** Success Rate */
+            success_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Retries */
+            retries: number;
+            /** By Tool */
+            by_tool: {
+                [key: string]: components["schemas"]["ToolStats"];
+            };
+            /** By Error */
+            by_error: {
+                [key: string]: number;
+            };
+            /** Cache Hit Tokens */
+            cache_hit_tokens: number;
+            /** Cache Miss Tokens */
+            cache_miss_tokens: number;
+            /** Proposal Outcomes */
+            proposal_outcomes: {
+                [key: string]: number;
+            };
+            /** Proposal Adoption Rate */
+            proposal_adoption_rate: number;
+        };
         /** TestInput */
         TestInput: {
             /** Profile */
             profile?: string | null;
         };
+        /** ToolStats */
+        ToolStats: {
+            /** Total */
+            total: number;
+            /** Success Rate */
+            success_rate: number;
+            /** P50 Ms */
+            p50_ms: number;
+            /** P95 Ms */
+            p95_ms: number;
+            /** Retries */
+            retries: number;
+        };
         ApiError: {
             error: string;
+        };
+        /** HarnessErrorBody */
+        HarnessError: {
+            /** Error */
+            error: string;
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "invalid_argument" | "not_found" | "revision_conflict" | "shot_conflict" | "busy" | "running_locked" | "draft_already_saved" | "model_unconfigured" | "model_error" | "turn_stopped" | "turn_timeout" | "plugin_unavailable" | "approval_required" | "queue_full" | "colab_unauthed" | "media_invalid" | "tool_limit_reached" | "internal_error";
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
         };
     };
     responses: never;

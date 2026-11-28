@@ -56,6 +56,9 @@ class Provider:
     revision: int
     legacy: bool
     enhanced_rewrite: bool
+    context_window: int | None = None
+    model_max_tokens: int | None = None
+    max_tokens: int | None = None
 
     @classmethod
     def read(cls, row: sqlite3.Row) -> Provider:

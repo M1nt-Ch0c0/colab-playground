@@ -22,6 +22,7 @@ from .legacy_ui import LOGIN_HTML, PAGE_HTML
 from .logs import redact_secrets
 from .proxy import ProxyNotFound
 from .runtime import Runtime, open_runtime
+from .workflows.harness_errors import HarnessError, HarnessErrorBody, is_agent_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,13 +58,23 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
                   docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
     app.add_middleware(HttpBoundary)
 
+    @app.exception_handler(HarnessError)
+    async def harness_error(request, exc):
+        return JSONResponse(exc.body(), exc.status)
+
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
+        if is_agent_path(request.scope["path"].removeprefix(request.scope.get("root_path", ""))):
+            fields = list(dict.fromkeys(".".join(str(k) for k in e["loc"][1:]) for e in exc.errors()))
+            return await harness_error(request, HarnessError("invalid_argument", details={"fields": fields}))
         fields = "、".join(dict.fromkeys(".".join(str(k) for k in e["loc"][1:]) or "请求体" for e in exc.errors()))
         return JSONResponse({"error": f"请求参数无效（{fields}）"}, 400)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request, exc):
+        if is_agent_path(request.scope["path"].removeprefix(request.scope.get("root_path", ""))):
+            code = "not_found" if exc.status_code == 404 else "invalid_argument"
+            return JSONResponse(HarnessError(code, status=exc.status_code).body(), exc.status_code, headers=exc.headers)
         message = {404: "接口或文件不存在", 405: "请求方法不支持"}.get(exc.status_code, "请求失败")
         if exc.detail not in ("Not Found", "Method Not Allowed"):
             message = str(exc.detail)
@@ -79,6 +90,8 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
 
     @app.exception_handler(ValueError)
     async def invalid_value(request, exc):
+        if is_agent_path(request.scope["path"].removeprefix(request.scope.get("root_path", ""))):
+            return await harness_error(request, HarnessError("invalid_argument"))
         return JSONResponse({"error": redact_secrets(str(exc))}, 400)
 
     @app.exception_handler(StateConflict)
@@ -88,6 +101,8 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
     @app.exception_handler(Exception)
     async def unexpected(request, exc):
         request.app.state.runtime.log(f"接口异常 {request.method} {request.url.path} ({type(exc).__name__})")
+        if is_agent_path(request.scope["path"].removeprefix(request.scope.get("root_path", ""))):
+            return await harness_error(request, HarnessError("internal_error"))
         return JSONResponse({"error": "服务器内部错误"}, 500)
 
     @readable(app, "/healthz")
@@ -167,17 +182,26 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
         components["schemas"]["ApiError"] = {
             "type": "object", "required": ["error"], "properties": {"error": {"type": "string"}},
         }
+        components["schemas"]["HarnessError"] = HarnessErrorBody.model_json_schema()
         error = {"description": "中文错误说明", "content": {
             "application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}},
         }}
+        agent_error = {"description": "助手错误码", "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/HarnessError"}},
+        }}
         for path, methods in schema["paths"].items():
-            for op in methods.values():
+            path_error = agent_error if is_agent_path(path) else error
+            for method, op in methods.items():
                 responses = op["responses"]
                 if "422" in responses:
                     del responses["422"]
-                    responses["400"] = error
+                    responses["400"] = path_error
+                if path == "/api/workflows/runs/{run_id}" and method == "patch":
+                    responses["409"] = {"description": "工作流状态或版本冲突", "content": {"application/json": {"schema": {
+                        "anyOf": [{"$ref": "#/components/schemas/ApiError"}, {"$ref": "#/components/schemas/HarnessError"}],
+                    }}}}
                 if path.startswith("/api/"):
-                    responses["default"] = error
+                    responses["default"] = path_error
                     if path != "/api/login":
                         op["security"] = [{"cookie": []}, {"bearer": []}]
         return schema

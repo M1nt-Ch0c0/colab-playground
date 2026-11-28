@@ -13,6 +13,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 
 from ..runtime import Runtime
 from ..generation.catalog import LIMITS
+from ..workflows.harness_errors import HarnessError, is_agent_path
 
 COOKIE = "qp_auth"
 MAX_BODY = 16 * 1024 * 1024
@@ -63,6 +64,10 @@ class HttpBoundary:
         headers = Headers(scope=scope)
         path = scope["path"].removeprefix(scope.get("root_path", "")).rstrip("/") or "/"
 
+        def failure(message, status):
+            body = HarnessError("invalid_argument", status, message).body() if is_agent_path(path) else {"error": message}
+            return JSONResponse(body, status)
+
         async def send_headers(message):
             if message["type"] == "http.response.start":
                 response_headers = MutableHeaders(scope=message)
@@ -73,7 +78,7 @@ class HttpBoundary:
             await send(message)
 
         if path.startswith("/api/") and path != "/api/login" and not authenticated(Request(scope)):
-            return await JSONResponse({"error": "需要登录"}, 401)(scope, receive, send_headers)
+            return await failure("需要登录", 401)(scope, receive, send_headers)
         if scope["method"] in {"POST", "PATCH", "DELETE"}:
             media_upload = path in ("/api/video-reference", "/api/rounds/import") and scope["method"] == "POST"
             limit = LIMITS["video_upload_max_mb"] * 1048576 if media_upload else MAX_BODY
@@ -82,9 +87,9 @@ class HttpBoundary:
                 if length < 0:
                     raise ValueError
             except ValueError:
-                return await JSONResponse({"error": "无效的 Content-Length"}, 400)(scope, receive, send_headers)
+                return await failure("无效的 Content-Length", 400)(scope, receive, send_headers)
             if length > limit:
-                return await JSONResponse({"error": f"请求体超过 {limit // 1048576}MB"}, 413)(scope, receive, send_headers)
+                return await failure(f"请求体超过 {limit // 1048576}MB", 413)(scope, receive, send_headers)
             # Enforce the same limit for chunked requests as for Content-Length.
             received = 0
             async def bounded_receive():

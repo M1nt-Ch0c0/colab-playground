@@ -20,7 +20,9 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import create_app
+from draw_studio.api import workflows as workflow_api
 from draw_studio.generation.parameters import normalize_job
+from draw_studio.workflows.harness_errors import HarnessError
 from http_fixture import gateway, mp4, png, serving
 
 SHORTCUT = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
@@ -720,18 +722,18 @@ class BrowserTest(unittest.TestCase):
                 row = open_step("审核产出")
                 fields = row.find_elements(By.CSS_SELECTOR, f'textarea[aria-label="{label}"]')
                 began, release = threading.Event(), threading.Event()
-                save = engine.update_step_output
+                save = workflow_api.apply_shot_edits
 
-                def delayed_write(*args):
+                def delayed_write(*args, **kwargs):
                     if not began.is_set():
                         began.set()
                         if not release.wait(12):
                             raise RuntimeError("test save timed out")
                         if is_retry:
-                            raise ValueError("模拟产出保存失败")
-                    return save(*args)
+                            raise HarnessError("internal_error")
+                    return save(*args, **kwargs)
 
-                with patch.object(engine, "update_step_output", side_effect=delayed_write), \
+                with patch.object(workflow_api, "apply_shot_edits", side_effect=delayed_write), \
                      patch.object(engine, "start_run", wraps=engine.start_run) as start, \
                      patch.object(rt.studio, "colab", SimpleNamespace(has_credentials=lambda: True)), \
                      patch.object(rt.studio, "enqueue_with_refs", return_value=[{"id": "job"}]) as enqueue, \
@@ -750,7 +752,7 @@ class BrowserTest(unittest.TestCase):
                     finally:
                         release.set()
                     if is_retry:
-                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "模拟产出保存失败"))
+                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "出了点问题，再试一次"))
                         wait.until(lambda d: not d.find_element(By.CSS_SELECTOR, ".run").get_property("inert"))
                         self.assertFalse(start.called)
                         self.assertFalse(enqueue.called)
@@ -765,6 +767,123 @@ class BrowserTest(unittest.TestCase):
                         self.assertEqual(finished["topic"], "edited topic")
                     saved = finished["step_states"]["review"]["output"][group]
                     self.assertEqual([item[field] for item in saved], ["edited 1", "edited 2"])
+
+    def test_workflow_assistant_restores_the_right_dock(self):
+        with signed_in_browser() as (rt, driver, url):
+            run = rt.workflows.create_run({"workflow": {"name": "Docking", "steps": [{"id": "refs", "type": "asset_input"}]}})
+            driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+                "width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False,
+            })
+            driver.get(f"{url}/?workflow={run['id']}")
+            wait = WebDriverWait(driver, 8)
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+            def at_side(dock, padding, on_left=False):
+                return driver.execute_script("""
+                    const panel = document.querySelector('.workflow-agent');
+                    if (panel?.dataset.dock !== arguments[0]) return false;
+                    const box = panel.getBoundingClientRect();
+                    const onLeft = box.left + box.width / 2 < innerWidth / 2;
+                    return onLeft === arguments[2] && getComputedStyle(document.querySelector('.wf')).paddingRight === arguments[1];
+                """, dock, padding, on_left)
+
+            move = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-head > button:nth-last-child(2)")))
+            wait.until(lambda _: at_side("right", "382px"))
+            move.click()
+            wait.until(lambda _: at_side("free", "0px", on_left=True))
+            move.click()
+            wait.until(lambda _: at_side("right", "382px"))
+
+    def test_operation_card_unknown_recovery_and_assistant_history_forwarding(self):
+        with signed_in_browser() as (rt, driver, url):
+            src = rt.root / "done.png"
+            src.write_bytes(png((32, 24), "navy"))
+            rid = rt.store.save(src, "image", {"prompt": "done frame"})
+            run = rt.workflows.create_run({"workflow": {"name": "Recovery", "steps": [{"id": "refs", "type": "asset_input"}]}})
+            scope = run["id"]
+            op = rt.operations.create(scope, "mix", normalize_job({"mode": "image", "prompt": "Evening", "count": 2, "seed": 7}))
+            oid = op["operation_id"]
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = rt.operations.approve(oid)
+            j1, _ = (item["job_id"] for item in approved["items"])
+            with rt.studio._lock:
+                first = next(j for j in rt.studio._queue if j["id"] == j1)
+                rt.studio._queue.clear()
+                first.update(status="done", round_id=rid)
+                rt.studio._remember_job(first)
+                rt.studio._history.clear()
+                rt.studio._save_state_locked()
+
+            seen_histories = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_histories.append(list(history))
+                yield {"type": "started", "model": model}
+                yield {"type": "done", "message": f"回复：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": None, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(f"{url}/?workflow={scope}")
+                wait = WebDriverWait(driver, 10)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                self.assertEqual(card.get_attribute("data-state"), "partial")
+                self.assertTrue(card.find_elements(By.XPATH, ".//button[normalize-space(.)='查看作品']"))
+                cancel_btn = card.find_element(By.XPATH, ".//button[normalize-space(.)='取消']")
+                cancel_btn.click()
+                wait.until(lambda _: not card.find_elements(By.XPATH, ".//button[normalize-space(.)='取消']"))
+                self.assertTrue(card.find_elements(By.XPATH, ".//button[normalize-space(.)='查看作品']"))
+                self.assertEqual([i["state"] for i in rt.operations.get(oid)["items"]], ["done", "canceled"])
+
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("第一句")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第一句"))
+
+                # Close and reopen without server recent.json persistence: local done turn must survive and be forwarded.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第一句"))
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("第二句")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第二句"))
+                self.assertEqual(seen_histories[0], [])
+                self.assertEqual(seen_histories[1], [
+                    {"role": "user", "text": "第一句"},
+                    {"role": "assistant", "text": "回复：第一句"},
+                ])
+
+    def test_composer_assistant_copy_and_colab_unauthed_unlock(self):
+        with signed_in_browser() as (rt, driver, url):
+            authed_state = {"ok": False}
+            status_base = rt.colab.status_report()
+            def status_report(force=False, blocking=True):
+                return {**status_base, "authed": authed_state["ok"], "ok": authed_state["ok"], "sessions": []}
+            scope = "cr_" + "b" * 32
+            op = rt.operations.create(scope, "unauthed-unlock", normalize_job({"mode": "image", "prompt": "Sunset", "count": 1, "seed": 5}))
+            with patch.object(rt.colab, "status_report", side_effect=status_report), \
+                 patch.object(rt.colab, "has_credentials", side_effect=lambda: authed_state["ok"]), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                driver.execute_script("localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]))", scope)
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                # Context label in image composer says 生图 (not 关键帧).
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-context"), "生图"))
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                confirm = card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']")
+                self.assertFalse(confirm.is_enabled())
+                # Now simulate Colab OAuth completion without grabbing a card (sessions still empty).
+                authed_state["ok"] = True
+                wait.until(lambda _: card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']").is_enabled())
+                card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']").click()
+                wait.until(lambda _: rt.operations.get(op["operation_id"])["state"] == "queued")
 
     def test_workflow_save_template_preserves_variables_and_positions(self):
         with signed_in_browser() as (rt, driver, url):
@@ -798,6 +917,222 @@ class BrowserTest(unittest.TestCase):
             legacy_saved = next(t for t in engine.list_workflows()["custom"] if t["name"] == "旧版保存的变量模板")
             self.assertEqual(legacy_saved["variables"], variables)
             self.assertEqual(legacy_saved["steps"][0]["position"], {"x": 120, "y": 240})
+
+    def test_composer_sanitization_mask_replacement_and_unknown_reconciliation(self):
+        with signed_in_browser() as (rt, driver, url):
+            src1 = rt.root / "base.png"
+            src1.write_bytes(png((64, 64), "navy"))
+            base_rid = rt.store.save(src1, "image", {"prompt": "base"})
+            src2 = rt.root / "edited.png"
+            src2.write_bytes(png((64, 64), "gold"))
+            rt.store.save(src2, "image", {
+                "prompt": "masked edit",
+                "model": "qwen-2.1-bf16",
+                "edit_source_id": base_rid,
+                "edit_mask": {"source_id": base_rid, "strokes": [{"size": 0.08, "points": [[0.2, 0.2], [0.5, 0.5]]}]},
+                "sampling_width": 768, "sampling_height": 1152,
+            })
+
+            scope = "cr_" + "c" * 32
+            stale_mask_id = "mk_" + "a" * 24
+            op = rt.operations.create(scope, "unknown-reconcile", normalize_job({"mode": "image", "prompt": "Fog", "count": 1, "seed": 9}))
+            oid = op["operation_id"]
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = rt.operations.approve(oid)
+            jid = approved["items"][0]["job_id"]
+            with rt.studio._lock:
+                rt.studio._queue.clear()
+                rt.studio._history.clear()
+                rt.studio._save_state_locked()
+
+            seen_composers = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_composers.append(dict(editor.composer or {}))
+                yield {"type": "started", "model": model}
+                yield {"type": "done", "message": f"收到：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": None, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            dirty_draft = {
+                "engine": "diffusers", "model": "  qwen-2.1-q5  ",
+                "ggufRepo": "  unsloth/Qwen-Image-2.1-GGUF  ", "ggufFile": "  qwen.gguf  ",
+                "idea": "i" * 750, "prompt": "Night street", "negative": "",
+                "width": 768, "height": 1152, "steps": 28, "cfg": 4.5, "seed": "-1", "count": 1,
+                "useRef": False, "chain": False,
+                "editMask": {"source_id": base_rid, "strokes": [{"size": 0.1, "points": [[0.1, 0.1], [0.2, 0.2]]}]},
+                "maskId": stale_mask_id,
+                "loras": [
+                    {"repo_id": "https://huggingface.co/alice/style/resolve/main/film.safetensors", "weight_name": "", "scale": 1.2},
+                    {"repo_id": "  bob/light  ", "weight_name": "  glow.safetensors  ", "scale": 3.5},
+                    {"repo_id": "typing-in-progress", "weight_name": "", "scale": 1},
+                    {"repo_id": "c/one", "weight_name": "1.safetensors", "scale": 0.5},
+                    {"repo_id": "d/two", "weight_name": "2.safetensors", "scale": 0.5},
+                    {"repo_id": "e/three", "weight_name": "3.safetensors", "scale": 0.5},
+                ],
+                "gpu": "A100",
+            }
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(url)
+                driver.execute_script(
+                    "localStorage.setItem('colabreel.libopen', 'true');"
+                    "localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]));"
+                    "localStorage.setItem('colabreel.draft', JSON.stringify(arguments[1]));",
+                    scope, dirty_draft,
+                )
+                driver.get(url)
+                wait = WebDriverWait(driver, 12)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                # 1. Open composer assistant: 'unknown' operation renders with spinner, and dirty draft is sanitized (no 400).
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                self.assertEqual(card.get_attribute("data-state"), "unknown")
+                self.assertTrue(card.find_elements(By.CSS_SELECTOR, ".spinner"))
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("帮我看看参数")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "收到：帮我看看参数"))
+                first = seen_composers[0]
+                self.assertEqual(len(first["idea"]), 600)
+                self.assertEqual(first["custom_transformer_repo"], "unsloth/Qwen-Image-2.1-GGUF")
+                self.assertEqual(first["custom_transformer_file"], "qwen.gguf")
+                self.assertEqual(len(first["loras"]), 4)
+                self.assertEqual(first["loras"][0], {"repo_id": "alice/style", "weight_name": "film.safetensors", "scale": 1.2})
+                self.assertEqual(first["loras"][1], {"repo_id": "bob/light", "weight_name": "glow.safetensors", "scale": 2.5})
+                self.assertEqual(first["mask_id"], stale_mask_id)
+
+                # 2. Reusing parameters from masked round replaces editMask without maskId -> clears stale maskId.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.tile[title="masked edit"]'))).click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='复用参数']"))).click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("复用后再看")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "收到：复用后再看"))
+                self.assertIsNone(seen_composers[1].get("mask_id"))
+                self.assertTrue(seen_composers[1]["has_image"])
+
+                # 3. Transient 'unknown' operation reconciles automatically via backoff polling while panel stays open.
+                self.assertEqual(driver.find_element(By.CSS_SELECTOR, ".op-card").get_attribute("data-state"), "unknown")
+                done_img = rt.root / "recovered-op.png"
+                done_img.write_bytes(png((64, 64), "teal"))
+                rt.store.save(done_img, "image", {"job_id": jid, "prompt": "Fog"})
+                wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, ".op-card").get_attribute("data-state") == "done")
+
+    def test_queued_progress_bar_ref2va_context_and_mask_patch_error_isolation(self):
+        with signed_in_browser() as (rt, driver, url):
+            scope = "cr_" + "d" * 32
+            op = rt.operations.create(scope, "queued-bar", normalize_job({"mode": "image", "prompt": "Cloud", "count": 2, "seed": 3}))
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                rt.operations.approve(op["operation_id"])
+
+            seen_composers = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_composers.append(dict(editor.composer or {}))
+                yield {"type": "started", "model": model}
+                patch_obj = (
+                    {"workspace": "image", "base_revision": revision, "changes": {"mask_id": "mk_" + "e" * 24}}
+                    if editor.workspace == "image" else None
+                )
+                yield {"type": "done", "message": f"完成：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": patch_obj, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(url)
+                driver.execute_script(
+                    "localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]));"
+                    "localStorage.setItem('colabreel.draft', JSON.stringify({workflow: 'ref2va', videoTask: 'images', videoUseImages: true, prompt: 'Video idea'}));",
+                    scope,
+                )
+                driver.get(url)
+                wait = WebDriverWait(driver, 12)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                # 1. Queued OperationCard uses indeterminate progressbar without inline 0% width or determinate ARIA.
+                bar = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card .bar.indet")))
+                self.assertIsNone(bar.get_attribute("aria-valuemin"))
+                self.assertIsNone(bar.get_attribute("aria-valuemax"))
+                self.assertIsNone(bar.get_attribute("aria-valuenow"))
+                self.assertEqual(bar.get_attribute("aria-valuetext"), "排队中")
+                self.assertEqual(bar.find_element(By.CSS_SELECTOR, "i").get_attribute("style") or "", "")
+
+                # 2. Expired mask_id fetch error in applyAssistantComposerPatch does not fail a completed turn.
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("应用过期选区")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "完成：应用过期选区"))
+                self.assertEqual(driver.find_elements(By.CSS_SELECTOR, ".agent-error"), [])
+
+                # 3. Video ref2va with no uploaded reference image sends has_image=False.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'视频')]"))).click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("检查视频参考")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "完成：检查视频参考"))
+                self.assertEqual(seen_composers[-1]["mode"], "video")
+                self.assertEqual(seen_composers[-1]["workflow"], "ref2va")
+                self.assertFalse(seen_composers[-1]["has_image"])
+
+    def test_committed_shot_edit_syncs_on_failed_turn_without_conflict(self):
+        from draw_studio.workflows.shot_service import apply_shot_edits, read_shots
+
+        with signed_in_browser() as (rt, driver, url):
+            engine = rt.workflows
+            run = engine.create_run({"topic": "sync", "workflow": {"name": "同步测试", "steps": [
+                {"id": "script", "name": "分镜脚本", "type": "llm_script", "pause_after": True},
+                {"id": "generate", "name": "生图", "type": "image_gen", "config": {"scenes_from": "script", "ref_sources": []}},
+            ]}})
+            rid = run["id"]
+            with patch.object(engine, "_run_step", return_value={"scenes": [{"title": "S1", "keyframe_prompt": "old prompt"}]}):
+                engine.start_run(rid)
+                WebDriverWait(driver, 10).until(lambda _: engine.get_run(rid)["status"] == "paused")
+
+            async def fail_after_commit(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                shot = read_shots(rt, rid, "script")[0]
+                res = apply_shot_edits(rt, run_id=rid, step_id="script", patches=[{
+                    "shot_id": shot["shot_id"], "field": "keyframe_prompt",
+                    "generation": shot["generation"], "expected_version": shot["field_versions"]["keyframe_prompt"],
+                    "value": "agent committed",
+                }], scope=rid)
+                yield {"type": "started", "model": model}
+                yield {"type": "tool", "name": "studio_apply_shot_edits", "call_id": "c1", "ok": True,
+                       "run_updated": [res["run_updated"]], "refresh_run": True}
+                yield {"type": "error", "code": "model_error", "message": "failed",
+                       "run_updated": [res["run_updated"]], "refresh_run": True}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fail_after_commit):
+                driver.get(f"{url}/?workflow={rid}")
+                wait = WebDriverWait(driver, 12)
+                row = wait.until(EC.presence_of_element_located((By.XPATH, "//li[.//b[normalize-space(.)='分镜脚本']]")))
+                row.find_element(By.CSS_SELECTOR, ".step-h").click()
+                field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]')))
+                self.assertEqual(field.get_property("value"), "old prompt")
+
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("改一下第一镜")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-error")))
+                wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]').get_property("value") == "agent committed")
+
+                # Subsequent manual edit must save cleanly with updated field_versions (zero conflict).
+                field = driver.find_element(By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]')
+                field.send_keys(SHORTCUT, "a", Keys.NULL, "human follow-up")
+                driver.find_element(By.CSS_SELECTOR, ".run-head textarea").click()
+                wait.until(lambda _: engine.get_run(rid)["step_states"]["script"]["output"]["scenes"][0]["keyframe_prompt"] == "human follow-up")
 
 
 if __name__ == "__main__":

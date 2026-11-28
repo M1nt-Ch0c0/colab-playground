@@ -4,8 +4,11 @@ import { makeArt } from './art'
 import type {
   ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, Job, Lora, ProxyState, ProxyTest, References, RewriteBody,
   Round, RoundsStats, Status, StepCatalogItem, StudioPreset, WfDef, WfRun, WfStep, WorkflowActive,
-  LlmKind, LlmProvider, LlmProviderBody, LlmState,
+  LlmKind, LlmProvider, LlmProviderBody, LlmState, AgentEvent, AgentPlugins, AgentTurnBody, SavedAgentExchange, AgentErrorCode, AgentPluginAction,
+  AgentTelemetry, Proposal, ProposalAction, RewriteInput, Shot, ShotConflict, ShotEdit, ShotField, ShotWriteResult,
+  ComposerPatch, ComposerPrompt, EditMask, MaskRecord, Operation, OperationItem,
 } from '../api/types'
+import { AGENT_COPY as C, PLUGIN_COPY, STATIC_TOOLS, approxDuration, errorCopy, toolLabel, shotList } from '../features/workflow/agentCopy'
 
 const sec = () => Math.floor(Date.now() / 1000)
 const uid = (p: string) => p + Math.floor(Math.random() * 9000 + 1000).toString(36)
@@ -362,6 +365,58 @@ function finish(j: Job) {
 }
 
 /* ── 工作流执行 ── */
+const SHOT_LISTS = { llm_script: 'scenes', h3_prompt: 'items' } as const
+const SHOT_FIELDS: Record<keyof typeof SHOT_LISTS, readonly ShotField[]> = {
+  llm_script: ['keyframe_prompt', 'video_prompt', 'audio_notes', 'search_query', 'prompt'],
+  h3_prompt: ['video_prompt', 'prompt'],
+}
+type MockShot = Partial<Record<ShotField, string>> & {
+  shot_id: string; generation: number; field_versions: Partial<Record<ShotField, number>>
+  index?: number; scene_index?: number; title?: string; keyframe_round_id?: string
+}
+const shotGenerations = new Map<string, number>()
+const mockId = (prefix: string, size: number) => prefix + crypto.randomUUID().replaceAll('-', '').slice(0, size)
+const isShotStep = (type: WfStep['type']): type is keyof typeof SHOT_LISTS => type === 'llm_script' || type === 'h3_prompt'
+const outputRows = (run: WfRun, step: WfStep): MockShot[] => isShotStep(step.type)
+  ? run.step_states[step.id]?.output[SHOT_LISTS[step.type]] ?? [] : []
+const shotSeq = (row: MockShot, i: number) => row.scene_index ?? row.index ?? i + 1
+
+function mockShots(run: WfRun, step: WfStep): Shot[] {
+  return outputRows(run, step).map((row, i) => {
+    const seq = shotSeq(row, i)
+    const related = (kind: 'image_gen' | 'video_gen') => {
+      const target = run.workflow.steps.find(s => s.type === kind && (kind === 'image_gen'
+        ? s.config.scenes_from === step.id || s.id === step.config.keyframe_from
+        : s.config.scenes_from === step.id || s.config.prompts_from === step.id))
+      const items: { scene_index: number; round_id: string }[] = target && run.step_states[target.id].output.items || []
+      return items.find(item => item.scene_index === seq)?.round_id ?? null
+    }
+    return { run_id: run.id, step_id: step.id, shot_id: row.shot_id, generation: row.generation, seq, title: row.title ?? '',
+      fields: Object.fromEntries(Object.keys(row.field_versions).map(field => [field, row[field as ShotField] ?? ''])),
+      field_versions: { ...row.field_versions } as Record<string, number>,
+      keyframe_round_id: row.keyframe_round_id || related('image_gen'), clip_round_id: related('video_gen') }
+  })
+}
+
+function stampOutput(run: WfRun, step: WfStep, output: Record<string, unknown>, replace = true) {
+  if (!isShotStep(step.type)) return output
+  const slot = `${run.id}:${step.id}`
+  const key = SHOT_LISTS[step.type]
+  const rows = output[key]
+  if (!replace && !Object.hasOwn(output, key)) return output
+  const generation = Math.max(1, (shotGenerations.get(slot) ?? 0) + Number(replace))
+  shotGenerations.set(slot, generation)
+  if (!Array.isArray(rows)) return output
+  const fields = SHOT_FIELDS[step.type]
+  const previous = replace ? [] : outputRows(run, step)
+  return { ...output, [key]: rows.map((row, index) => {
+    const old = row.shot_id ? previous.find(shot => shot.shot_id === row.shot_id) : previous[index]
+    return { ...row, generation, shot_id: old?.shot_id ?? mockId('sh_', 12), field_versions: Object.fromEntries(fields.map(field => [
+      field, (old?.field_versions[field] ?? 1) + Number(!!old && (old[field] ?? '') !== (row[field] ?? '')),
+    ])) }
+  }) }
+}
+
 const TITLES = ['巷口回望', '雨中驻足', '飞船升空', '雾散见湖', '推门而出', '侧身特写', '远景收束', '灯下独行']
 function fakeScenes(topic: string, n: number) {
   return Array.from({ length: n }, (_, i) => ({
@@ -380,6 +435,7 @@ function execStep(r: WfRun, st: WfStep): Record<string, unknown> {
   const cfg = st.config
   const prev = (type: string) => r.workflow.steps.filter(s => s.type === type).map(s => r.step_states[s.id]?.output).find(Boolean)
   if (st.type === 'llm_script') {
+    if (cfg.output_format === 'text') return { format: 'text', text: r.topic }
     const n = Math.max(1, Math.min(8, +cfg.scene_count || 3))
     return { format: 'storyboard', model: S.llm.active?.model || '', title: r.topic.slice(0, 30) || '未命名短片', style_bible: '冷暖对撞的电影感光线，胶片颗粒，角色外观全程一致', scenes: fakeScenes(r.topic || '主题', n), text: '' }
   }
@@ -457,7 +513,7 @@ function driveRun(r: WfRun, fromId?: string, single = false) {
     setTimeout(() => {
       if (r.status === 'canceled') return
       try {
-        ss.output = execStep(r, st); ss.status = 'done'; ss.finished_at = sec(); ss.progress = ''
+        ss.output = stampOutput(r, st, execStep(r, st)); ss.status = 'done'; ss.finished_at = sec(); ss.progress = ''
         wfLog(r, `步骤「${st.name}」完成`)
       } catch (e) {
         ss.status = 'error'; ss.error = String(e); r.status = 'error'; r.error = String(e); return
@@ -490,6 +546,409 @@ function makeRun(wf: WfDef, topic: string, requestId?: string): WfRun {
 
 /* ── 路由 ── */
 function body<T>(b: unknown): T { return (b || {}) as T }
+
+const timingId = 'studio-shot-timing'
+const agentInventory: AgentPlugins = {
+  builtin_tools: Object.fromEntries(STATIC_TOOLS.map(name => [name, toolLabel(name)])),
+  plugin: { id: timingId, ...PLUGIN_COPY[timingId], tool: 'studio_shot_timing', version: '1.0.0', installed: false, enabled: false },
+}
+const conversations = new Map<string, SavedAgentExchange[]>()
+const proposals = new Map<string, Proposal>()
+const adoptedProposals = new Map<string, ShotWriteResult>()
+const mockOperations = new Map<string, Operation>()
+const masks = new Map<string, MaskRecord>()
+const composerUndo = new Map<string, { proposalId: string; expires: number; consumed: boolean }>()
+const shotUndo = new Map<string, { runId: string; stepId: string; edits: ShotEdit[]; consumed: boolean; expires: number; proposalId?: string }>()
+const agentUses: { name: string; at: number; latency: number; code?: AgentErrorCode; proposalId?: string }[] = []
+const mockRevision = (run: WfRun) => JSON.stringify([run.topic, run.workflow, run.status])
+
+function agentError(status: number, code: AgentErrorCode, details = {}) {
+  return { status, json: { error: errorCopy(code).text, code, details } }
+}
+
+function makeOperation(key: string, turn: AgentTurnBody) {
+  const video = turn.workspace === 'video' || /视频/.test(turn.message)
+  const total = Math.min(4, Math.max(1, Number(turn.message.match(/([1-4])\s*[张段]/)?.[1]) || turn.composer?.count || 1))
+  const refs = S.rounds.filter(r => r.kind === 'image').slice(0, 2)
+  const items: OperationItem[] = Array.from({ length: total }, (_, i) => ({ item_key: String(i + 1), seq: i + 1,
+    job_id: null, round_id: null, state: 'awaiting_approval', error_code: null }))
+  const op: Operation = { operation_id: mockId('op_', 24), kind: video ? 'video' : 'image', scope_key: key,
+    state: 'awaiting_approval', total, done: 0, items, created_at: sec(), updated_at: sec(), needs_compute: !S.colab.authed,
+    model: video ? 'MiniMax-H3' : 'Qwen-Image-2.1', width: turn.composer?.width ?? 1280, height: turn.composer?.height ?? 768,
+    num_frames: video ? turn.composer?.num_frames ?? 124 : null,
+    references: refs.map(ref => ({ id: ref.id, thumb: S.urls[ref.id], label: ref.prompt })), results: [],
+  }
+  mockOperations.set(op.operation_id, op)
+  return op
+}
+
+function updateMockOperation(op: Operation) {
+  const states = new Set(op.items.map(item => item.state))
+  op.state = states.has('awaiting_approval') ? 'awaiting_approval' : states.has('running') ? 'running'
+    : states.has('queued') ? 'queued' : states.size === 1 && states.has('done') ? 'done'
+      : states.has('done') ? 'partial' : states.has('unknown') ? 'unknown' : states.has('failed') ? 'failed' : 'canceled'
+  op.done = op.items.filter(item => item.state === 'done').length
+  op.updated_at = sec()
+}
+
+function submitMockOperation(op: Operation, items: OperationItem[], retry: boolean) {
+  if (!items.length) return ok(op)
+  if (!S.colab.authed) return agentError(400, 'colab_unauthed')
+  if (S.queue.length + items.length > 12) return agentError(409, 'queue_full')
+  for (const item of items) {
+    const id = mockId('j', 24)
+    Object.assign(item, { job_id: id, state: 'queued', error_code: null })
+    setTimeout(() => {
+      if (item.job_id !== id || item.state !== 'queued') return
+      item.state = 'running'
+      updateMockOperation(op)
+    }, retry ? 100 : 320)
+    setTimeout(() => {
+      if (item.job_id !== id || item.state !== 'running') return
+      if (!retry && op.total >= 3 && item.seq > 2) {
+        item.state = 'failed'
+        item.error_code = item.seq % 2 ? 'media_invalid' : 'model_error'
+      } else {
+        const round = addRound({ kind: op.kind, model: op.model, width: op.width, height: op.height,
+          prompt: op.references[0]?.label ?? '', seed: item.seq })
+        item.state = 'done'
+        item.round_id = round.id
+        op.results = op.items.flatMap(row => row.round_id ? [{ id: row.round_id, thumb: S.urls[row.round_id], label: round.prompt }] : [])
+      }
+      updateMockOperation(op)
+    }, retry ? 480 : 850 + (item.seq - 1) * 1050)
+  }
+  updateMockOperation(op)
+  return ok(structuredClone({ ...op, needs_compute: !S.colab.authed }))
+}
+
+function mockOperationRoute(method: string, id: string | undefined, action: string | undefined, raw: unknown, q: URLSearchParams) {
+  const view = (op: Operation) => structuredClone({ ...op, needs_compute: !S.colab.authed })
+  if (method === 'GET' && !id) {
+    const scope = q.get('scope_key')
+    return ok({ operations: [...mockOperations.values()].reverse().filter(op => !scope || op.scope_key === scope).slice(0, 24).map(view) })
+  }
+  const op = id && mockOperations.get(id)
+  if (!op) return agentError(404, 'not_found')
+  if (method === 'GET' && !action) return ok(view(op))
+  if (method !== 'POST') return agentError(404, 'not_found')
+  if (action === 'approve') return submitMockOperation(op, op.items.filter(i => i.state === 'awaiting_approval'), false)
+  if (action === 'retry-failed') {
+    const { item_keys: keys } = body<{ item_keys?: string[] }>(raw)
+    if (keys && (!keys.length || keys.some(key => !op.items.some(i => i.item_key === key)))) return agentError(400, 'invalid_argument')
+    return submitMockOperation(op, op.items.filter(i => i.state === 'failed' && (!keys || keys.includes(i.item_key))), true)
+  }
+  if (action === 'cancel') {
+    for (const item of op.items) if (['awaiting_approval', 'queued', 'running', 'unknown'].includes(item.state)) item.state = 'canceled'
+    updateMockOperation(op)
+    return ok(view(op))
+  }
+  return agentError(404, 'not_found')
+}
+
+function mockComposerWrite(proposal: Proposal | undefined, raw: unknown, undo: boolean, undoId?: string) {
+  const current = body<ComposerPrompt>(raw)
+  if (undo) {
+    const record = undoId ? composerUndo.get(undoId) : undefined
+    if (!record || !proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+    if (record.consumed || record.expires <= sec()) return agentError(409, 'shot_conflict', { status: 'expired', conflicts: [] })
+    const before = proposal.before[0].text, after = proposal.after[0].text
+    if (proposal.target.workspace !== current.workspace || current.prompt !== after) {
+      return agentError(409, 'shot_conflict', { conflicts: [] })
+    }
+    record.consumed = true
+    proposal.status = 'undone'
+    return ok({ workspace: current.workspace, prompt: before, proposal: proposalView(proposal) })
+  }
+  if (!proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+  const before = proposal.before[0].text, after = proposal.after[0].text
+  if (proposal.target.workspace !== current.workspace) return agentError(409, 'shot_conflict', { conflicts: [] })
+  if (proposal.status === 'applied' && (current.prompt === before || current.prompt === after)) {
+    return ok({ workspace: current.workspace, prompt: after, proposal: proposalView(proposal) })
+  }
+  const { status } = proposalView(proposal)
+  if (status !== 'pending') return agentError(409, 'shot_conflict', { status, conflicts: [] })
+  if (current.prompt !== before) return agentError(409, 'shot_conflict', { conflicts: [] })
+  proposal.undo_id = mockId('un_', 24)
+  composerUndo.set(proposal.undo_id, { proposalId: proposal.proposal_id, expires: sec() + 1800, consumed: false })
+  proposal.status = 'applied'
+  return ok({ workspace: current.workspace, prompt: after, proposal: proposalView(proposal) })
+}
+
+function proposalView(proposal: Proposal): Proposal {
+  const status = proposal.status === 'pending' && proposal.expires_at <= sec() ? 'expired' : proposal.status
+  return structuredClone({ ...proposal, status })
+}
+
+function mockRewrite(run: WfRun, step: WfStep, input: RewriteInput): Proposal | AgentErrorCode {
+  if (run.status === 'running') return 'running_locked'
+  if (!isShotStep(step.type) || !input.instruction?.trim()) return 'invalid_argument'
+  const field = input.field ?? (step.type === 'llm_script' ? 'keyframe_prompt' : 'video_prompt')
+  if (!SHOT_FIELDS[step.type].includes(field)) return 'invalid_argument'
+  const all = mockShots(run, step)
+  const ids = input.shot_ids ?? []
+  const shots = ids.length ? ids.flatMap(id => all.filter(shot => shot.shot_id === id)) : all
+  if (!shots.length || (ids.length && shots.length !== ids.length)) return 'not_found'
+  if (shots.length > 8 || new Set(ids).size !== ids.length) return 'invalid_argument'
+  const explicit = input.reference_round_ids ?? []
+  if (explicit.some(id => !S.rounds.some(round => round.id === id && round.kind === 'image'))) return 'media_invalid'
+  const withKeyframes = new Set([...explicit, ...shots.flatMap(shot => shot.keyframe_round_id ? [shot.keyframe_round_id] : [])])
+  const refs = [...withKeyframes].flatMap(id => {
+    const round = S.rounds.find(item => item.id === id && item.kind === 'image')
+    return round ? [{ id, thumb: S.urls[id], label: round.prompt.slice(0, 80) }] : []
+  })
+  const before = shots.map(shot => ({ shot_id: shot.shot_id, n: shot.seq, text: shot.fields[field] }))
+  const after = before.map(shot => ({ ...shot,
+    text: `${shot.text.replace('电影感光线', '斜侧逆光勾出人物轮廓')}。${input.instruction.trim()}。低机位从前景掠过，焦点落在人物的动作上，背景保留层次。` }))
+  const readset = shots.map(shot => ({ shot_id: shot.shot_id, generation: shot.generation, field,
+    expected_version: shot.field_versions[field] }))
+  const now = sec()
+  const proposal: Proposal = { proposal_id: mockId('pr_', 24), scope_key: run.id, kind: 'shots', run_id: run.id, step_id: step.id,
+    target: { shot_ids: shots.map(shot => shot.shot_id), field, instruction: input.instruction, reference_round_ids: explicit, conflicts: [] },
+    before, after, readset, writeset: readset.map((read, i) => ({ ...read, value: after[i].text })), references_used: refs,
+    model: 'mock', status: 'pending', undo_id: null, created_at: now, expires_at: now + 86400 }
+  proposals.set(proposal.proposal_id, proposal)
+  return proposalView(proposal)
+}
+
+function mockWrite(run: WfRun, stepId: string, edits: ShotEdit[], atomicity: ProposalAction['atomicity'],
+  proposal?: Proposal, undoing = false): ShotWriteResult | ReturnType<typeof agentError> {
+  if (run.status === 'running') return agentError(409, 'running_locked')
+  const step = run.workflow.steps.find(s => s.id === stepId)
+  const rows = step ? outputRows(run, step) : []
+  const projects = new Map(rows.map((row, i) => [row.shot_id, { row, n: shotSeq(row, i) }]))
+  const conflicts: ShotConflict[] = edits.flatMap(edit => {
+    const entry = projects.get(edit.shot_id)
+    const version = entry?.row.field_versions[edit.field]
+    return entry?.row.generation === edit.generation && version === edit.expected_version ? [] : [{
+      shot_id: edit.shot_id, field: edit.field, expected_version: edit.expected_version, current_version: version ?? null,
+      expected_generation: edit.generation, current_generation: entry?.row.generation ?? null,
+      n: entry?.n ?? proposal?.before.find(item => item.shot_id === edit.shot_id)?.n,
+    }]
+  })
+  const accepted = edits.filter(edit => !conflicts.some(conflict => conflict.shot_id === edit.shot_id))
+  if (!accepted.length || (conflicts.length && atomicity !== 'per_shot')) return agentError(409, 'shot_conflict', { conflicts })
+  const inverse: ShotEdit[] = []
+  const changes = accepted.flatMap(edit => {
+    const { row, n } = projects.get(edit.shot_id)!
+    const previous = row[edit.field] ?? ''
+    if (previous === edit.value) return []
+    const version = edit.expected_version + 1
+    inverse.push({ ...edit, expected_version: version, value: previous })
+    row.field_versions[edit.field] = version
+    row[edit.field] = edit.value
+    return [{ shot_id: edit.shot_id, n, field: edit.field, generation: edit.generation, version, value: edit.value }]
+  })
+  let undoId: string | null = null
+  if (proposal && !undoing && inverse.length) {
+    undoId = mockId('un_', 24)
+    shotUndo.set(undoId, { runId: run.id, stepId, edits: inverse, consumed: false, expires: sec() + 86400, proposalId: proposal.proposal_id })
+  }
+  if (proposal) {
+    proposal.status = undoing ? 'undone' : 'applied'
+    if (!undoing) { proposal.undo_id = undoId; proposal.target.conflicts = conflicts }
+  }
+  run.updated_at = sec()
+  return { applied: changes, conflicts, undo_id: undoId, step_output: structuredClone(run.step_states[stepId].output),
+    run_updated: { run_id: run.id, step_id: stepId, changes }, proposal: proposal && proposalView(proposal) }
+}
+
+function recordMockUse(name: string, started: number, code?: AgentErrorCode, proposalId?: string) {
+  agentUses.push({ name, code, proposalId, at: sec(), latency: Math.round(performance.now() - started) })
+}
+
+function mockTelemetry(): AgentTelemetry {
+  const calls = agentUses.filter(call => call.at >= sec() - 30 * 86400).slice(-20000)
+  function statsFor(rows: typeof calls) {
+    const ordered = rows.map(row => row.latency).sort((a, b) => a - b)
+    const percentile = (p: number) => ordered[Math.ceil(ordered.length * p) - 1] ?? 0
+    return { total: rows.length, success_rate: rows.length ? rows.filter(row => !row.code).length / rows.length : 0,
+      p50_ms: percentile(.5), p95_ms: percentile(.95), retries: 0 }
+  }
+  const byTool = Object.fromEntries([...new Set(calls.map(call => call.name))].map(name => [name, statsFor(calls.filter(call => call.name === name))]))
+  const byError: Record<string, number> = {}, outcomes: Record<string, number> = {}
+  for (const call of calls) {
+    if (call.code) byError[call.code] = (byError[call.code] ?? 0) + 1
+    const proposal = call.proposalId && proposals.get(call.proposalId)
+    if (proposal) { const { status } = proposalView(proposal); outcomes[status] = (outcomes[status] ?? 0) + 1 }
+  }
+  const adopted = (outcomes.applied ?? 0) + (outcomes.undone ?? 0)
+  const decided = adopted + (outcomes.rejected ?? 0)
+  return { ...statsFor(calls), by_tool: byTool, by_error: byError, cache_hit_tokens: 0, cache_miss_tokens: 0,
+    proposal_outcomes: outcomes, proposal_adoption_rate: decided ? adopted / decided : 0 }
+}
+
+function agentRoute(method: string, route: string[], raw: unknown, q: URLSearchParams) {
+  const [section, id, action] = route
+  const plugin = agentInventory.plugin
+  if (section === 'operations') return mockOperationRoute(method, id, action, raw, q)
+  if (section === 'masks') {
+    if (method === 'GET' && id) {
+      const record = masks.get(id)
+      return record && record.expires_at > sec() ? ok(record) : agentError(404, 'not_found')
+    }
+    if (method !== 'POST' || id) return agentError(404, 'not_found')
+    const { source_id, strokes } = body<EditMask>(raw)
+    if (!Array.isArray(strokes) || !strokes.length || strokes.length > 256 ||
+      strokes.some(s => !(s.size > 0 && s.size <= 1) || !s.points.length ||
+        s.points.some(p => p.length !== 2 || p.some(v => typeof v !== 'number' || !(v >= 0 && v <= 1)))) ||
+      strokes.reduce((n, s) => n + s.points.length, 0) > 12000) return agentError(400, 'invalid_argument')
+    if (!S.rounds.some(r => r.id === source_id && r.kind === 'image')) return agentError(400, 'media_invalid')
+    const record: MaskRecord = { mask_id: mockId('mk_', 24), source_id, strokes, created_at: sec(), expires_at: sec() + 604800 }
+    masks.set(record.mask_id, structuredClone(record))
+    return ok(record, 201)
+  }
+  if (section === 'telemetry' && method === 'GET') return ok(mockTelemetry())
+  if (section === 'proposals' && method === 'POST') {
+    const proposal = proposals.get(id)
+    if (!proposal) return agentError(404, 'not_found')
+    if (action === 'composer-apply') return mockComposerWrite(proposal, raw, false)
+    if (action === 'reject' && proposal.status === 'rejected') return ok(proposalView(proposal))
+    if (action === 'apply' && proposal.status === 'applied') {
+      const run = S.runs.find(item => item.id === proposal.run_id)
+      if (!run || !proposal.step_id) return agentError(404, 'not_found')
+      if (run.status === 'running') return agentError(409, 'running_locked')
+      return ok({ ...adoptedProposals.get(id), step_output: run.step_states[proposal.step_id]?.output ?? {} })
+    }
+    const { status } = proposalView(proposal)
+    if (status !== 'pending') return agentError(409, 'shot_conflict', { status, conflicts: [] })
+    if (action === 'reject') {
+      proposal.status = 'rejected'
+      return ok(proposalView(proposal))
+    }
+    if (action === 'apply') {
+      const run = S.runs.find(item => item.id === proposal.run_id)
+      if (!run || !proposal.step_id) return agentError(404, 'not_found')
+      const atomicity = body<ProposalAction>(raw).atomicity ?? 'all'
+      if (!['all', 'per_shot'].includes(atomicity)) return agentError(400, 'invalid_argument')
+      const result = mockWrite(run, proposal.step_id, proposal.writeset, atomicity, proposal)
+      if ('status' in result) return result
+      adoptedProposals.set(id, result)
+      return ok(result)
+    }
+  }
+  if (section === 'undo' && method === 'POST') {
+    if (action === 'composer') return mockComposerWrite(proposals.get(composerUndo.get(id)?.proposalId ?? ''), raw, true, id)
+    const record = shotUndo.get(id)
+    if (!record) return agentError(404, 'not_found')
+    if (record.consumed || record.expires <= sec()) return agentError(409, 'shot_conflict', { status: 'expired', conflicts: [] })
+    const run = S.runs.find(item => item.id === record.runId)
+    if (!run) return agentError(404, 'not_found')
+    const result = mockWrite(run, record.stepId, record.edits, 'all', proposals.get(record.proposalId ?? ''), true)
+    if ('status' in result) return result
+    record.consumed = true
+    return ok(result)
+  }
+  if (section === 'plugins') {
+    if (method === 'GET' && !id) return ok(agentInventory)
+    const change = body<{ action: AgentPluginAction }>(raw).action
+    if (method !== 'POST' || id !== plugin.id || !['install', 'remove', 'enable', 'disable'].includes(change)) {
+      return agentError(400, 'invalid_argument')
+    }
+    if ((change === 'enable' || change === 'disable') && !plugin.installed) return agentError(409, 'plugin_unavailable')
+    if (change === 'remove') { plugin.installed = false; plugin.enabled = false }
+    if (change === 'install' && !plugin.installed) { plugin.installed = true; plugin.enabled = true }
+    if (change === 'enable' || change === 'disable') plugin.enabled = change === 'enable'
+    return ok(agentInventory)
+  }
+  if (section === 'conversations') {
+    if (!/^(?:wr_[A-Za-z0-9_-]{4,48}|cr_[a-f0-9]{32})$/.test(id ?? '')) return agentError(400, 'invalid_argument')
+    if (method === 'GET' && !action) return ok({ exchanges: (conversations.get(id) ?? []).map(exchange => ({ ...exchange,
+      proposals: exchange.proposals?.flatMap(item => {
+        const proposal = proposals.get(item.proposal_id)
+        return proposal ? [proposalView(proposal)] : []
+      }),
+    })) })
+    if (method === 'POST' && action === 'stop') {
+      if (!/^[a-f0-9]{32}$/.test(body<{ turn_id: string }>(raw).turn_id ?? '')) return agentError(400, 'invalid_argument')
+      return ok({ stopped: false })
+    }
+  }
+  if (section === 'turn' && method === 'POST') {
+    const start = performance.now()
+    const turn = body<AgentTurnBody>(raw)
+    if (!turn.message?.trim() || !Array.isArray(turn.workflow?.steps)) return agentError(400, 'invalid_argument')
+    if (!S.llm.active) return agentError(400, 'model_unconfigured')
+    const key = turn.run_id || turn.composer_scope || (turn.draft_id && 'wr_' + turn.draft_id)
+    const run = key ? S.runs.find(item => item.id === key) : undefined
+    if (run && !turn.run_id) return agentError(409, 'draft_already_saved', { run_id: run.id })
+    if (!run && turn.run_id) return agentError(404, 'not_found')
+
+    const { topic, workflow } = structuredClone(turn)
+    const script = workflow.steps.find(item => item.type === 'llm_script' && item.id === turn.selected_step)
+      ?? workflow.steps.find(item => item.type === 'llm_script')
+    const targetCount = [3, 5].find(count => C.agent.suggestions.sceneCount(count).prompt === turn.message)
+    const changed = targetCount !== undefined && script !== undefined && run?.status !== 'running'
+    let name = changed ? 'studio_edit_workflow' : 'studio_read_workflow'
+    let answer: string = C.board.hint
+    let proposal: Proposal | undefined
+    let code: AgentErrorCode | undefined
+    let operation: Operation | undefined
+    let composerPatch: ComposerPatch | undefined
+    let op: string | undefined
+    if (changed) {
+      answer = C.agent.applied.sceneCount(script.config.scene_count ?? 3, targetCount)
+      script.config.scene_count = targetCount
+    } else if (/生成|出图/.test(turn.message)) {
+      operation = makeOperation(key || mockId('once-', 24), turn)
+      name = 'studio_generation'
+      op = operation.kind === 'image' ? 'submit_image' : 'submit_video'
+      answer = operation.kind === 'image' ? '画面准备好了，点「开始生成」就进队列。' : '片段准备好了，点「开始生成」就进队列。'
+    } else if (turn.workspace && turn.workspace !== 'workflow' && /改写|润色/.test(turn.message)) {
+      name = 'studio_rewrite_prompt'
+      const current = turn.composer?.prompt ?? ''
+      const now = sec()
+      proposal = { proposal_id: mockId('pr_', 24), scope_key: key ?? '', kind: 'composer', run_id: null, step_id: null,
+        target: { shot_ids: [], field: 'prompt', instruction: turn.message, reference_round_ids: [], workspace: turn.workspace },
+        before: [{ shot_id: null, n: 0, text: current }],
+        after: [{ shot_id: null, n: 0, text: current + '，斜光落在人行道上，街角的人物渐渐清晰。' }],
+        references_used: [], model: 'mock', status: 'pending', readset: [], writeset: [], undo_id: null, created_at: now, expires_at: now + 86400 }
+      proposals.set(proposal.proposal_id, proposal)
+      answer = '提示词写了一版，看下面的卡片。'
+    } else if (turn.workspace && turn.workspace !== 'workflow' && /方图|方形/.test(turn.message)) {
+      name = 'studio_generation'
+      op = 'edit_composer'
+      composerPatch = { workspace: turn.workspace, base_revision: turn.composer?.revision ?? null, changes: { width: 1024, height: 1024 } }
+      answer = '画幅改成 1024 × 1024 了。'
+    } else if (turn.message === C.agent.suggestions.timing.prompt && plugin.enabled) {
+      name = plugin.tool
+      const video = workflow.steps.find(item => item.enabled && item.type === 'video_gen')
+      const shots = workflow.steps.find(item => item.enabled && item.id === video?.config.scenes_from)?.config.scene_count
+      answer = video && shots ? approxDuration(shots * video.config.num_frames / 24) : C.board.hint
+    } else if (run && /改写|润色|电影感/.test(turn.message)) {
+      const node = run.workflow.steps.find(item => item.id === turn.selected_step) ?? script
+      if (node && isShotStep(node.type)) {
+        name = 'studio_rewrite_prompt'
+        const shotNumber = Number(turn.message.match(/第\s*(\d+)\s*镜/)?.[1])
+        const target = turn.selected_shot || mockShots(run, node).find(item => item.seq === shotNumber)?.shot_id
+        const result = mockRewrite(run, node, { instruction: turn.message, shot_ids: target ? [target] : [],
+          reference_round_ids: S.rounds.some(item => item.id === '018') ? ['018'] : [] })
+        if (typeof result === 'string') { code = result; answer = errorCopy(code).text }
+        else { proposal = result; answer = `${shotList(result.before.map(item => item.n))}写了一版，看下面的卡片。` }
+      }
+    }
+    const exchangeId = turn.turn_id || uid('turn-')
+    const tool = { name, ok: !code, code, call_id: exchangeId, op }
+    const tools = changed ? [
+      { name: 'studio_validate_workflow', ok: false, code: 'invalid_argument' as const, call_id: exchangeId + '-check' },
+      tool, { name: 'studio_request_run', ok: true, call_id: exchangeId + '-run' },
+    ] : [tool]
+    const cards = proposal ? [proposal] : []
+    recordMockUse(name, start, code, proposal?.proposal_id)
+    if (key) conversations.set(key, [...(conversations.get(key) ?? []).slice(-23),
+      { id: exchangeId, user: turn.message, answer, tools, state: 'done', proposals: cards, operation_id: operation?.operation_id }])
+    return ok([
+      { type: 'started', model: 'mock' },
+      ...tools.map(row => ({ type: 'tool' as const, ...row, ok: null })),
+      ...tools.map(row => ({ type: 'tool' as const, ...row,
+        ...(operation ? { operations: [structuredClone(operation)] } : {}), ...(composerPatch ? { composer_patch: composerPatch } : {}) })),
+      { type: 'done', message: answer, editor: changed ? { topic, workflow } : null,
+        run_request: changed && run && script ? { step_id: script.id, single_step: true } : null,
+        base_revision: run ? mockRevision(run) : null, proposals: cards, operations: operation ? [structuredClone(operation)] : [], composer_patch: composerPatch },
+    ] satisfies AgentEvent[])
+  }
+  return agentError(404, 'not_found')
+}
 
 export async function handle(method: string, path: string, raw: unknown, q: URLSearchParams) {
   const seg = path.replace(/^\/?api\//, '').split('/').filter(Boolean)
@@ -857,11 +1316,12 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   }
 
   if (head === 'workflows') {
+    if (seg[1] === 'agent') return agentRoute(method, seg.slice(2), raw, q)
     if (seg.length === 1 && method === 'GET') return ok({ builtin: BUILTIN_WF, custom: S.wfCustom, runs: S.runs.map(runSummary), step_catalog: STEP_CATALOG, ffmpeg_available: true })
     if (seg.length === 1 && method === 'POST') {
       const b = body<Partial<WfDef>>(raw)
       if (!b.name?.trim() || !b.steps?.length) return err(400, '模板需要名称和至少一个步骤')
-      const wf: WfDef = { id: 'wf_' + uid(''), builtin: false, name: b.name!, description: b.description || '', steps: b.steps! }
+      const wf: WfDef = { ...b, id: 'wf_' + uid(''), builtin: false, name: b.name!, description: b.description || '', steps: b.steps! }
       S.wfCustom.unshift(wf); return ok({ ok: true, workflow: wf, custom: S.wfCustom })
     }
     if (seg[1] === 'runs') {
@@ -871,17 +1331,18 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         const existing = b.request_id && S.runs.find(r => r.id === `wr_${b.request_id}`)
         if (existing) return ok({ ok: true, run: existing }, 201)
         let wf: WfDef | undefined
-        if (b.workflow?.steps) wf = { id: b.workflow.id || 'wf_' + uid(''), name: b.workflow.name || '自定义工作流', description: b.workflow.description || '', steps: b.workflow.steps }
+        if (b.workflow?.steps) wf = { ...b.workflow, id: b.workflow.id || 'wf_' + uid(''), name: b.workflow.name || '自定义工作流', description: b.workflow.description || '', steps: b.workflow.steps }
         else wf = [...BUILTIN_WF, ...S.wfCustom].find(w => w.id === (b.workflow_id || 'builtin:agent-long-video'))
         if (!wf) return err(400, `未找到工作流：${b.workflow_id}`)
         return ok({ ok: true, run: makeRun(wf, (b.topic ?? wf.default_topic ?? '').slice(0, 2000), b.request_id) }, 201)
       }
       const run = S.runs.find(r => r.id === seg[2])
-      if (!run) return err(404, '工作流运行记录不存在')
+      if (!run) return agentError(404, 'not_found')
       if (seg.length === 3 && method === 'GET') return ok({ run })
       if (seg.length === 3 && method === 'PATCH') {
-        if (run.status === 'running') return err(409, '运行中不能修改配置')
-        const b = body<{ topic?: string; workflow?: WfDef }>(raw)
+        const b = body<{ topic?: string; workflow?: WfDef; if_revision?: string }>(raw)
+        if (run.status === 'running') return b.if_revision ? agentError(409, 'running_locked') : err(409, '运行中不能修改配置')
+        if (b.if_revision && b.if_revision !== mockRevision(run)) return agentError(409, 'revision_conflict', { current_revision: mockRevision(run) })
         if (b.topic != null) run.topic = b.topic
         if (b.workflow) {
           const old = run.step_states
@@ -890,8 +1351,19 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         }
         run.updated_at = sec(); return ok({ ok: true, run })
       }
-      if (seg.length === 3 && method === 'DELETE') { if (run.status === 'running') return err(409, '运行中不能删除'); S.runs = S.runs.filter(r => r.id !== run.id); return ok({ ok: true }) }
+      if (seg.length === 3 && method === 'DELETE') {
+        if (run.status === 'running') return err(409, '运行中不能删除')
+        S.runs = S.runs.filter(item => item.id !== run.id)
+        conversations.delete(run.id)
+        return ok({ ok: true })
+      }
       const action = seg[3]
+      if (action === 'shots' && method === 'GET') {
+        const stepId = q.get('step_id')
+        const steps = run.workflow.steps.filter(step => !stepId || step.id === stepId)
+        if (stepId && !steps.length) return agentError(404, 'not_found')
+        return ok({ shots: steps.flatMap(step => mockShots(run, step)) })
+      }
       if ((action === 'start' || action === 'resume') && method === 'POST') {
         if (body<{ draft_only?: boolean }>(raw).draft_only && run.status !== 'draft') return err(409, '草稿已启动')
         if (S.runs.some(r => r.status === 'running')) return err(409, '已有工作流在运行')
@@ -900,9 +1372,34 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       }
       if (action === 'cancel' && method === 'POST') { run.status = 'canceled'; run.current_step_id = null; wfLog(run, '已终止'); return ok({ ok: true, run }) }
       if (action === 'steps' && seg[5] === 'retry' && method === 'POST') { driveRun(run, seg[4], !!body<{ single_step?: boolean }>(raw).single_step); return ok({ ok: true, run }, 202) }
+      if (action === 'steps' && seg[5] === 'shots' && seg[6] === 'rewrite' && method === 'POST') {
+        const step = run.workflow.steps.find(item => item.id === seg[4])
+        if (!step) return agentError(404, 'not_found')
+        const started = performance.now()
+        const result = mockRewrite(run, step, body<RewriteInput>(raw))
+        await new Promise(resolve => setTimeout(resolve, 450))
+        if (typeof result === 'string') {
+          recordMockUse('studio_rewrite_prompt', started, result)
+          return agentError(result === 'not_found' ? 404 : result === 'running_locked' ? 409 : 400, result)
+        }
+        recordMockUse('studio_rewrite_prompt', started, undefined, result.proposal_id)
+        return ok(result)
+      }
       if (action === 'steps' && seg[5] === 'output' && method === 'POST') {
+        const { shot_edits: edits } = body<{ shot_edits?: ShotEdit[] }>(raw)
+        if (edits) {
+          if (!Array.isArray(edits) || !edits.length) return agentError(400, 'invalid_argument')
+          const result = mockWrite(run, seg[4], edits, 'all')
+          return 'status' in result ? result : ok(result)
+        }
         const patch = body<{ output?: Record<string, unknown> }>(raw).output || body<Record<string, unknown>>(raw)
-        run.step_states[seg[4]].output = { ...run.step_states[seg[4]].output, ...patch }; return ok({ ok: true, run })
+        const step = run.workflow.steps.find(item => item.id === seg[4])
+        if (!step) return agentError(404, 'not_found')
+        if (run.status === 'running') return agentError(409, 'running_locked')
+        const state = run.step_states[step.id]
+        state.output = { ...state.output, ...stampOutput(run, step, patch, false) }
+        if (state.status === 'pending' || state.status === 'error') { state.status = 'done'; state.error = '' }
+        return ok({ ok: true, run })
       }
       if (action === 'assets' && method === 'POST') {
         if (!(raw instanceof Blob)) return err(400, '需要上传图片')

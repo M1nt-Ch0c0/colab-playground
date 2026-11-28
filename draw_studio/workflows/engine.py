@@ -12,6 +12,7 @@ import threading
 import time
 import traceback
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +24,8 @@ from ..generation.masked_edit import source_image
 from ..generation.video_reference import VIDEO_TASKS, probe_reference_video
 from . import video, web_assets
 from .definitions import BUILTIN_WORKFLOWS, STEP_CATALOG, normalize_workflow_def, render_template, upgrade_stored_workflow
+from .harness_errors import HarnessError
+from .harness_store import SHOT_LISTS, HarnessStore, stamp_shots
 
 
 WORKFLOWS_MAX = 40
@@ -53,6 +56,13 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def _pending_step(previous=None):
+    state = {"status": "pending", "started_at": None, "finished_at": None, "progress": "", "output": {}, "error": ""}
+    if previous and "shot_generation" in previous:
+        state["shot_generation"] = previous["shot_generation"]
+    return state
+
+
 class WorkflowEngine:
     """Manages composable workflow definitions, persistent runs, and background execution."""
 
@@ -72,6 +82,7 @@ class WorkflowEngine:
         self._active_thread: threading.Thread | None = None
         self._cancel_event = threading.Event()
         self._paused: dict[str, tuple[int, dict]] = {}
+        self.harness_store: HarnessStore | None = None
         self._recover_interrupted_runs()
 
     # ── definitions ───────────────────────────────────────────────────
@@ -152,7 +163,7 @@ class WorkflowEngine:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def _read_run_locked(self, run_id: str) -> dict[str, Any] | None:
+    def _read_run_locked(self, run_id: str, *, sync_shots=True) -> dict[str, Any] | None:
         try:
             p = self._run_file(run_id)
         except ValueError:
@@ -161,14 +172,19 @@ class WorkflowEngine:
             return None
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("workflow"), dict):
-                upgrade_stored_workflow(data["workflow"])
-            return data if isinstance(data, dict) else None
         except (OSError, json.JSONDecodeError):
             return None
+        if not isinstance(data, dict):
+            return None
+        if isinstance(data.get("workflow"), dict):
+            upgrade_stored_workflow(data["workflow"])
+            if sync_shots:
+                self._sync_shots_locked(data)
+        return data
 
-    def _write_run_locked(self, run: dict[str, Any]) -> None:
-        run["updated_at"] = int(time.time())
+    def _write_run_locked(self, run: dict[str, Any], *, touch=True) -> None:
+        if touch:
+            run["updated_at"] = int(time.time())
         p = self._run_file(run["id"])
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".json.tmp")
@@ -179,12 +195,47 @@ class WorkflowEngine:
         else:
             self._paused.pop(run["id"], None)
 
+    def _sync_shots_locked(self, run):
+        if self.harness_store is None:
+            return
+        changed = False
+        for step in run["workflow"]["steps"]:
+            state = run.get("step_states", {}).get(step["id"])
+            if step["type"] in SHOT_LISTS and state is not None:
+                changed |= self.harness_store.sync_shots(run["id"], step["id"], state, step["type"])
+        if changed:
+            self._write_run_locked(run, touch=False)
+
+    @contextmanager
+    def shot_run(self, run_id, *, write=False):
+        with self._lock:
+            run = self._read_run_locked(run_id)
+            if not run:
+                raise HarnessError("not_found")
+            if write and (self._active_run_id == run_id or run["status"] == "running"):
+                raise HarnessError("running_locked")
+            yield run
+
+    def mirror_shot_write(self, run):
+        # A committed field version is recoverable from SQLite if the JSON mirror cannot be replaced.
+        try:
+            self._write_run_locked(run)
+        except OSError as exc:
+            self.log(f"分镜输出同步失败 ({type(exc).__name__})")
+
+    def detach_harness(self):
+        with self._lock:
+            self._cancel_event.set()
+            store, self.harness_store = self.harness_store, None
+        if store is not None:
+            store.close()
+
     def _recover_interrupted_runs(self) -> None:
         with self._lock:
             for d in self.runs_dir.iterdir():
                 if not d.is_dir() or not RUN_ID_RE.fullmatch(d.name):
                     continue
-                run = self._read_run_locked(d.name)
+                run = self._read_run_locked(d.name, sync_shots=False)
                 if not run:
                     continue
                 if run.get("status") == "running":
@@ -230,7 +281,7 @@ class WorkflowEngine:
             for d in self.runs_dir.iterdir():
                 if not d.is_dir() or not RUN_ID_RE.fullmatch(d.name):
                     continue
-                run = self._read_run_locked(d.name)
+                run = self._read_run_locked(d.name, sync_shots=False)
                 if run:
                     out.append(self._run_summary(run))
         out.sort(key=lambda r: r.get("updated_at") or 0, reverse=True)
@@ -239,7 +290,7 @@ class WorkflowEngine:
     def active_summary(self) -> dict[str, Any] | None:
         with self._lock:
             if self._active_run_id:
-                run = self._read_run_locked(self._active_run_id)
+                run = self._read_run_locked(self._active_run_id, sync_shots=False)
                 if run and run["status"] == "running":
                     return self._run_summary(run)
             recent = max(self._paused.values(), key=lambda item: (item[0], item[1]["id"]), default=None)
@@ -278,17 +329,7 @@ class WorkflowEngine:
         if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id)):
             raise ValueError("无效的草稿请求 ID")
         run_id = "wr_" + (request_id or uuid.uuid4().hex)
-        step_states = {
-            st["id"]: {
-                "status": "pending",
-                "started_at": None,
-                "finished_at": None,
-                "progress": "",
-                "output": {},
-                "error": "",
-            }
-            for st in wf_obj["steps"]
-        }
+        step_states = {st["id"]: _pending_step() for st in wf_obj["steps"]}
         run: dict[str, Any] = {
             "id": run_id,
             "topic": topic,
@@ -317,8 +358,17 @@ class WorkflowEngine:
         """Update topic and/or workflow step definitions on a non-running run."""
         with self._lock:
             if self._active_run_id == run_id:
+                if "if_revision" in body:
+                    raise HarnessError("running_locked")
                 raise StateConflict("工作流正在运行，请先暂停或停止后再修改步骤配置")
             run = self._read_run_locked(run_id)
+            if "if_revision" in body:
+                from .agent_tools import editor_revision
+                if not run:
+                    raise HarnessError("not_found")
+                current_revision = editor_revision(run)
+                if body["if_revision"] != current_revision:
+                    raise HarnessError("revision_conflict", details={"current_revision": current_revision})
             if not run:
                 raise ValueError("运行记录不存在")
             if "topic" in body:
@@ -326,7 +376,9 @@ class WorkflowEngine:
                 if len(topic) > 2000:
                     raise ValueError("主题描述不超过 2000 字")
                 run["topic"] = topic
+            removed = set()
             if isinstance(body.get("workflow"), dict) and body["workflow"].get("steps"):
+                old_types = {step["id"]: step["type"] for step in run["workflow"]["steps"]}
                 raw_wf = dict(body["workflow"])
                 raw_wf.setdefault("name", run["workflow"].get("name") or "工作流")
                 if "variables" not in raw_wf and run["workflow"].get("variables"):
@@ -339,16 +391,16 @@ class WorkflowEngine:
                 new_states = {}
                 for st in norm["steps"]:
                     sid = st["id"]
-                    new_states[sid] = old_states.get(sid) or {
-                        "status": "pending",
-                        "started_at": None,
-                        "finished_at": None,
-                        "progress": "",
-                        "output": {},
-                        "error": "",
-                    }
+                    if sid in old_types and old_types[sid] != st["type"]:
+                        new_states[sid] = _pending_step(old_states.get(sid))
+                        removed.add(sid)
+                    else:
+                        new_states[sid] = old_states.get(sid) or _pending_step()
+                removed.update(old_states.keys() - new_states.keys())
                 run["step_states"] = new_states
             self._write_run_locked(run)
+            if removed and self.harness_store:
+                self.harness_store.clear_shots(run_id, removed)
             run["assets"] = self._list_assets_locked(run_id)
             return copy.deepcopy(run)
 
@@ -359,6 +411,8 @@ class WorkflowEngine:
             d = self._run_dir(run_id)
             if not d.exists():
                 return False
+            if self.harness_store:
+                self.harness_store.clear_shots(run_id)
             shutil.rmtree(d)
             self._paused.pop(run_id, None)
             return True
@@ -519,13 +573,20 @@ class WorkflowEngine:
                 raise ValueError(f"未找到步骤：{step_id}")
             ss = run["step_states"][step_id]
             cur_out = dict(ss.get("output") or {})
+            step_type = next((step["type"] for step in run["workflow"]["steps"] if step["id"] == step_id), None)
+            shot_list = SHOT_LISTS.get(step_type) if self.harness_store else None
+            previous = cur_out.get(shot_list) if shot_list else None
             cur_out.update(output_patch)
             ss["output"] = cur_out
+            if shot_list and shot_list in output_patch:
+                stamp_shots(ss, step_type, previous=previous if isinstance(previous, list) else [])
             if ss.get("status") in {"pending", "error"}:
                 ss["status"] = "done"
                 ss["error"] = ""
             self._append_log_locked(run, f"人工已编辑步骤「{step_id}」的输出")
             self._write_run_locked(run)
+            if shot_list and shot_list in output_patch:
+                self._sync_shots_locked(run)
             run["assets"] = self._list_assets_locked(run_id)
             return copy.deepcopy(run)
 
@@ -550,14 +611,7 @@ class WorkflowEngine:
                 end_reset = idx + 1 if single_step else len(steps)
                 for j in range(idx, end_reset):
                     sid = steps[j]["id"]
-                    run["step_states"][sid] = {
-                        "status": "pending",
-                        "started_at": None,
-                        "finished_at": None,
-                        "progress": "",
-                        "output": {},
-                        "error": "",
-                    }
+                    run["step_states"][sid] = _pending_step(run["step_states"].get(sid))
             else:
                 # Resume from first non-done step, or restart from 0 if already finished/canceled
                 first_pending = next(
@@ -569,14 +623,7 @@ class WorkflowEngine:
                 )
                 if first_pending < 0:
                     for s in steps:
-                        run["step_states"][s["id"]] = {
-                            "status": "pending",
-                            "started_at": None,
-                            "finished_at": None,
-                            "progress": "",
-                            "output": {},
-                            "error": "",
-                        }
+                        run["step_states"][s["id"]] = _pending_step(run["step_states"].get(s["id"]))
                     start_idx = 0
                 else:
                     start_idx = first_pending
@@ -623,6 +670,7 @@ class WorkflowEngine:
     def _append_log_locked(self, run: dict[str, Any], msg: str) -> None:
         line = f"{time.strftime('%H:%M:%S')}  {msg}"
         logs = run.setdefault("logs", [])
+        run["log_count"] = run.get("log_count", len(logs)) + 1
         logs.append(line)
         if len(logs) > 200:
             del logs[:-200]
@@ -716,6 +764,9 @@ class WorkflowEngine:
                     ss["finished_at"] = int(time.time())
                     ss["progress"] = "已完成"
                     ss["output"] = output
+                    track_shots = self.harness_store is not None and step["type"] in SHOT_LISTS
+                    if track_shots:
+                        stamp_shots(ss, step["type"], replace=True)
                     ss["error"] = ""
                     self._append_log_locked(run, f"完成步骤：{step['name']}")
                     has_more = (idx + 1 < end_idx) and any(steps[k].get("enabled", True) for k in range(idx + 1, end_idx))
@@ -724,9 +775,11 @@ class WorkflowEngine:
                         run["current_step_id"] = None
                         run["pause_reason"] = f"已在「{step['name']}」后暂停，请检查或编辑结果后点击「继续下一步」"
                         self._append_log_locked(run, run["pause_reason"])
-                        self._write_run_locked(run)
-                        return
                     self._write_run_locked(run)
+                    if track_shots:
+                        self._sync_shots_locked(run)
+                    if step.get("pause_after") and has_more:
+                        return
 
             with self._lock:
                 run = self._read_run_locked(run_id)

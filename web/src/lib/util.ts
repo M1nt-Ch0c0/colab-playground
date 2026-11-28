@@ -1,5 +1,9 @@
 export const cx = (...a: (string | false | null | undefined | 0)[]) => a.filter(Boolean).join(' ')
 
+export function requestId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 let skew = 0
 export const setClockSkew = (serverTime: number) => { skew = serverTime - Date.now() / 1000 }
 export const now = () => Date.now() / 1000 + skew
@@ -70,6 +74,7 @@ export const modKey = isMac ? '⌘' : 'Ctrl'
 export const LS_KEYS = {
   theme: 'colabreel.theme',
   draft: 'colabreel.draft',
+  composerScope: 'colabreel.composerScope',
   phist: 'colabreel.phist',
   libopen: 'colabreel.libopen',
   grab: 'colabreel.grab',

@@ -3,11 +3,14 @@
 import type {
   AssetUpload, CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, LinkSpec, ProxyProfileBody, ProxyState, ProxyTest,
   References, RewriteBody, RoundsResponse, Round, Status, Storage, StudioPreset, TrashResponse, WfDef, WfRun, WorkflowsResponse,
-  LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult,
+  LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult, AgentErrorCode, AgentEvent,
+  AgentPlugins, AgentPluginAction, AgentTurnBody, SavedAgentExchange, AgentTelemetry,
+  Proposal, ProposalAction, RewriteInput, Shot, ShotEdit, ShotWriteResult,
+  Operation, MaskRecord, EditMask, ComposerPrompt, ComposerWriteResult,
 } from './types'
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message) }
+  constructor(public status: number, message: string, public code?: AgentErrorCode, public details?: Record<string, unknown>) { super(message) }
 }
 
 type Body = unknown
@@ -18,11 +21,16 @@ export const installMock = (h: Handler) => { mockHandler = h }
 /** 相对路径，兼容部署在子路径下（旧版就是这么做的） */
 const BASE = ''
 
+function apiError(status: number, data: unknown) {
+  const body = data as { error?: string; code?: AgentErrorCode; details?: Record<string, unknown> } | null
+  return new ApiError(status, body?.error || 'HTTP ' + status, body?.code, body?.details)
+}
+
 async function request<T>(method: string, path: string, body?: Body): Promise<T> {
   if (__MOCK__ && mockHandler) {
     const [p, qs] = path.split('?')
     const r = await mockHandler(method, p, body, new URLSearchParams(qs || ''))
-    if (r.status >= 400) throw new ApiError(r.status, (r.json as { error?: string })?.error || `HTTP ${r.status}`)
+    if (r.status >= 400) throw apiError(r.status, r.json)
     return r.json as T
   }
   const init: RequestInit = { method, credentials: 'same-origin', headers: {} }
@@ -36,7 +44,7 @@ async function request<T>(method: string, path: string, body?: Body): Promise<T>
   const ct = res.headers.get('content-type') || ''
   if (!ct.includes('json')) throw new ApiError(res.status, `服务返回了非 JSON 响应（HTTP ${res.status}）`)
   const data = await res.json()
-  if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`)
+  if (!res.ok) throw apiError(res.status, data)
   return data as T
 }
 const get = <T>(p: string) => request<T>('GET', p)
@@ -44,6 +52,61 @@ const post = <T>(p: string, b: Body = {}) => request<T>('POST', p, b)
 const del = <T>(p: string, b?: Body) => request<T>('DELETE', p, b)
 const patch = <T>(p: string, b: Body) => request<T>('PATCH', p, b)
 const enc = encodeURIComponent
+
+async function agentTurn(body: AgentTurnBody, signal: AbortSignal, receive: (event: AgentEvent) => void) {
+  const path = 'api/workflows/agent/turn'
+  function consume(event: AgentEvent) {
+    if (event.type === 'error') {
+      receive(event)
+      throw new ApiError(200, event.message, event.code)
+    }
+    receive(event)
+    if (event.type === 'done') return event
+  }
+  if (__MOCK__ && mockHandler) {
+    const events = await request<AgentEvent[]>('POST', path, body)
+    let gathering = true
+    for (const event of events) {
+      if (gathering && (event.type === 'done' || event.type === 'tool' && event.ok !== null)) {
+        gathering = false
+        await new Promise(resolve => setTimeout(resolve, 540))
+      }
+      signal.throwIfAborted()
+      const done = consume(event)
+      if (done) return done
+    }
+  } else {
+    const res = await fetch(BASE + path, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal })
+    if (res.status === 401) location.hash = 'login'
+    if (!res.ok) throw apiError(res.status, await res.json().catch(() => null))
+    if (!res.body || !res.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+      throw new ApiError(res.status, 'Expected NDJSON', 'internal_error')
+    }
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+    let buffer = ''
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (!chunk.done) buffer += chunk.value
+        const lines = buffer.split('\n')
+        buffer = chunk.done ? '' : lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.trim()) continue
+          let event: AgentEvent
+          try { event = JSON.parse(line) }
+          catch { throw new ApiError(res.status, 'Invalid NDJSON event', 'internal_error') }
+          const done = consume(event)
+          if (done) return done
+        }
+        if (chunk.done) break
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+    }
+  }
+  throw new ApiError(0, 'The stream ended before a result', 'internal_error')
+}
 
 /** 媒体地址。mock 模式由 mock 层生成 data/blob URL */
 export const media = {
@@ -135,18 +198,44 @@ export const api = {
   },
 
   wf: {
+    agentTurn,
+    conversation: (key: string) => get<{ exchanges: SavedAgentExchange[] }>(`api/workflows/agent/conversations/${enc(key)}`),
+    stopTurn: (key: string, turn_id: string) => post<{ stopped: boolean }>(`api/workflows/agent/conversations/${enc(key)}/stop`, { turn_id }),
+    plugins: () => get<AgentPlugins>('api/workflows/agent/plugins'),
+    changePlugin: (id: string, action: AgentPluginAction) => post<AgentPlugins>(`api/workflows/agent/plugins/${enc(id)}`, { action }),
+    shots: (id: string, step?: string) => get<{ shots: Shot[] }>(`api/workflows/runs/${enc(id)}/shots${step ? '?step_id=' + enc(step) : ''}`),
+    rewriteShots: (id: string, step: string, body: RewriteInput) =>
+      post<Proposal>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/shots/rewrite`, body),
+    applyProposal: (id: string, body: ProposalAction) => post<ShotWriteResult>(`api/workflows/agent/proposals/${enc(id)}/apply`, body),
+    rejectProposal: (id: string) => post<Proposal>(`api/workflows/agent/proposals/${enc(id)}/reject`),
+    undoShots: (id: string) => post<ShotWriteResult>(`api/workflows/agent/undo/${enc(id)}`),
+    applyComposer: (id: string, body: ComposerPrompt) =>
+      post<ComposerWriteResult>(`api/workflows/agent/proposals/${enc(id)}/composer-apply`, body),
+    undoComposer: (id: string, body: ComposerPrompt) =>
+      post<ComposerWriteResult>(`api/workflows/agent/undo/${enc(id)}/composer`, body),
+    operations: (scope: string) => get<{ operations: Operation[] }>(`api/workflows/agent/operations?scope_key=${enc(scope)}`),
+    operation: (id: string) => get<Operation>(`api/workflows/agent/operations/${enc(id)}`),
+    approveOperation: (id: string) => post<Operation>(`api/workflows/agent/operations/${enc(id)}/approve`),
+    cancelOperation: (id: string) => post<Operation>(`api/workflows/agent/operations/${enc(id)}/cancel`),
+    retryOperation: (id: string, item_keys?: string[]) =>
+      post<Operation>(`api/workflows/agent/operations/${enc(id)}/retry-failed`, { item_keys }),
+    createMask: (body: EditMask) => post<MaskRecord>('api/workflows/agent/masks', body),
+    mask: (id: string) => get<MaskRecord>(`api/workflows/agent/masks/${enc(id)}`),
+    telemetry: () => get<AgentTelemetry>('api/workflows/agent/telemetry'),
     list: () => get<WorkflowsResponse>('api/workflows'),
     saveTemplate: (wf: Partial<WfDef>) => post<{ workflow: WfDef; custom: WfDef[] }>('api/workflows', wf),
     deleteTemplate: (id: string) => del<{ custom: WfDef[] }>(`api/workflows/${enc(id)}`),
     createRun: (b: { request_id?: string; workflow_id?: string; workflow?: Partial<WfDef>; topic?: string }) => post<{ run: WfRun }>('api/workflows/runs', b),
     run: (id: string) => get<{ run: WfRun }>(`api/workflows/runs/${enc(id)}`),
-    update: (id: string, b: { topic?: string; workflow?: WfDef }) => patch<{ run: WfRun }>(`api/workflows/runs/${enc(id)}`, b),
+    update: (id: string, b: { topic?: string; workflow?: WfDef; if_revision?: string }) => patch<{ run: WfRun }>(`api/workflows/runs/${enc(id)}`, b),
     deleteRun: (id: string) => del(`api/workflows/runs/${enc(id)}`),
     start: (id: string, from_step_id?: string, draft_only = false) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/start`, { from_step_id, draft_only }),
     resume: (id: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/resume`, {}),
     cancel: (id: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/cancel`, {}),
     retry: (id: string, step: string, single_step = true) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/retry`, { single_step }),
     saveOutput: (id: string, step: string, output: Record<string, unknown>) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/output`, { output }),
+    saveShotEdits: (id: string, step: string, shot_edits: ShotEdit[]) =>
+      post<ShotWriteResult>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/output`, { shot_edits }),
     uploadAsset: (id: string, file: Blob, step_id: string) => request<AssetUpload>('POST', `api/workflows/runs/${enc(id)}/assets?step_id=${enc(step_id)}&label=upload`, file),
     deleteAsset: (id: string, f: string) => del(`api/workflows/runs/${enc(id)}/assets/${enc(f)}`),
   },

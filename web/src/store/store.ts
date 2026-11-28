@@ -2,9 +2,10 @@
 import { create } from 'zustand'
 import { api, ApiError } from '../api/client'
 import type {
-  ComfyConfig, Config, EditMask, GeneratePayload, LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
+  ComfyConfig, ComposerContext, ComposerPatch, ComposerPrompt, Config, EditMask, GeneratePayload,
+  LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
 } from '../api/types'
-import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, setClockSkew } from '../lib/util'
+import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, parseHfLink, requestId, setClockSkew } from '../lib/util'
 
 export interface ToastItem { id: number; text: string; kind: 'ok' | 'err' | ''; undo?: { label: string; fn: () => void } }
 export type Workspace = 'image' | 'video' | 'workflow'
@@ -23,6 +24,7 @@ export interface Draft {
   width: number; height: number; steps: number; cfg: number; seed: string
   count: number; useRef: boolean; chain: boolean
   editMask: EditMask | null
+  maskId: string | null
   loras: Lora[]
   gpu: string
 }
@@ -33,7 +35,7 @@ const EMPTY_DRAFT: Draft = {
   workflow: 't2va', frames: 124, offload: 'auto', videoTask: 'images', videoUseImages: false, useFirstFrame: true,
   idea: '', prompt: '', negative: 'blurry, lowres, jpeg artifacts, deformed, bad anatomy, watermark, text, logo, signature',
   width: 768, height: 1152, steps: 35, cfg: 5, seed: '-1',
-  count: 1, useRef: false, chain: false, editMask: null, loras: [], gpu: 'A100',
+  count: 1, useRef: false, chain: false, editMask: null, maskId: null, loras: [], gpu: 'A100',
 }
 
 function modelLink(link: SavedModelLink | undefined): string {
@@ -63,6 +65,7 @@ interface Store {
   logSeq: number; logs: string[]
   workspace: Workspace
   draft: Draft
+  draftRevision: string
   sheet: SheetName; sheetArgs: Record<string, unknown>
   viewing: string | null
   galleryFilter: { kind: '' | 'image' | 'video'; starred: boolean; q: string }
@@ -96,6 +99,8 @@ interface Store {
   applyPreset: (p: StudioPreset) => void
   loadWf: () => Promise<void>
   setWfRun: (r: WfRun | null) => void
+  agentPluginRev: number
+  bumpAgentPluginRev: () => void
 }
 
 let toastSeq = 1
@@ -124,9 +129,10 @@ export const useStore = create<Store>((set, get) => ({
   cfg: null, status: null, storage: null,
   rounds: [], roundsRev: -1,
   logSeq: 0, logs: [],
-  workspace: 'image',
+  workspace: new URLSearchParams(location.search).has('workflow') ? 'workflow' : 'image',
   videoRefBusy: false,
   draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>(LS_KEYS.draft, {}) },
+  draftRevision: requestId(),
   sheet: null, sheetArgs: {},
   viewing: null,
   galleryFilter: { kind: '', starred: false, q: '' },
@@ -186,8 +192,9 @@ export const useStore = create<Store>((set, get) => ({
   setWorkspace: w => set({ workspace: w }),
   patchDraft: p => {
     const draft = { ...get().draft, ...p }
-    if (p.useRef || p.chain) draft.editMask = null
-    set({ draft })
+    if (p.useRef || p.chain) { draft.editMask = null; draft.maskId = null }
+    if (Object.hasOwn(p, 'editMask') && !Object.hasOwn(p, 'maskId')) draft.maskId = null
+    set({ draft, draftRevision: requestId() })
     clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet(LS_KEYS.draft, draft), 300)
   },
   openSheet: (s, args = {}) => set({ sheet: s, sheetArgs: args }),
@@ -295,6 +302,8 @@ export const useStore = create<Store>((set, get) => ({
     } catch (e) { get().toast(e instanceof Error ? e.message : '加载工作流失败', 'err') }
   },
   setWfRun: r => set({ wfRun: r }),
+  agentPluginRev: 0,
+  bumpAgentPluginRev: () => set(s => ({ agentPluginRev: s.agentPluginRev + 1 })),
 }))
 
 export function selectPollInterval({ status }: Store) {
@@ -305,3 +314,179 @@ export function selectPollInterval({ status }: Store) {
 
 export const selectRefs = (s: Store): References | null => s.status?.references || null
 export const serverNow = now
+
+export function assistantComposerScope() {
+  const stored = lsGet<string>(LS_KEYS.composerScope, '')
+  if (/^cr_[a-f0-9]{32}$/.test(stored)) return stored
+  const key = 'cr_' + requestId()
+  lsSet(LS_KEYS.composerScope, key)
+  return key
+}
+
+const HF_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+const MASK_ID_RE = /^mk_[a-f0-9]{24}$/
+const VIDEO_REF_ID_RE = /^v[a-f0-9]{32}$/
+
+function clampInt(value: number, low: number, high: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(high, Math.max(low, Math.round(value))) : fallback
+}
+
+function clampFloat(value: number, low: number, high: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback
+}
+
+function safeDecode(text: string): string {
+  try { return decodeURIComponent(text) } catch { return text }
+}
+
+function sanitizeContextLora(row: Lora, maxScale: number): Lora | null {
+  const rawRepo = row.repo_id.trim()
+  if (!rawRepo) return null
+  let repo = rawRepo.replace(/^\/+|\/+$/g, '')
+  let weight = row.weight_name.trim()
+  const hf = rawRepo.match(/^(?:https?:\/\/)?(?:www\.)?(?:huggingface\.co|hf-mirror\.com|hf\.co)\/(?:models\/)?([^/]+\/[^/]+)\/(?:blob|resolve|raw)\/[^/]+\/(.+?)(?:[?#].*)?$/i)
+  if (hf) {
+    repo = hf[1]
+    weight = weight || safeDecode(hf[2]).trim()
+  } else {
+    const parsed = parseHfLink(rawRepo)
+    if (parsed && parsed.repo !== '直链') {
+      repo = parsed.repo.trim()
+      weight = weight || parsed.file.trim()
+    } else if (rawRepo.includes(':') && !rawRepo.startsWith('/') && !/^https?:\/\//i.test(rawRepo)) {
+      const idx = rawRepo.indexOf(':')
+      const left = rawRepo.slice(0, idx).trim().replace(/^\/+|\/+$/g, '')
+      const right = rawRepo.slice(idx + 1).replace(/^:+/, '').trim()
+      if (HF_REPO_RE.test(left)) {
+        repo = left
+        weight = weight || right
+      }
+    } else {
+      const segs = repo.split('/').filter(Boolean)
+      if (segs.length >= 3 && HF_REPO_RE.test(`${segs[0]}/${segs[1]}`)) {
+        repo = `${segs[0]}/${segs[1]}`
+        weight = weight || segs.slice(2).join('/')
+      }
+    }
+  }
+  if (!HF_REPO_RE.test(repo) || repo.length > 160) return null
+  return { repo_id: repo, weight_name: weight.slice(0, 360), scale: clampFloat(row.scale, 0, maxScale, 1) }
+}
+
+export function assistantComposerContext(): ComposerContext {
+  const { draft: d, workspace, status, draftRevision, cfg } = useStore.getState()
+  const refs = status?.references
+  const lim = cfg?.limits
+  const seed = d.seed.trim() ? Number(d.seed) : -1
+  const maxLoras = lim?.loras_max ?? 4
+  const maxScale = lim?.lora_scale_max ?? 2.5
+  const loras = d.loras
+    .map(row => sanitizeContextLora(row, maxScale))
+    .filter((row): row is Lora => row !== null)
+    .slice(0, maxLoras)
+  const common = {
+    revision: draftRevision,
+    prompt: d.prompt.slice(0, lim?.prompt_max ?? 12000),
+    idea: d.idea.slice(0, 600),
+    negative: d.negative.slice(0, lim?.negative_max ?? 1200),
+    width: clampInt(d.width, 1, 4096, EMPTY_DRAFT.width),
+    height: clampInt(d.height, 1, 4096, EMPTY_DRAFT.height),
+    steps: clampInt(d.steps, 1, 200, EMPTY_DRAFT.steps),
+    count: clampInt(d.count, 1, lim?.count_max ?? 4, 1),
+    cfg: clampFloat(d.cfg, 0, 100, EMPTY_DRAFT.cfg),
+    seed: Number.isInteger(seed) && seed >= 0 && seed <= 2 ** 31 - 1 ? seed : -1,
+    loras,
+  }
+  if (workspace === 'video') {
+    const task = d.workflow === 'ref2va' ? d.videoTask : 'images'
+    const videoRefId = task !== 'images' && refs?.video?.id && VIDEO_REF_ID_RE.test(refs.video.id) ? refs.video.id : undefined
+    return {
+      ...common, mode: 'video', workflow: d.workflow,
+      num_frames: clampInt(d.frames, 1, 400, EMPTY_DRAFT.frames),
+      offload_mode: d.offload, video_task: task, video_reference_id: videoRefId,
+      has_image: d.workflow === 'fl2va' ? d.useFirstFrame && !!refs?.first.set
+        : d.workflow === 'ref2va' && !!refs?.first.set && (task === 'images' || task === 'motion' || d.videoUseImages),
+      has_last_image: d.workflow === 'fl2va' && !!refs?.last.set,
+    }
+  }
+  const ggufRepo = d.ggufRepo.trim().replace(/^\/+|\/+$/g, '')
+  const comfyRaw = d.engine === 'comfyui' ? comfyPayload(d) : undefined
+  const comfy = comfyRaw ? {
+    template: comfyRaw.template.trim().slice(0, 80),
+    diffusion: comfyRaw.diffusion.slice(0, 500),
+    text_encoder: comfyRaw.text_encoder.slice(0, 500),
+    vae: comfyRaw.vae.slice(0, 500),
+    sampler: comfyRaw.sampler.trim().slice(0, 80),
+    scheduler: comfyRaw.scheduler.trim().slice(0, 80),
+    clip_type: comfyRaw.clip_type ? comfyRaw.clip_type.trim().slice(0, 80) : undefined,
+    denoise: typeof comfyRaw.denoise === 'number' && Number.isFinite(comfyRaw.denoise)
+      && comfyRaw.denoise >= 0.05 && comfyRaw.denoise <= 1 ? comfyRaw.denoise : undefined,
+  } : undefined
+  return {
+    ...common, mode: 'image', engine: d.engine, model: d.model.trim().slice(0, 160), chain: d.chain,
+    has_image: d.useRef || !!d.editMask,
+    mask_id: d.maskId && MASK_ID_RE.test(d.maskId) ? d.maskId : null,
+    comfy,
+    custom_transformer_repo: HF_REPO_RE.test(ggufRepo) && ggufRepo.length <= 160 ? ggufRepo : '',
+    custom_transformer_file: d.ggufFile.trim().slice(0, 200),
+  }
+}
+
+export async function applyAssistantComposerPatch({ workspace, base_revision, changes }: ComposerPatch) {
+  const applies = () => {
+    const s = useStore.getState()
+    return workspace === s.workspace && !!base_revision && base_revision === s.draftRevision
+  }
+  if (!applies()) return false
+  const mask = changes.mask_id ? await api.wf.mask(changes.mask_id) : undefined
+  if (!applies()) return false
+  const { draft, patchDraft } = useStore.getState()
+  const patch: Partial<Draft> = {}
+  for (const field of ['prompt', 'idea', 'negative', 'model'] as const) {
+    if (typeof changes[field] === 'string') patch[field] = changes[field]
+  }
+  for (const field of ['width', 'height', 'steps', 'cfg', 'count'] as const) {
+    if (typeof changes[field] === 'number') patch[field] = changes[field]
+  }
+  if (changes.seed != null) patch.seed = String(changes.seed)
+  if (changes.loras) patch.loras = changes.loras.map(row => ({ ...row, scale: row.scale ?? 1 }))
+  if (workspace === 'image') {
+    if (changes.engine) patch.engine = changes.engine
+    if (changes.comfy) Object.assign(patch, comfyDraftFields({ ...comfyPayload(draft), ...Object.fromEntries(
+      Object.entries(changes.comfy).filter(([, value]) => value != null),
+    ) }))
+    if (changes.custom_transformer_repo != null) patch.ggufRepo = changes.custom_transformer_repo
+    if (changes.custom_transformer_file != null) patch.ggufFile = changes.custom_transformer_file
+    if (changes.chain != null) patch.chain = changes.chain
+    if (changes.has_image != null) patch.useRef = changes.has_image
+    if (mask) Object.assign(patch, { editMask: { source_id: mask.source_id, strokes: mask.strokes },
+      maskId: mask.mask_id, chain: false, useRef: false })
+    else if (('mask_id' in changes && changes.mask_id === null) || changes.chain === true || changes.has_image === false) {
+      Object.assign(patch, { editMask: null, maskId: null })
+    }
+  } else {
+    if (changes.workflow) patch.workflow = changes.workflow
+    if (changes.num_frames) patch.frames = changes.num_frames
+    if (changes.offload_mode) patch.offload = changes.offload_mode
+    if (changes.video_task) patch.videoTask = changes.video_task
+    if (changes.has_image != null) {
+      if ((changes.workflow ?? draft.workflow) === 'fl2va') patch.useFirstFrame = changes.has_image
+      else patch.videoUseImages = changes.has_image
+    }
+  }
+  patchDraft(patch)
+  return true
+}
+
+export function assistantComposerPrompt(): ComposerPrompt | undefined {
+  const { workspace, draft } = useStore.getState()
+  if (workspace === 'workflow') return
+  return { workspace, prompt: draft.prompt }
+}
+
+export function applyAssistantComposerPrompt(expected: ComposerPrompt, prompt: string) {
+  const current = assistantComposerPrompt()
+  if (current?.workspace !== expected.workspace || current.prompt !== expected.prompt) return false
+  useStore.getState().patchDraft({ prompt })
+  return true
+}

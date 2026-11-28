@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -12,8 +13,9 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,13 +23,16 @@ from unittest.mock import patch
 import requests
 from PIL import Image
 
-ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
+ROOT = Path(sys.argv[1]).resolve() if __name__ == "__main__" and len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app import create_app
 from draw_studio.llm import Providers
 from draw_studio.proxy import ProxyProfiles
 from draw_studio.workflows.engine import WorkflowEngine
-from http_fixture import gateway, mp4, png, serving
+from draw_studio.workflows import agent_plugins
+from draw_studio.workflows.agent_tools import TOOLS, editor_revision
+from tests.harness_fixture import stateful_model
+from tests.http_fixture import gateway, mp4, png, serving
 
 
 class WebTests(unittest.TestCase):
@@ -51,6 +56,375 @@ class WebTests(unittest.TestCase):
         response = self.http.request(method, self.url + path, headers=headers, timeout=5, allow_redirects=False, **kw)
         self.assertEqual(response.status_code, expected, (method, path, response.status_code, response.text[:160]))
         return response
+
+    def test_harness_operation_and_composer_live_contract(self):
+        prefix = "/api/workflows/agent"
+        scope = "cr_" + "a" * 32
+        revision = "b" * 32
+        self.assertEqual(self.req("GET", prefix + "/operations", auth=False, expected=401).json()["code"], "invalid_argument")
+        source = self.req("POST", "/api/rounds/import?kind=image&name=Sunset", data=png()).json()["id"]
+        mask_body = {"source_id": source, "strokes": [{"size": .08, "points": [[.3, .4], [.4, .4]]}]}
+        mask = self.req("POST", prefix + "/masks", json=mask_body, expected=201).json()
+        self.assertEqual(self.req("GET", prefix + "/masks/" + mask["mask_id"]).json(), mask)
+        self.assertEqual(self.req("POST", prefix + "/masks", json={**mask_body, "source_id": "999"}, expected=400).json()["code"], "media_invalid")
+
+        def turn(name, args):
+            response = self.req("POST", prefix + "/turn", json={
+                "workspace": "image", "composer_scope": scope, "composer": {"prompt": "Blue light", "revision": revision},
+                "message": "USE_CREATIVE_TOOL " + json.dumps([name, args]),
+            })
+            events = [json.loads(line) for line in response.iter_lines()]
+            self.assertEqual(events[-1]["type"], "done", events)
+            tool = next(item for item in events if item["type"] == "tool" and item["ok"] is not None)
+            self.assertTrue(tool["ok"], events)
+            if "op" in args:
+                self.assertEqual(tool["op"], args["op"])
+            return tool, events[-1]
+
+        with stateful_model(self.root) as (base, provider):
+            self.s.studio.llm.save(kind="openai", name="Fixture", base_url_value=base, api_key="model-fixture-key", models=["test"])
+            event, edited = turn("studio_generation", {"op": "edit_composer", "spec": {"width": 1010}})
+            composer_patch = edited["composer_patch"]
+            self.assertEqual(composer_patch, event["composer_patch"])
+            self.assertEqual((composer_patch["base_revision"], composer_patch["changes"]["width"]), (revision, 1024))
+            event, created = turn("studio_generation", {"op": "submit_image", "idempotency_key": "scene-a",
+                                                         "spec": {"mask_id": mask["mask_id"], "count": 2}})
+            op, = created["operations"]
+            self.assertEqual(event["operations"], [op])
+            self.assertEqual((op["scope_key"], op["state"]), (scope, "awaiting_approval"))
+            self.assertFalse(self.s.studio.snapshot()["queue"])
+            url = prefix + "/operations/" + op["operation_id"]
+            self.assertEqual(self.req("GET", prefix + "/operations?scope_key=cr_" + "a" * 32).json()["operations"], [op])
+            self.assertEqual(self.req("GET", prefix + "/operations?scope_key=cr_" + "b" * 32).json(), {"operations": []})
+            for ref in op["references"]:
+                self.req("GET", "/" + ref["thumb"])
+            self.assertEqual(self.req("POST", url + "/approve", json={}, expected=400).json()["code"], "colab_unauthed")
+            with patch.object(self.s.colab, "has_credentials", return_value=True), \
+                 patch.object(self.s.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = self.req("POST", url + "/approve", json={}).json()
+                self.assertEqual(self.req("POST", url + "/approve", json={}).json(), approved)
+                self.assertEqual([item["state"] for item in approved["items"]], ["queued", "queued"])
+                first, second = [item["job_id"] for item in approved["items"]]
+                with self.s.studio._lock:
+                    work = self.s.studio._queue.popleft()
+                    work.update(status="done", round_id=source)
+                    self.s.studio._remember_job(work)
+                    work = self.s.studio._queue.popleft()
+                    work.update(status="error", error="fixture")
+                    self.s.studio._remember_job(work)
+                partial = self.req("GET", url).json()
+                self.assertEqual((partial["state"], partial["done"]), ("partial", 1))
+                retried = self.req("POST", url + "/retry-failed", json={"item_keys": ["1", "2"]}).json()
+                self.assertEqual(retried["items"][0]["job_id"], first)
+                self.assertNotEqual(retried["items"][1]["job_id"], second)
+                canceled = self.req("POST", url + "/cancel", json={}).json()
+                self.assertEqual([i["state"] for i in canceled["items"]], ["done", "canceled"])
+            history = self.req("GET", prefix + "/conversations/" + scope).json()["exchanges"]
+            self.assertEqual(history[-1]["operation_id"], op["operation_id"])
+
+            _, rewrite = turn("studio_rewrite_prompt", {"instruction": "Warmer shadows"})
+            proposal, = rewrite["proposals"]
+            adopt = prefix + "/proposals/" + proposal["proposal_id"] + "/composer-apply"
+            current = {"workspace": "image", "prompt": "Blue light"}
+            self.assertEqual(self.req("POST", adopt, json={**current, "prompt": "New edit"}, expected=409).json()["code"], "shot_conflict")
+            written = self.req("POST", adopt, json=current).json()
+            self.assertEqual(written["prompt"], proposal["after"][0]["text"])
+            undo = prefix + "/undo/" + written["proposal"]["undo_id"] + "/composer"
+            self.assertEqual(self.req("POST", undo, json={**current, "prompt": written["prompt"]}).json()["prompt"], "Blue light")
+            self.assertEqual(self.req("GET", prefix + "/conversations/" + scope).json()["exchanges"][-1]["proposals"][0]["status"], "undone")
+
+    def test_stateful_harness_across_turns_and_cancellation(self):
+        from draw_studio.workflows.copilot import HarnessSessions
+
+        key = uuid.uuid4().hex
+        run_id = "wr_" + key
+        wf = {"id": "", "name": "月面", "steps": [
+            {"id": "one", "type": "asset_input"}, {"id": "two", "type": "llm_script"},
+        ]}
+        self.s.harness_sessions = HarnessSessions(capacity=2)
+
+        def turn(message, selected="one", run=None, turn_id=None):
+            body = {"message": message, "turn_id": turn_id or uuid.uuid4().hex, "selected_step": selected}
+            if run:
+                body.update(run_id=run["id"], workflow=run["workflow"], topic=run["topic"])
+            else:
+                body.update(draft_id=key, workflow=wf, topic="模板草稿")
+            with requests.Session() as http:
+                http.trust_env = False
+                response = http.post(self.url + "/api/workflows/agent/turn", json=body,
+                                     headers={"Authorization": "Bearer fixture-token"}, timeout=30)
+                response.raise_for_status()
+                self.assertEqual(response.headers["Content-Type"], "application/x-ndjson")
+                self.assertEqual(response.headers["X-Accel-Buffering"], "no")
+                return [json.loads(line) for line in response.iter_lines() if line]
+
+        def result(events, expected):
+            self.assertEqual(events[-1]["type"], "done", events)
+            session = next(e for e in events if e["type"] == "session")
+            self.assertEqual(session["state"], expected)
+            value = json.loads(events[-1]["message"])
+            self.assertEqual(session["process_id"], value["pid"])
+            return value
+
+        with stateful_model(self.root) as (gateway, backend):
+            self.s.studio.llm.save(kind="openai", name="test", base_url_value=gateway, api_key="fixture", models=["test"])
+            first_events = turn("first message")
+            first = result(first_events, "new")
+            self.assertEqual([(event["name"], event.get("op"), event["ok"]) for event in first_events
+                              if event["type"] == "tool"], [("test_counter", "inspect", None), ("test_counter", "inspect", True)])
+            self.assertEqual(set(backend.tools[0]), {"test_counter", *TOOLS})
+            self.assertEqual((first["count"], first["topic"]), (1, "模板草稿"))
+            self.assertEqual(self.s.harness_sessions.entries[run_id].bridge.interrupt(), "idle")
+            run = self.s.workflows.create_run({"request_id": key, "workflow": wf, "topic": "已保存的第二稿"})
+            second = result(turn("second message", "two", run), "reused")
+            self.assertEqual(second, {"pid": first["pid"], "count": 2, "selected": "two", "topic": run["topic"]})
+            self.assertTrue(any("first message" in str(r["content"]) for r in backend.requests[-1] if r["role"] == "user"))
+
+            pending = uuid.uuid4().hex
+            stop = "/api/workflows/agent/conversations/" + run_id + "/stop"
+            with ThreadPoolExecutor(1) as pool:
+                wait = pool.submit(turn, "HOLD_ACTIVE_TURN", "two", run, pending)
+                self.assertTrue(backend.held.wait(12))
+                self.assertEqual(turn("overlap", run=run)[-1]["code"], "busy")
+                other = self.s.workflows.create_run({"workflow": wf, "topic": "另一部作品"})
+                independent = result(turn("other session", run=other), "new")
+                self.assertNotEqual(independent["pid"], first["pid"])
+                self.assertEqual(independent["count"], 1)
+                self.assertFalse(self.req("POST", stop, json={"turn_id": uuid.uuid4().hex}).json()["stopped"])
+                self.assertTrue(self.req("POST", stop, json={"turn_id": pending}).json()["stopped"])
+                self.assertEqual(wait.result(timeout=8)[-1],
+                                 {"type": "error", "code": "turn_stopped", "message": "已停止"})
+            backend.release.set()
+            self.assertEqual(turn("MODEL_FAIL", run=run)[-1]["code"], "model_error")
+            after_stop = result(turn("continue after stopping", run=run), "reused")
+            self.assertEqual((after_stop["pid"], after_stop["count"]), (first["pid"], 3))
+            history = self.req("GET", "/api/workflows/agent/conversations/"+run_id).json()["exchanges"]
+            self.assertEqual([row["user"] for row in history], ["first message", "second message", "continue after stopping"])
+            self.assertEqual(history[-1]["tools"], [{"name": "test_counter", "op": "inspect", "ok": True}])
+
+            # The least recently used conversation is restored using native history, with a fresh plugin instance.
+            third_run = self.s.workflows.create_run({"workflow": wf})
+            result(turn("three", run=third_run), "new")
+            restored = result(turn("resume other", run=other), "resumed")
+            self.assertNotEqual(restored["pid"], independent["pid"])
+            self.assertEqual(restored["count"], 1)
+            self.assertTrue(any("other session" in str(row["content"]) for row in backend.requests[-1] if row["role"] == "user"))
+            self.req("DELETE", "/api/workflows/runs/" + run_id)
+            self.assertEqual(self.req("GET", "/api/workflows/agent/conversations/"+run_id).json()["exchanges"], [])
+
+    def test_agent_http_errors_and_revision_contract(self):
+        prefix = "/api/workflows/agent"
+        wf = {"name": "Cut", "steps": [{"id": "script", "type": "llm_script"}]}
+        turn = {"message": "Read it", "workflow": wf}
+        draft_id = uuid.uuid4().hex
+        run = self.s.workflows.create_run({"request_id": draft_id, "workflow": wf, "topic": "Saved"})
+        run_path = "/api/workflows/runs/" + run["id"]
+
+        cases = [
+            (prefix + "/turn", {**turn, "message": " "}, 400, "invalid_argument", {}),
+            (prefix + "/turn", {**turn, "run_id": "wr_none"}, 404, "not_found", {}),
+            (prefix + "/turn", turn, 400, "model_unconfigured", {}),
+            (prefix + "/turn", {**turn, "draft_id": draft_id}, 409, "draft_already_saved", {"run_id": run["id"]}),
+            (prefix + "/turn", {**turn, "run_id": run["id"], "topic": "Stale"}, 409,
+             "revision_conflict", {"current_revision": editor_revision(run)}),
+            (prefix + "/plugins/unknown", {"action": "install"}, 400, "invalid_argument", {}),
+            (prefix + "/plugins/" + agent_plugins.PACKAGE, {"action": "enable"}, 409, "plugin_unavailable", {}),
+        ]
+        for path, payload, status, code, details in cases:
+            with self.subTest(code=code, path=path):
+                result = self.req("POST", path, json=payload, expected=status).json()
+                self.assertEqual(set(result), {"error", "code", "details"})
+                self.assertEqual((result["code"], result["details"]), (code, details))
+        self.assertEqual(self.req("POST", prefix + "/turn", json={}, expected=400).json()["details"]["fields"],
+                         ["message", "workflow"])
+        self.assertEqual(self.req("GET", prefix + "/plugins", auth=False, expected=401).json()["code"], "invalid_argument")
+        self.req("HEAD", prefix + "/plugins")
+        self.assertEqual(self.req("GET", prefix + "/plugins").json()["builtin_tools"].keys(), TOOLS.keys())
+        self.assertEqual(self.req("POST", prefix + "/conversations/" + run["id"] + "/stop",
+                                  json={"turn_id": draft_id}).json(), {"stopped": False})
+        self.assertEqual(self.req("GET", prefix + "/conversations/unsupported", expected=400).json()["code"], "invalid_argument")
+
+        with patch.object(self.s.workflows, "_active_run_id", run["id"]):
+            response = self.req("PATCH", run_path, json={"if_revision": editor_revision(run)}, expected=409)
+            self.assertEqual(response.json()["code"], "running_locked")
+        saved = self.req("PATCH", run_path, json={"if_revision": editor_revision(run), "topic": "New"}).json()["run"]
+        conflict = self.req("PATCH", run_path, json={"if_revision": editor_revision(run), "topic": "Old"}, expected=409).json()
+        self.assertEqual(conflict["details"], {"current_revision": editor_revision(saved)})
+        self.assertEqual(self.req("GET", run_path).json()["run"]["topic"], "New")
+
+        self.s.studio.llm.save(kind="openai", name="test", base_url_value="http://127.0.0.1:1/v1",
+                               api_key="fixture", models=["test"])
+
+        async def fake_events(editor, *_args, **_kwargs):
+            yield {"type": "done", "workflow": editor.editor["workflow"]}
+
+        with patch("draw_studio.api.workflows.turn_events", fake_events):
+            record = self.req("POST", prefix + "/turn", json={**turn, "workflow": {
+                "name": "Empty", "steps": [], "default_topic": "Night", "variables": {"look": "film"},
+            }}).json()["workflow"]
+            self.assertEqual((record["default_topic"], record["variables"]), ("Night", {"look": "film"}))
+
+    @unittest.skipUnless(shutil.which("pnpm"), "pnpm is required for the offline plugin integration")
+    def test_harness_plugin_installs_offline_and_reloads_on_request(self):
+        prefix = "/api/workflows/agent"
+        api_plugin = prefix + "/plugins/" + agent_plugins.PACKAGE
+        wf = {"name": "Timing", "steps": [
+            {"id": "script", "type": "llm_script", "config": {"scene_count": 5}},
+            {"id": "video", "type": "video_gen", "config": {"scenes_from": "script", "num_frames": 129}},
+        ]}
+        run = self.s.workflows.create_run({"workflow": wf})
+
+        def turn(message, reload=False):
+            response = self.req("POST", prefix + "/turn", json={"message": message, "workflow": run["workflow"],
+                                "run_id": run["id"], "topic": run["topic"], "reload_plugins": reload})
+            events = [json.loads(line) for line in response.iter_lines()]
+            self.assertEqual(events[-1]["type"], "done", events)
+            return events
+
+        with stateful_model(self.root) as (gateway, backend), patch.dict(os.environ, {
+            "HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1",
+            "HTTPS_PROXY": "http://127.0.0.1:1", "NO_PROXY": "", "no_proxy": "",
+        }):
+            self.s.studio.llm.save(kind="openai", name="test", base_url_value=gateway, api_key="fixture", models=["test"])
+            original = turn("before install")
+            pid = original[1]["process_id"]
+            self.assertEqual(json.loads(original[-1]["message"])["count"], 1)
+            plugins = self.req("POST", api_plugin, json={"action": "install"}).json()["plugin"]
+            self.assertTrue(plugins["installed"] and plugins["enabled"])
+            next_turn = turn("same process")
+            self.assertEqual(next_turn[1]["process_id"], pid)
+            self.assertEqual(json.loads(next_turn[-1]["message"])["count"], 2)
+            self.assertNotIn(agent_plugins.TOOL, backend.tools[-1])
+
+            timing = turn("USE_TIMING", reload=True)
+            self.assertNotEqual(timing[1]["process_id"], pid)
+            self.assertEqual(timing[1]["state"], "resumed")
+            self.assertEqual([e["name"] for e in timing if e["type"] == "tool"], [agent_plugins.TOOL] * 2)
+            value = json.loads(timing[-1]["message"])
+            self.assertEqual((value["shots"], value["frames_per_shot"], value["fps"], value["total_seconds"]),
+                             (5, 129, 24, 26.88))
+            self.assertFalse(self.req("POST", api_plugin, json={"action": "disable"}).json()["plugin"]["enabled"])
+            turn("USE_TIMING")
+            self.assertIn(agent_plugins.TOOL, backend.tools[-1])
+            turn("reload disabled", reload=True)
+            self.assertNotIn(agent_plugins.TOOL, backend.tools[-1])
+            self.assertTrue(self.req("POST", api_plugin, json={"action": "enable"}).json()["plugin"]["enabled"])
+            self.assertFalse(self.req("POST", api_plugin, json={"action": "remove"}).json()["plugin"]["installed"])
+            data = self.req("GET", prefix + "/telemetry").json()
+            self.assertEqual(data["by_tool"][agent_plugins.TOOL]["total"], 2)
+            self.assertEqual(data["by_tool"]["plugin"]["success_rate"], 1)
+
+    def test_inline_shot_proposal_apply_reject_undo_and_telemetry(self):
+        prefix = "/api/workflows/agent"
+        wf = {"name": "Evening cut", "steps": [{"id": "script", "type": "llm_script"}, {"id": "h3", "type": "h3_prompt"}]}
+        run = self.req("POST", "/api/workflows/runs", json={"workflow": wf}, expected=201).json()["run"]
+        path = "/api/workflows/runs/" + run["id"]
+        self.req("POST", path + "/steps/script/output", json={"output": {"scenes": [{"title": "Arrival", "keyframe_prompt": "Blue at dusk"}]}})
+        original = "A unique long user prompt about the camera rising beside the sea."
+        self.req("POST", path + "/steps/h3/output", json={"output": {"items": [{"title": "Arrival", "video_prompt": original}]}})
+        rid = self.req("POST", "/api/rounds/import?kind=image&name=Keyframe.png", data=png()).json()["id"]
+        shots = self.req("GET", path + "/shots").json()["shots"]
+        self.assertEqual([shot["step_id"] for shot in shots], ["script", "h3"])
+        shot = shots[1]
+        self.assertRegex(shot["shot_id"], r"^sh_[a-f0-9]{12}$")
+        self.assertEqual(self.req("GET", path + "/shots?step_id=h3").json(), {"shots": [shot]})
+        self.assertEqual(self.req("GET", path + "/shots?step_id=absent", expected=404).json()["code"], "not_found")
+        self.assertEqual(self.req("GET", prefix + "/telemetry", auth=False, expected=401).json()["code"], "invalid_argument")
+
+        rewrite = path + "/steps/h3/shots/rewrite"
+        instruction = "Keep the camera movement, switch to golden light."
+        body = {"shot_ids": [shot["shot_id"]], "instruction": instruction, "reference_round_ids": [rid]}
+        error = self.req("POST", rewrite, json=body, expected=400).json()
+        self.assertEqual(error["code"], "model_unconfigured")
+        self.assertEqual(self.req("POST", rewrite, json={**body, "shot_ids": [False]}, expected=400).json()["code"], "invalid_argument")
+        with gateway() as (base, key, calls):
+            self.s.studio.llm.save(kind="openai", name="Fixture", base_url_value=base + "/open/v1", api_key=key, models=["open-model"])
+            proposal = self.req("POST", rewrite, json=body).json()
+            self.assertEqual(proposal["kind"], "shots")
+            self.assertEqual(proposal["references_used"][0]["id"], rid)
+            self.req("GET", "/" + proposal["references_used"][0]["thumb"])
+            self.assertIn(instruction, json.dumps(calls[-1][2], ensure_ascii=False))
+            self.assertIn("image_url", json.dumps(calls[-1][2]))
+            self.assertEqual(proposal["before"][0]["text"], original)
+            candidate = proposal["after"][0]["text"]
+            self.assertEqual(candidate, "open result")
+            self.assertEqual(proposal["readset"][0], {"shot_id": shot["shot_id"], "field": "video_prompt", "generation": 1, "expected_version": 1})
+            self.assertEqual(proposal["writeset"][0]["value"], candidate)
+            self.assertEqual(self.req("GET", path + "/shots?step_id=h3").json()["shots"][0], shot)
+            action = prefix + "/proposals/" + proposal["proposal_id"]
+            adopted = self.req("POST", action + "/apply", json={"atomicity": "all"}).json()
+            self.assertEqual(adopted["step_output"]["items"][0]["video_prompt"], candidate)
+            self.assertEqual(adopted["applied"][0]["version"], 2)
+            self.assertEqual(self.req("POST", action + "/apply", json={}).json(), adopted)
+            undo = prefix + "/undo/" + adopted["undo_id"]
+            restored = self.req("POST", undo, json={}).json()
+            self.assertEqual(restored["run_updated"]["changes"][0]["version"], 3)
+            self.assertEqual(restored["step_output"]["items"][0]["video_prompt"], original)
+            self.assertEqual(restored["proposal"]["status"], "undone")
+            self.assertEqual(self.req("POST", undo, json={}, expected=409).json()["code"], "shot_conflict")
+            other = self.req("POST", rewrite, json=body).json()
+            reject = prefix + "/proposals/" + other["proposal_id"] + "/reject"
+            self.assertEqual(self.req("POST", reject, json={}).json()["status"], "rejected")
+            self.assertEqual(self.req("POST", reject, json={}).json()["status"], "rejected")
+            self.assertEqual(self.req("POST", reject.replace("/reject", "/apply"), json={}, expected=409).json()["code"], "shot_conflict")
+
+        telemetry = self.req("GET", prefix + "/telemetry").json()
+        self.assertEqual(telemetry["total"], 3)
+        self.assertAlmostEqual(telemetry["success_rate"], 2 / 3)
+        self.assertEqual(telemetry["by_error"], {"model_unconfigured": 1})
+        self.assertEqual(telemetry["proposal_outcomes"], {"undone": 1, "rejected": 1})
+        self.assertEqual(telemetry["proposal_adoption_rate"], .5)
+        self.assertGreater(telemetry["p95_ms"], 0)
+        with self.s.harness_store.transaction() as db:
+            metrics = json.dumps([dict(row) for row in db.execute("SELECT * FROM tool_telemetry")])
+        for confidential in (key, "fixture-token", original, instruction, candidate, "data:image", "api_key", "cookie"):
+            self.assertNotIn(confidential, metrics)
+
+    def test_agent_shot_cards_history_updates_and_sdk_cache_stats(self):
+        prefix = "/api/workflows/agent"
+        wf = {"name": "Cut", "steps": [{"id": "script", "type": "llm_script"}]}
+        run = self.s.workflows.create_run({"workflow": wf})
+        self.s.workflows.update_step_output(run["id"], "script", {"scenes": [{"title": "Close-up", "keyframe_prompt": "Original"}]})
+        shot = self.req("GET", f"/api/workflows/runs/{run['id']}/shots").json()["shots"][0]
+
+        def turn(name, args):
+            response = self.req("POST", prefix + "/turn", json={"message": "USE_CREATIVE_TOOL " + json.dumps([name, args]),
+                                "run_id": run["id"], "selected_step": "script", "selected_shot": shot["shot_id"],
+                                "workflow": run["workflow"], "topic": run["topic"]})
+            events = [json.loads(line) for line in response.iter_lines()]
+            self.assertEqual(events[-1]["type"], "done", events)
+            events_for_tool = [item for item in events if item["type"] == "tool"]
+            self.assertEqual([(item["name"], item["ok"]) for item in events_for_tool], [(name, None), (name, True)])
+            if "op" in args:
+                self.assertEqual([item["op"] for item in events_for_tool], [args["op"]] * 2)
+            self.assertTrue(all(not item["type"].startswith("_") for item in events))
+            return events[-1]
+
+        with stateful_model(self.root) as (base, backend):
+            self.s.studio.llm.save(kind="openai", name="test", base_url_value=base, api_key="fixture-model-secret", models=["test"])
+            rewrite = turn("studio_rewrite_prompt", {"instruction": "Evening light"})
+            self.assertEqual(rewrite["run_updated"], [])
+            proposal, = rewrite["proposals"]
+            self.assertEqual((proposal["status"], proposal["before"][0]["shot_id"]), ("pending", shot["shot_id"]))
+            adopted = turn("studio_apply_shot_edits", {"proposal_id": proposal["proposal_id"]})
+            self.assertEqual(adopted["run_updated"][0]["changes"][0]["value"], proposal["after"][0]["text"])
+            undo, = adopted["proposals"]
+            self.assertEqual(undo["status"], "applied")
+            rolled_back = turn("studio_undo_change", {"undo_id": undo["undo_id"]})
+            self.assertEqual(rolled_back["run_updated"][0]["changes"][0]["value"], "Original")
+            self.assertEqual(rolled_back["proposals"][0]["status"], "undone")
+            turn("studio_run_status", {"op": "watch"})
+            self.assertCountEqual(backend.tools[0], [*TOOLS, "test_counter"])
+            submitted = [names for names in backend.tools if names]
+            self.assertTrue(all(names == submitted[0] for names in submitted))
+
+        rows = self.req("GET", prefix + "/conversations/" + run["id"]).json()["exchanges"]
+        self.assertEqual([row["proposals"][0]["status"] for row in rows[:3]], ["undone"] * 3)
+        self.assertEqual(rows[-1]["tools"][0]["op"], "watch")
+        telemetry = self.req("GET", prefix + "/telemetry").json()
+        self.assertEqual(telemetry["total"], 4)
+        self.assertEqual(telemetry["proposal_outcomes"], {"undone": 1})
+        self.assertEqual((telemetry["cache_hit_tokens"], telemetry["cache_miss_tokens"]), (64, 48))
 
     def test_login_assets_and_private_api(self):
         index = self.req("GET", "/", auth=False)
@@ -606,7 +980,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(registry.path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(registry.path.parent.stat().st_mode), 0o700)
             # Simulate the previous schema without the preference column.
-            with sqlite3.connect(registry.path) as db:
+            with closing(sqlite3.connect(registry.path)) as db, db:
                 db.execute("ALTER TABLE providers DROP COLUMN enhanced_rewrite")
                 db.execute("UPDATE providers SET legacy=1")
             registry = Providers(self.root)
