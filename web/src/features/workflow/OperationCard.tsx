@@ -1,6 +1,6 @@
 import { CircleAlert, Film, ImageIcon, RotateCcw } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { Operation, OperationItem } from '../../api/types'
 import { useStore } from '../../store/store'
@@ -18,6 +18,7 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
 }) {
   const reduce = useReducedMotion()
   const { operation_id: id, state, kind, done, total, items } = operation
+  const titleId = useId()
   const [busy, setBusy] = useState<'approve' | 'cancel' | 'retry' | string>()
   const [width, setWidth] = useState<number>()
   const [computeBlocked, setComputeBlocked] = useState(false)
@@ -65,7 +66,7 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
     initial={reduce || !animateEntry ? false : { opacity: 0, y: 8, scale: .985 }}
     animate={{ opacity: 1, y: 0, scale: 1 }} transition={reduce ? instant : spring}>
     <header className="op-h">
-      <Icon size={15} /><b>{copy.title[kind](total)}</b><span className="grow" />
+      <Icon size={15} /><b id={titleId}>{copy.title[kind](total)}</b><span className="grow" />
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.span className={`tag ${tones[state]}`} key={state} initial={reduce ? false : { opacity: 0, y: 3 }}
           animate={{ opacity: 1, y: 0 }} exit={reduce ? { opacity: 0 } : { opacity: 0, y: -3 }} transition={reduce ? instant : quick}>
@@ -82,7 +83,9 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
       {media.length > 4 && <span>{C.proposal.moreRefs(media.length - 4)}</span>}
     </div>}
     {(state === 'queued' || state === 'running' || state === 'partial') && <div className="op-progress">
-      <div className={`bar thin${state === 'queued' ? ' indet' : ''}`}><i style={{ width: `${done / total * 100}%` }} /></div>
+      <div className={`bar thin${state === 'queued' ? ' indet' : ''}`} role="progressbar" aria-labelledby={titleId}
+        aria-valuemin={0} aria-valuemax={total} aria-valuenow={state === 'queued' ? undefined : done}
+        aria-valuetext={copy.progress(done, total)}><i style={{ width: `${done / total * 100}%` }} /></div>
       <span className="tabular">{copy.progress(done, total)}</span>
     </div>}
     <ul className="op-items">

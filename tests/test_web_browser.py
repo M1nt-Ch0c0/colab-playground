@@ -768,6 +768,32 @@ class BrowserTest(unittest.TestCase):
                     saved = finished["step_states"]["review"]["output"][group]
                     self.assertEqual([item[field] for item in saved], ["edited 1", "edited 2"])
 
+    def test_workflow_assistant_restores_the_right_dock(self):
+        with signed_in_browser() as (rt, driver, url):
+            run = rt.workflows.create_run({"workflow": {"name": "Docking", "steps": [{"id": "refs", "type": "asset_input"}]}})
+            driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+                "width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False,
+            })
+            driver.get(f"{url}/?workflow={run['id']}")
+            wait = WebDriverWait(driver, 8)
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+            def at_side(dock, padding, on_left=False):
+                return driver.execute_script("""
+                    const panel = document.querySelector('.workflow-agent');
+                    if (panel?.dataset.dock !== arguments[0]) return false;
+                    const box = panel.getBoundingClientRect();
+                    const onLeft = box.left + box.width / 2 < innerWidth / 2;
+                    return onLeft === arguments[2] && getComputedStyle(document.querySelector('.wf')).paddingRight === arguments[1];
+                """, dock, padding, on_left)
+
+            move = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-head > button:nth-last-child(2)")))
+            wait.until(lambda _: at_side("right", "382px"))
+            move.click()
+            wait.until(lambda _: at_side("free", "0px", on_left=True))
+            move.click()
+            wait.until(lambda _: at_side("right", "382px"))
+
     def test_workflow_save_template_preserves_variables_and_positions(self):
         with signed_in_browser() as (rt, driver, url):
             engine = rt.workflows

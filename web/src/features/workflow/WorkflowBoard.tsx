@@ -35,6 +35,32 @@ function layout(steps: WfStep[]) {
   return points
 }
 
+function wirePath(source: Point, target: Point) {
+  const x = source.x + WIDTH, y = source.y + HEIGHT / 2
+  const endY = target.y + HEIGHT / 2
+  const clearance = 16
+  const gap = target.x - x
+  if (gap >= clearance) {
+    const midX = (x + target.x) / 2
+    return `M ${x} ${y} C ${midX} ${y} ${midX} ${endY} ${target.x} ${endY}`
+  }
+
+  const lead = gap > 0 ? gap * .75 : clearance
+  const exitX = x + lead, entryX = target.x - lead
+  const midY = Math.abs(endY - y) >= HEIGHT + clearance
+    ? (y + endY) / 2
+    : Math.max(y, endY) + HEIGHT / 2 + 12
+  const radius = Math.min(8, lead - gap / 2)
+  const leaving = Math.sign(midY - y) * radius
+  const arriving = Math.sign(endY - midY) * radius
+  return [
+    `M ${x} ${y} H ${exitX - radius} Q ${exitX} ${y} ${exitX} ${y + leaving}`,
+    `V ${midY - leaving} Q ${exitX} ${midY} ${exitX - radius} ${midY}`,
+    `H ${entryX + radius} Q ${entryX} ${midY} ${entryX} ${midY + arriving}`,
+    `V ${endY - arriving} Q ${entryX} ${endY} ${entryX + radius} ${endY} H ${target.x}`,
+  ].join(' ')
+}
+
 export function useWorkflowSelection(runId?: string) {
   const params = new URLSearchParams(location.search)
   const linked = !!runId && params.get('workflow') === runId
@@ -172,6 +198,7 @@ export function WorkflowBoard({ binding, change, selection, run }: {
   const [scale, setScale] = useState(1)
   const [preview, setPreview] = useState<{ id: string; point: Point } | null>(null)
   const variablesId = useId()
+  const wiresMaskId = useId()
   const drag = useRef<{ id: string; start: Point; origin: Point; next: Point | null } | null>(null)
   const frame = useRef(0)
   useEffect(() => () => cancelAnimationFrame(frame.current), [])
@@ -256,13 +283,17 @@ export function WorkflowBoard({ binding, change, selection, run }: {
           <div className="graph-plane" style={{ width, height, transform: 'scale(' + scale + ')' }}
             onClick={event => { if (event.target === event.currentTarget) select('') }}>
             <svg className="graph-wires" width={width} height={height} aria-hidden="true" data-selection={!!current}>
-              {wires.map(wire => {
-                const source = points.get(wire.from)!, target = points.get(wire.to)!
-                const x = source.x + WIDTH, y = source.y + HEIGHT / 2, end = target.y + HEIGHT / 2
-                const bend = Math.max(28, Math.abs(target.x - x) / 2)
-                const path = ['M', x, y, 'C', x + bend, y, target.x - bend, end, target.x, end].join(' ')
-                return <path key={wire.from + ':' + wire.to} className={wire.selected ? 'selected' : undefined} d={path} />
-              })}
+              <defs>
+                <mask id={wiresMaskId} maskUnits="userSpaceOnUse" x={0} y={0} width={width} height={height}>
+                  <rect width={width} height={height} fill="var(--accent-ink)" />
+                  {/* The default rect fill cuts the node silhouettes out of the luminance mask. */}
+                  {Array.from(points, ([id, point]) => <rect key={id} x={point.x} y={point.y} width={WIDTH} height={HEIGHT} rx={10} />)}
+                </mask>
+              </defs>
+              <g mask={`url(#${wiresMaskId})`}>
+                {wires.map(wire => <path key={wire.from + ':' + wire.to} className={wire.selected ? 'selected' : undefined}
+                  d={wirePath(points.get(wire.from)!, points.get(wire.to)!)} />)}
+              </g>
             </svg>
             {wf.steps.map((step, index) => {
               const point = points.get(step.id)!

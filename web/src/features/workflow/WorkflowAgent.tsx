@@ -36,7 +36,7 @@ interface Exchange extends Omit<SavedAgentExchange, 'state'> {
   applied?: string
   action?: AgentRunRequest | null
   version?: string
-  error?: { code?: HarnessErrorCode; runId?: string; text?: string }
+  error?: { code?: HarnessErrorCode; runId?: string; unsaved?: boolean }
 }
 
 const chat = C.agent
@@ -65,7 +65,7 @@ function mergeHistory(saved: SavedAgentExchange[], current: Exchange[], complete
     const proposals = savedProposals(row.proposals, own?.proposals)
     if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) return { ...own, proposals }
     return {
-      ...row, tools: row.tools.filter(tool => typeof tool.name === 'string'),
+      id: row.id, user: row.user, answer: row.answer, state: row.state, tools: row.tools.filter(tool => typeof tool.name === 'string'),
       applied: own?.applied, action: own?.action, version: own?.version, proposals, operation_id: row.operation_id ?? own?.operation_id,
     }
   })
@@ -321,12 +321,13 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     const current = element.getBoundingClientRect()
     const gap = screen === 'right' ? 16 : 20
     const left = current.left + current.width / 2 > innerWidth / 2
+    if (screen === 'right' && !left) { resetDock(); return }
     movePanel({ x: left ? gap : innerWidth - element.offsetWidth - gap, y: current.top }, 'free')
   }
 
   function resetDock() {
     const element = panel.current
-    if (!element || screen === 'sheet' || dock !== 'free') return
+    if (!element || screen === 'sheet' || (dock !== 'free' && !moveAnimation.current)) return
     const top = Number.parseFloat(getComputedStyle(element).getPropertyValue('--top')) || 0
     movePanel(screen === 'right'
       ? { x: innerWidth - element.offsetWidth - 16, y: top + 18 }
@@ -391,7 +392,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     let original: string | undefined
     try {
       if (latest.current.beforeSend && !(await latest.current.beforeSend())) {
-        amend(id, { state: 'error', error: { code: 'busy', text: chat.unsaved } })
+        amend(id, { state: 'error', error: { code: 'busy', unsaved: true } })
         return
       }
       controller.signal.throwIfAborted()
@@ -563,8 +564,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
               </div>}
               {exchanges.map(item => {
                 const fresh = item.fresh && !reduce
-                const info = item.error && errorCopy(item.error.code)
-                const actions: ErrorAction[] = info?.action && info.action !== 'edit' ? [info.action, 'edit'] : ['edit']
+                const info = errorCopy(item.error?.code)
+                const actions: ErrorAction[] = info.action && info.action !== 'edit' ? [info.action, 'edit'] : ['edit']
                 const action = item.action
                 const operation = operationOwners.get(item.operation_id ?? '') === item.id
                   ? operations.find(op => op.operation_id === item.operation_id) : undefined
@@ -596,7 +597,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                       onKeep={() => amend(item.id, { state: 'done' })} />}
                   </AnimatePresence>
                   {item.state === 'error' && <div className="agent-error" role="alert">
-                    <CircleAlert size={14} /><span>{item.error?.text ?? info?.text}</span>
+                    <CircleAlert size={14} /><span>{item.error?.unsaved ? chat.unsaved : info.text}</span>
                     <div className="agent-links">{actions.map(action => <button key={action} className="mini-link"
                       disabled={locked || (busy && (action === 'retry' || action === 'regenerate'))}
                       onClick={() => errorAction(action, item)}>{ERROR_ACTION_LABELS[action]}</button>)}</div>
