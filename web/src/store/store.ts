@@ -76,6 +76,7 @@ interface Store {
   loadLlm: () => Promise<void>
   setLibraryOpen: (v: boolean) => void
   grabPool: string[]; pollRounds: number; pollAllProxies: boolean
+  setGrabPool: (pool: string[]) => void
 
   boot: () => Promise<void>
   refresh: () => Promise<void>
@@ -100,6 +101,20 @@ interface Store {
 let toastSeq = 1
 let saveTimer = 0
 let booting: Promise<void> | null = null
+let statusRequest = 0
+const initialTheme = document.documentElement.dataset.theme
+
+function shouldNotifyError(st: Status, previous: Status | null) {
+  if (st.phase !== 'error' || !st.error) return false
+  if (previous?.phase === 'error' && previous.error_id === st.error_id && previous.error === st.error) return false
+  if (st.error_id) {
+    try {
+      if (sessionStorage.getItem('cs.lastStatusError') === st.error_id) return false
+      sessionStorage.setItem('cs.lastStatusError', st.error_id)
+    } catch { /* 存储不可用时仍按当前页面收到的状态去重 */ }
+  }
+  return true
+}
 
 export const useStore = create<Store>((set, get) => ({
   booted: false, bootError: '', statusError: '',
@@ -115,7 +130,7 @@ export const useStore = create<Store>((set, get) => ({
   selected: [], selecting: false,
   promptHist: lsGet<string[]>('cs.phist', []),
   toasts: [],
-  theme: lsGet<Store['theme']>('cs.theme', 'system'),
+  theme: initialTheme === 'light' || initialTheme === 'dark' ? initialTheme : 'system',
   wfData: null, wfRun: null,
   llm: null,
   // 作品库默认收起，和旧版一致；展开状态按浏览器记住
@@ -123,6 +138,7 @@ export const useStore = create<Store>((set, get) => ({
   loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch (e) { if (!(e instanceof ApiError && e.status === 401)) get().toast(e instanceof Error ? e.message : '加载改写模型失败', 'err') } },
   setLibraryOpen: v => { lsSet('cs.libopen', v); set({ libraryOpen: v }) },
   grabPool: lsGet<string[]>('cs.grab', ['A100', 'H100']),
+  setGrabPool: pool => { lsSet('cs.grab', pool); set({ grabPool: pool }) },
   pollRounds: lsGet<number>('cs.rounds', 2),
   pollAllProxies: lsGet<boolean>('cs.pollpx', false),
 
@@ -141,17 +157,19 @@ export const useStore = create<Store>((set, get) => ({
     return booting
   },
   refresh: async () => {
+    const request = ++statusRequest
     try {
       const st = await api.status(get().logSeq)
+      if (request !== statusRequest) return
+      const notifyError = shouldNotifyError(st, get().status)
       setClockSkew(st.server_time)
       const logs = st.logs.length ? [...get().logs, ...st.logs].slice(-600) : get().logs
-      const previous = get().status
       const patch: Partial<Store> = { status: st, logs, logSeq: st.log_seq }
       if (st.gallery_rev !== get().roundsRev && get().booted) get().loadRounds()
       set({ ...patch, bootError: '', statusError: '' })
-      if (st.phase === 'error' && st.error && (previous?.phase !== 'error' || st.error !== previous.error)) get().toast(st.error, 'err')
+      if (notifyError) get().toast(st.error, 'err')
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return
+      if (request !== statusRequest || (e instanceof ApiError && e.status === 401)) return
       const message = e instanceof Error ? e.message : '无法读取工作台状态'
       set(get().status ? { statusError: message } : { bootError: message })
     }
@@ -172,12 +190,19 @@ export const useStore = create<Store>((set, get) => ({
   openSheet: (s, args = {}) => set({ sheet: s, sheetArgs: args }),
   closeSheet: () => set({ sheet: null, sheetArgs: {} }),
   toast: (text, kind = '', undo) => {
+    const toasts = get().toasts
+    if (kind === 'err' && !undo && toasts.some(t => t.kind === 'err' && t.text === text && !t.undo)) return
     const id = toastSeq++
-    set({ toasts: [...get().toasts, { id, text, kind, undo }].slice(-4) })
+    set({ toasts: [...toasts, { id, text, kind, undo }].slice(-4) })
     setTimeout(() => get().dismissToast(id), undo ? 6000 : 3200)
   },
   dismissToast: id => set({ toasts: get().toasts.filter(t => t.id !== id) }),
-  setTheme: t => { lsSet('cs.theme', t); set({ theme: t }); applyTheme(t) },
+  setTheme: theme => {
+    if (theme === 'system') delete document.documentElement.dataset.theme
+    else document.documentElement.dataset.theme = theme
+    lsSet('cs.theme', theme)
+    set({ theme })
+  },
   setViewing: id => set({ viewing: id }),
   toggleSelect: id => {
     const s = new Set(get().selected)
@@ -269,16 +294,10 @@ export const useStore = create<Store>((set, get) => ({
   setWfRun: r => set({ wfRun: r }),
 }))
 
-export function busy() {
-  const st = useStore.getState().status
-  return !!(st && (st.current || st.queue.length || st.phase === 'stopping' || st.phase === 'starting' || st.workflow_active?.status === 'running'))
-}
-
-export function applyTheme(t: Store['theme']) {
-  const dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
-  document.documentElement.dataset.theme = t === 'system' ? '' : t
-  if (t === 'system') document.documentElement.removeAttribute('data-theme')
-  else document.documentElement.dataset.theme = dark && t === 'dark' ? 'dark' : t
+export function selectPollInterval({ status }: Store) {
+  if (status?.phase === 'starting' && !status.current) return 750
+  if (status && (status.current || status.queue.length || status.phase === 'stopping' || status.workflow_active?.status === 'running')) return 1300
+  return 5000
 }
 
 export const selectRefs = (s: Store): References | null => s.status?.references || null

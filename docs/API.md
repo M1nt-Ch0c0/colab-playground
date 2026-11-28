@@ -78,6 +78,7 @@ H="Authorization: Bearer $QP_TOKEN"
 |---|---|
 | `phase` | `idle` / `starting` / `ready` / `generating` / `stopping` / `error` |
 | `error` | `phase=error` 时的错误信息 |
+| `error_id` | 本次失败的唯一标识，同一次失败在轮询中保持一致。其他状态为 null。 |
 | `active_gpu` | 当前占用的 Colab GPU，比如 `"A100 (HIGH_RAM)"` |
 | `idle_minutes`, `idle_deadline` | 空闲自动释放的分钟数（`0` 为永不超期），以及预计释放的时间点（没在倒计时或永不超期就是 `null`） |
 | `current` | 正在跑的任务（结构见 [任务对象](#任务对象)），没有就是 `null` |

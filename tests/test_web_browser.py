@@ -50,6 +50,165 @@ def signed_in_browser():
 
 
 class BrowserTest(unittest.TestCase):
+    def test_library_toggle_keeps_the_stage_height(self):
+        with signed_in_browser() as (rt, driver, url):
+            src = rt.root / "preview.png"
+            src.write_bytes(png())
+            rt.store.save(src, "image", {"prompt": "library preview"})
+            driver.get(url)
+            wait = WebDriverWait(driver, 10)
+            toggle = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".lib-toggle")))
+            stage = driver.find_element(By.CSS_SELECTOR, ".stage")
+            closed_width = stage.rect["width"]
+            # The height drop used to occur between the close click and the dock's removal.
+            driver.execute_script("""
+                const stage = arguments[0], heights = [stage.clientHeight];
+                const observer = new ResizeObserver(() => heights.push(stage.clientHeight));
+                observer.observe(stage);
+                window.finishStageMeasurement = () => { observer.disconnect(); return heights };
+            """, stage)
+            toggle.click()
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".tile"))).click()
+            image = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".viewer img")))
+            self.assertLess(stage.rect["width"], closed_width)
+            dock = driver.find_element(By.CSS_SELECTOR, ".lib-dock")
+            driver.find_element(By.TAG_NAME, "body").send_keys("g")
+            wait.until(EC.staleness_of(dock))
+            self.assertTrue(image.is_displayed())
+            self.assertAlmostEqual(stage.rect["width"], closed_width, delta=1)
+            heights = driver.execute_script("return window.finishStageMeasurement()")
+            self.assertLessEqual(max(heights) - min(heights), 1, heights)
+
+    def test_grab_failure_is_reported_once_per_attempt(self):
+        with signed_in_browser() as (rt, driver, url):
+            message = "A100 暂无空闲库存（HTTP 503），可换卡、换出口或稍后重试。"
+            status = {**rt.colab.status_report(), "authed": True}
+            rt.studio.set_phase("error", message)
+            posting, accept = threading.Event(), threading.Event()
+            grab_card = rt.studio.grab_card
+
+            def delayed_post(**spec):
+                posting.set()
+                if not accept.wait(10):
+                    raise RuntimeError("test grab request timed out")
+                return grab_card(**spec)
+
+            with patch.object(rt.colab, "status_report", return_value=status), \
+                 patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "grab_card", side_effect=delayed_post), \
+                 patch.object(rt.studio, "_acquire_session", side_effect=RuntimeError(message)) as acquire:
+                wait = WebDriverWait(driver, 10)
+                error = (By.CSS_SELECTOR, ".toast.err")
+                settings = (By.CSS_SELECTOR, 'button[title="设置"]')
+                driver.get(url)
+                first = wait.until(EC.visibility_of_element_located(error))
+                self.assertEqual(first.text, message)
+                wait.until(EC.staleness_of(first))  # allow the notification to expire naturally
+                wait.until(EC.element_to_be_clickable(settings)).click()
+                idle = (By.XPATH, "//button[normalize-space(.)='20 分钟']")
+                wait.until(EC.element_to_be_clickable(idle)).click()
+                wait.until(lambda d: "on" in d.find_element(*idle).get_attribute("class").split())
+                self.assertFalse(driver.find_elements(*error), "A new status poll replayed the old error")
+
+                driver.refresh()
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'.status-pill[title="{message}"]')))
+                self.assertFalse(driver.find_elements(*error), "Reload replayed the same failure")
+                wait.until(EC.element_to_be_clickable(settings)).click()
+                retry = (By.XPATH, "//button[normalize-space(.)='开始抢卡']")
+                button = wait.until(EC.element_to_be_clickable(retry))
+                try:
+                    button.click()
+                    self.assertTrue(posting.wait(3))
+                    self.assertFalse(button.is_enabled())
+                    self.assertIn("正在抢卡", button.text)
+                finally:
+                    accept.set()
+                second = wait.until(EC.visibility_of_element_located(error))
+                self.assertEqual(second.text, message)
+                self.assertEqual(acquire.call_count, 1)
+                second.find_element(By.CSS_SELECTOR, 'button[aria-label="关闭提示"]').click()
+                wait.until(EC.staleness_of(second))
+                idle = (By.XPATH, "//button[normalize-space(.)='30 分钟']")
+                driver.find_element(*idle).click()
+                wait.until(lambda d: "on" in d.find_element(*idle).get_attribute("class").split())
+                self.assertFalse(driver.find_elements(*error), "A dismissed error returned")
+
+    def test_grab_order_moves_persists_and_reaches_the_backend(self):
+        with signed_in_browser() as (rt, driver, url):
+            status = {**rt.colab.status_report(), "authed": True}
+            with patch.object(rt.colab, "status_report", return_value=status), \
+                 patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "grab_card") as grab:
+                driver.execute_script("localStorage.setItem('cs.grab', JSON.stringify(['G4', 'H100', 'A100']))")
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+                g4 = "G4 · RTX PRO 6000"
+
+                def open_settings():
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[title="设置"]'))).click()
+                    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".grab-row")))
+
+                def labels():
+                    return [e.text for e in driver.find_elements(By.CSS_SELECTOR, ".grab-row .gpu-main b")]
+
+                def arrow(gpu, direction):
+                    selector = f'.grab-row:has([aria-label="选择 {gpu}"]) button[aria-label="{direction}"]'
+                    return driver.find_element(By.CSS_SELECTOR, selector)
+
+                open_settings()
+                self.assertEqual(labels(), [g4, "H100", "A100", "L4", "T4"])
+                self.assertFalse(arrow(g4, "上移").is_enabled())
+                self.assertFalse(arrow("A100", "下移").is_enabled())
+                arrow(g4, "下移").click()
+                self.assertEqual(labels(), ["H100", g4, "A100", "L4", "T4"])
+                driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+                    "width": 390, "height": 844, "deviceScaleFactor": 2, "mobile": True,
+                })
+                arrow("A100", "上移").click()
+                expected = ["H100", "A100", g4, "L4", "T4"]
+                self.assertEqual(labels(), expected)
+                driver.refresh()
+                open_settings()
+                self.assertEqual(labels(), expected)
+                self.assertEqual([e.text for e in driver.find_elements(By.CSS_SELECTOR, ".grab-row .ord")], ["1", "2", "3"])
+                driver.find_element(By.XPATH, "//button[normalize-space(.)='开始抢卡']").click()
+                wait.until(lambda _: grab.called)
+                self.assertEqual(grab.call_args.kwargs["gpu_pool"], ["H100", "A100", "G4"])
+
+    def test_theme_toggle_uses_the_displayed_scheme(self):
+        with signed_in_browser() as (_, driver, url):
+            wait = WebDriverWait(driver, 10)
+            toggle = (By.CSS_SELECTOR, 'button[title="切换亮色 / 暗色"]')
+
+            def system_scheme(value):
+                driver.execute_cdp_cmd("Emulation.setEmulatedMedia", {
+                    "features": [{"name": "prefers-color-scheme", "value": value}],
+                })
+
+            def scheme():
+                return driver.execute_script("return getComputedStyle(document.documentElement).colorScheme")
+
+            system_scheme("dark")
+            driver.get(url)
+            button = wait.until(EC.element_to_be_clickable(toggle))
+            self.assertEqual(scheme(), "dark")
+            button.click()
+            self.assertEqual(scheme(), "light")
+            driver.refresh()
+            button = wait.until(EC.element_to_be_clickable(toggle))
+            self.assertEqual(scheme(), "light")
+            button.click()
+            self.assertEqual(scheme(), "dark")
+
+            driver.find_element(By.CSS_SELECTOR, 'button[title="设置"]').click()
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='跟随系统']"))).click()
+            driver.find_element(By.CSS_SELECTOR, 'button[aria-label="关闭"]').click()
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".scrim")))
+            system_scheme("light")
+            wait.until(lambda _: scheme() == "light" and button.get_attribute("aria-label") == "切换到暗色")
+            button.click()
+            self.assertEqual(scheme(), "dark")
+
     def test_studio(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
