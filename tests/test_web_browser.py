@@ -611,6 +611,17 @@ class BrowserTest(unittest.TestCase):
             self.assertEqual(saved["variables"], variables)
             self.assertEqual(saved["steps"][0]["position"], {"x": 120, "y": 240})
 
+            driver.get(url + "/legacy")
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#wsWorkflow"))).click()
+            wf_name = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#wfName")))
+            wait.until(lambda _: wf_name.get_property("value") == "变量工作流")
+            wf_name.send_keys(SHORTCUT, "a", Keys.NULL, "旧版保存的变量模板")
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#wfSaveTplBtn"))).click()
+            wait.until(lambda _: any(t["name"] == "旧版保存的变量模板" for t in engine.list_workflows()["custom"]))
+            legacy_saved = next(t for t in engine.list_workflows()["custom"] if t["name"] == "旧版保存的变量模板")
+            self.assertEqual(legacy_saved["variables"], variables)
+            self.assertEqual(legacy_saved["steps"][0]["position"], {"x": 120, "y": 240})
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)
