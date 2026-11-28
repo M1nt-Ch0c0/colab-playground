@@ -589,6 +589,28 @@ class BrowserTest(unittest.TestCase):
                     saved = finished["step_states"]["review"]["output"][group]
                     self.assertEqual([item[field] for item in saved], ["edited 1", "edited 2"])
 
+    def test_workflow_save_template_preserves_variables_and_positions(self):
+        with signed_in_browser() as (rt, driver, url):
+            engine = rt.workflows
+            variables = {"tone": "冷调", "passes": 2, "fast": False}
+            engine.create_run({"topic": "fixture", "workflow": {
+                "name": "变量工作流",
+                "description": "保留变量与坐标",
+                "variables": variables,
+                "steps": [{"id": "s1", "type": "asset_input", "position": {"x": 120, "y": 240}}],
+            }})
+            wait = WebDriverWait(driver, 12)
+            driver.get(url)
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'工作流')]"))).click()
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='存为模板']"))).click()
+            name_input = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#name-prompt")))
+            name_input.send_keys(SHORTCUT, "a", Keys.NULL, "已保存的变量模板")
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'modal')]//button[normalize-space(.)='保存']"))).click()
+            wait.until(lambda _: any(t["name"] == "已保存的变量模板" for t in engine.list_workflows()["custom"]))
+            saved = next(t for t in engine.list_workflows()["custom"] if t["name"] == "已保存的变量模板")
+            self.assertEqual(saved["variables"], variables)
+            self.assertEqual(saved["steps"][0]["position"], {"x": 120, "y": 240})
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

@@ -275,6 +275,91 @@ class StudioV3Tests(unittest.TestCase):
         self.assertTrue(removed)
         self.assertEqual(rest, [])
 
+    def test_workflow_variables_and_step_positions(self) -> None:
+        wf, _ = self.wf.save_workflow({
+            "name": "带变量与坐标",
+            "variables": {"tone": "冷调", "shots": 3, "ratio": 1.5, "fast": True},
+            "steps": [
+                {"id": "img", "type": "image_gen", "position": {"x": 10.6, "y": 20},
+                 "config": {"prompt_template": "{{topic}} · {{ vars.tone }} · {{vars.shots}} · {{vars.fast}}"}},
+            ],
+        })
+        self.assertEqual(wf["variables"], {"tone": "冷调", "shots": 3, "ratio": 1.5, "fast": True})
+        self.assertEqual(wf["steps"][0]["position"], {"x": 11, "y": 20})
+
+        # Persists cleanly across engine reload.
+        reloaded = WorkflowEngine(self.tmp, self.studio, self.store, self.log)
+        stored = reloaded.get_workflow(wf["id"])
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["variables"], wf["variables"])
+        self.assertEqual(stored["steps"][0]["position"], {"x": 11, "y": 20})
+
+        # Optional None / empty values are omitted without failing.
+        plain, _ = self.wf.save_workflow({
+            "name": "无变量无坐标",
+            "variables": None,
+            "steps": [{"id": "s1", "type": "asset_input", "position": None}],
+        })
+        self.assertNotIn("variables", plain)
+        self.assertNotIn("position", plain["steps"][0])
+
+        # Validation failures for variables and positions.
+        too_many = {f"v{i}": i for i in range(33)}
+        for bad_vars, pattern in [
+            ([], "最多定义 32 个变量"),
+            (too_many, "最多定义 32 个变量"),
+            ({"1bad": "x"}, "英文字母或下划线开头"),
+            ({"a" * 49: "x"}, "英文字母或下划线开头"),
+            ({"a": None}, "需要文本"),
+            ({"a": "x" * 2001}, "需要文本"),
+            ({"a": float("inf")}, "需要文本"),
+            ({"a": float("nan")}, "需要文本"),
+            ({"a": ["x"]}, "需要文本"),
+        ]:
+            with self.subTest(bad_vars=type(bad_vars).__name__ if isinstance(bad_vars, dict) and len(bad_vars) > 5 else bad_vars):
+                with self.assertRaisesRegex(ValueError, pattern):
+                    self.wf.save_workflow({"name": "无效变量", "variables": bad_vars,
+                                           "steps": [{"id": "s1", "type": "asset_input"}]})
+
+        with self.assertRaisesRegex(ValueError, "步骤 ID 不能为 vars"):
+            self.wf.save_workflow({"name": "保留步骤名", "variables": {"tone": "冷调"},
+                                   "steps": [{"id": "vars", "type": "asset_input"}]})
+
+        # Without variables, a legacy step named "vars" stays accepted.
+        legacy_vars, _ = self.wf.save_workflow({"name": "旧步骤名", "steps": [{"id": "vars", "type": "asset_input"}]})
+        self.assertEqual(legacy_vars["steps"][0]["id"], "vars")
+
+        for bad_pos in (
+            {"x": -1, "y": 0},
+            {"x": 0, "y": 8001},
+            {"x": 10},
+            {"x": True, "y": 20},
+            {"x": float("nan"), "y": 10},
+            {"x": float("inf"), "y": 10},
+            [10, 20],
+        ):
+            with self.subTest(bad_pos=bad_pos):
+                with self.assertRaisesRegex(ValueError, "画布坐标必须在 0–8000 之间"):
+                    self.wf.save_workflow({"name": "无效坐标",
+                                           "steps": [{"id": "s1", "type": "asset_input", "position": bad_pos}]})
+
+        # Run creation, update_run_config preservation/clearing, and template interpolation.
+        run = self.wf.create_run({"workflow_id": wf["id"], "topic": "雨夜街头"})
+        self.assertEqual(run["workflow"]["variables"], wf["variables"])
+        self.assertEqual(run["workflow"]["steps"][0]["position"], {"x": 11, "y": 20})
+
+        # Updating only steps preserves existing variables; explicit {} clears them.
+        kept = self.wf.update_run_config(run["id"], {"workflow": {"steps": run["workflow"]["steps"]}})
+        self.assertEqual(kept["workflow"]["variables"], wf["variables"])
+
+        self.wf.start_run(run["id"])
+        finished = self._wait_run_not_running(run["id"])
+        self.assertEqual(finished["status"], "done", finished["error"])
+        self.assertEqual(self.colab.uploaded_jobs[-1]["prompt"], "雨夜街头 · 冷调 · 3 · True")
+
+        cleared = self.wf.update_run_config(run["id"], {"workflow": {"steps": run["workflow"]["steps"], "variables": {}}})
+        self.assertNotIn("variables", cleared["workflow"])
+
     # ── 5. Full 7-Step End-to-End Pipeline + Pause/Edit/Resume + Isolation ──
 
     def test_workflow_step_option_contract(self):
@@ -660,6 +745,18 @@ class StudioV3Tests(unittest.TestCase):
             code, raw, _ = req("GET", "/api/workflows")
             self.assertEqual(code, 200)
             self.assertGreaterEqual(len(json.loads(raw)["builtin"]), 3)
+
+            code, raw, _ = req("POST", "/api/workflows", {
+                "name": "API 变量模板",
+                "variables": {"tone": "霓虹", "count": 2},
+                "steps": [{"id": "s1", "type": "asset_input", "position": {"x": 64.4, "y": 128}}],
+            })
+            self.assertEqual(code, 200)
+            tpl = json.loads(raw)["workflow"]
+            self.assertEqual(tpl["variables"], {"tone": "霓虹", "count": 2})
+            self.assertEqual(tpl["steps"][0]["position"], {"x": 64, "y": 128})
+            code, _, _ = req("DELETE", f"/api/workflows/{tpl['id']}")
+            self.assertEqual(code, 200)
 
             code, raw, _ = req("POST", "/api/workflows/runs", {"workflow_id": "builtin:agent-long-video", "topic": "API 测试短片"})
             self.assertEqual(code, 201)

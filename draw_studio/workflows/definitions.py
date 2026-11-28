@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import random
 import re
 import time
@@ -21,8 +22,7 @@ VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,47}")
 
 
-def workflow_variables(raw):
-    import math
+def workflow_variables(raw: Any) -> dict[str, str | int | float | bool]:
     if not isinstance(raw, dict) or len(raw) > 32:
         raise ValueError("一个工作流最多定义 32 个变量")
     for key, value in raw.items():
@@ -34,7 +34,7 @@ def workflow_variables(raw):
     return dict(raw)
 
 
-def step_position(raw):
+def step_position(raw: Any) -> dict[str, int]:
     if not isinstance(raw, dict) or any(type(raw.get(k)) not in (int, float) or not 0 <= raw[k] <= 8000
                                        for k in ("x", "y")):
         raise ValueError("画布坐标必须在 0–8000 之间")
@@ -587,7 +587,7 @@ def _normalize_step(raw: Any, idx: int) -> dict[str, Any]:
         "enabled": as_bool(raw.get("enabled", True), "enabled"),
         "pause_after": as_bool(raw.get("pause_after", False), "pause_after"),
         "config": cfg,
-        **({"position": step_position(raw["position"])} if "position" in raw else {}),
+        **({"position": step_position(raw["position"])} if raw.get("position") is not None else {}),
     }
 
 
@@ -622,7 +622,8 @@ def normalize_workflow_def(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("无效的工作流 ID")
     now = int(time.time())
     wf_id = req_id or f"wf_{now % 1000000:06d}_{random.randint(1000, 9999)}"
-    variables = workflow_variables(body.get("variables", {}))
+    raw_vars = body.get("variables")
+    variables = workflow_variables({} if raw_vars is None else raw_vars)
     if variables and "vars" in used_ids:
         raise ValueError("使用工作流变量时，步骤 ID 不能为 vars")
     return {
