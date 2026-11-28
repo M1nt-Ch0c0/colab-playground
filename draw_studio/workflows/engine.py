@@ -329,6 +329,8 @@ class WorkflowEngine:
             if isinstance(body.get("workflow"), dict) and body["workflow"].get("steps"):
                 raw_wf = dict(body["workflow"])
                 raw_wf.setdefault("name", run["workflow"].get("name") or "工作流")
+                if "variables" not in raw_wf and run["workflow"].get("variables"):
+                    raw_wf["variables"] = run["workflow"]["variables"]
                 norm = normalize_workflow_def({**raw_wf, "id": ""})
                 norm["id"] = str(raw_wf.get("id") or run["workflow"].get("id") or norm["id"])
                 norm["builtin"] = bool(run["workflow"].get("builtin"))
@@ -756,6 +758,8 @@ class WorkflowEngine:
             ctx[sid] = out
         if extra:
             ctx.update(extra)
+        if variables := run.get("workflow", {}).get("variables"):
+            ctx["vars"] = variables
         return ctx
 
     def _collect_ref_blobs_from_sources(

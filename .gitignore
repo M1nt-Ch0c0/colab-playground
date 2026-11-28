@@ -35,6 +35,7 @@ Thumbs.db
 # Local workspace instructions and notes
 AGENTS.md
 /docs/frontend-backend-gaps.md
+/work/
 
 # Gemini CLI local review context & telemetry
 .gemini/

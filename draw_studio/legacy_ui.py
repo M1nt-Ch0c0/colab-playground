@@ -3252,6 +3252,7 @@ function bind(){
         description: S.wfRun.workflow.description || S.wfRun.topic.slice(0, 120),
         default_topic: S.wfRun.topic,
         steps: S.wfRun.workflow.steps,
+        ...(S.wfRun.workflow.variables ? {variables: S.wfRun.workflow.variables} : {}),
       });
       S.wfData = await api('api/workflows');
       renderWorkflowSidebar();

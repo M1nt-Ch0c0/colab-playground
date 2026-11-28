@@ -76,22 +76,37 @@ function ColabAccount() {
 function GrabBox() {
   const st = useStore(s => s.status)
   const cfg = useStore(s => s.cfg)
-  const pool = useStore(s => s.grabPool)
+  const savedPool = useStore(s => s.grabPool)
+  const setPool = useStore(s => s.setGrabPool)
   const rounds = useStore(s => s.pollRounds)
   const allPx = useStore(s => s.pollAllProxies)
+  const [submitting, setSubmitting] = useState(false)
   const toast = useStore(s => s.toast)
   const refresh = useStore(s => s.refresh)
   const ask = useConfirm(s => s.ask)
   if (!st || !cfg) return null
   const c = st.colab
   const lim = cfg.limits
-  const grabbing = st.phase === 'starting' && !st.current
-  const setPool = (p: string[]) => { lsSet(LS_KEYS.grab, p); useStore.setState({ grabPool: p }) }
+  const grabbing = submitting || (st.phase === 'starting' && !st.current)
+  const selectedGpus = cfg.gpus.filter(g => savedPool.includes(g.id))
+    .sort((a, b) => savedPool.indexOf(a.id) - savedPool.indexOf(b.id))
+  const pool = selectedGpus.map(g => g.id)
+  const orderedGpus = [...selectedGpus, ...cfg.gpus.filter(g => !pool.includes(g.id))]
   const toggle = (id: string) => setPool(pool.includes(id) ? pool.filter(x => x !== id) : [...pool, id])
-  const move = (id: string, d: number) => { const i = pool.indexOf(id); const j = i + d; if (i < 0 || j < 0 || j >= pool.length) return; const p = [...pool]; [p[i], p[j]] = [p[j], p[i]]; setPool(p) }
+  const move = (from: number, to: number) => {
+    const next = [...pool]
+    next[from] = pool[to]
+    next[to] = pool[from]
+    setPool(next)
+  }
   const grab = async () => {
-    try { await api.colab.grab({ gpu_pool: pool, poll_rounds: rounds, poll_all_proxies: allPx }); toast(`开始抢卡：${pool.join(' → ')}`, 'ok'); refresh() }
+    setSubmitting(true)
+    try {
+      await api.colab.grab({ gpu_pool: pool, poll_rounds: rounds, poll_all_proxies: allPx })
+      await refresh()
+    }
     catch (e) { toast(e instanceof Error ? e.message : '抢卡失败', 'err') }
+    finally { setSubmitting(false) }
   }
   const release = async () => {
     if (!(await ask({ title: '释放全部算力？', body: '会停止当前任务、清空队列并关闭所有 Colab 实例，停止计费。', ok: '释放', danger: true }))) return
@@ -105,20 +120,23 @@ function GrabBox() {
           <div key={s.name} className="sess"><i className="dot ok" /><b>{s.gpu}</b><span className="dim">{s.shape}</span><span className="grow" /><span className="dim mono">{s.name}</span></div>
         ))}</div>
       ) : <p className="help">当前没有持有任何实例。</p>}
-      <div className="lbl">抢卡顺序 <span className="dim">按顺序尝试，抢到第一张就停</span></div>
+      <div className="lbl">抢卡顺序 <span className="dim">抢到第一张即停，顺序自动保存在此浏览器</span></div>
       <div className="grab-list">
-        {cfg.gpus.map(g => {
-          const on = pool.includes(g.id)
+        {orderedGpus.map((g, index) => {
+          const on = index < pool.length
           const h = c.gpu_health[g.id]
           const eligible = !c.eligible_gpus.length || c.eligible_gpus.includes(g.id)
           return (
             <div key={g.id} className={cx('grab-row', on && 'on', !eligible && 'off')}>
-              <button className={cx('check', on && 'on')} disabled={!eligible} onClick={() => toggle(g.id)} aria-label={`选择 ${g.label}`} />
+              <button className={cx('check', on && 'on')} disabled={!eligible} onClick={() => toggle(g.id)} aria-label={`选择 ${g.label}`} aria-pressed={on} />
               <span className="gpu-main"><b>{g.label}</b><small>{g.hint}</small></span>
               {h && <span className={cx('tag', h.status === 'ok' ? 'ok' : h.status === 'unavailable' ? 'warn' : 'bad')} title={ago(h.at)}>{h.status === 'ok' ? '可用' : h.status === 'unavailable' ? '无库存' : '出错'}</span>}
               {!eligible && <span className="tag">账号不可用</span>}
-              {on && <span className="ord tabular">{pool.indexOf(g.id) + 1}</span>}
-              {on && <span className="ord-btns"><button onClick={() => move(g.id, -1)} aria-label="上移">↑</button><button onClick={() => move(g.id, 1)} aria-label="下移">↓</button></span>}
+              {on && <span className="ord tabular">{index + 1}</span>}
+              {on && <span className="ord-btns" role="group" aria-label={g.label}>
+                <button disabled={index === 0} onClick={() => move(index, index - 1)} aria-label="上移">↑</button>
+                <button disabled={index === pool.length - 1} onClick={() => move(index, index + 1)} aria-label="下移">↓</button>
+              </span>}
             </div>
           )
         })}

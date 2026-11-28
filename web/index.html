@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>ColabReel</title>
     <link rel="icon" type="image/svg+xml" href="/src/assets/colabreel.svg?inline" />
-    <script>try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('cs.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+    <script>try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('cs.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}var v=t==='light'||t==='dark'?t:JSON.parse(t||'null');if(v==='light'||v==='dark')document.documentElement.dataset.theme=v}catch(e){}</script>
   </head>
   <body>
     <div id="root"></div>

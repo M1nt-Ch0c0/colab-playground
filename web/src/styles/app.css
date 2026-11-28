@@ -254,7 +254,8 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 /* ── toast ── */
 .toasts { position: fixed; bottom: max(18px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column-reverse; gap: 8px; align-items: center; width: max-content; max-width: calc(100% - 32px); pointer-events: none; }
 .toast { border-radius: 14px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 520; max-width: 460px; }
-.toast .undo { pointer-events: auto; border: 0; background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 3px 8px; font-weight: 630; }
+.toast button { pointer-events: auto; }
+.toast .undo { border: 0; background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 3px 8px; font-weight: 630; }
 
 /* ── 空状态 / 杂项 ── */
 .empty { color: var(--muted); text-align: center; padding: 28px 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -267,7 +268,7 @@ hr.sep { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 @media (max-width: 760px) {
   .hide-sm { display: none !important; }
-  .topbar { margin: 6px 0 0; gap: 6px; padding: 0 8px; }
+  .topbar { flex-wrap: wrap; height: auto; min-height: var(--top); margin: 6px 0 0; gap: 6px; padding: 6px 8px; }
   .workspace { padding: 8px 0 0; }
   .g3 { grid-template-columns: 1fr 1fr; }
 }

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import random
 import re
 import time
@@ -17,6 +18,27 @@ STEPS_MAX = 16
 
 STEP_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,48}")
 VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+
+VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,47}")
+
+
+def workflow_variables(raw: Any) -> dict[str, str | int | float | bool]:
+    if not isinstance(raw, dict) or len(raw) > 32:
+        raise ValueError("一个工作流最多定义 32 个变量")
+    for key, value in raw.items():
+        if not isinstance(key, str) or not VARIABLE_NAME.fullmatch(key):
+            raise ValueError("变量名须以英文字母或下划线开头，最多 48 个字符")
+        if (type(value) not in (str, bool, int, float) or isinstance(value, str) and len(value) > 2000
+                or isinstance(value, float) and not math.isfinite(value)):
+            raise ValueError(f"变量 {key} 需要文本（最多 2000 字）、数字或布尔值")
+    return dict(raw)
+
+
+def step_position(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict) or any(type(raw.get(k)) not in (int, float) or not 0 <= raw[k] <= 8000
+                                       for k in ("x", "y")):
+        raise ValueError("画布坐标必须在 0–8000 之间")
+    return {k: round(raw[k]) for k in ("x", "y")}
 
 STEP_CATALOG: list[dict[str, Any]] = [
     {
@@ -565,6 +587,7 @@ def _normalize_step(raw: Any, idx: int) -> dict[str, Any]:
         "enabled": as_bool(raw.get("enabled", True), "enabled"),
         "pause_after": as_bool(raw.get("pause_after", False), "pause_after"),
         "config": cfg,
+        **({"position": step_position(raw["position"])} if raw.get("position") is not None else {}),
     }
 
 
@@ -599,6 +622,10 @@ def normalize_workflow_def(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("无效的工作流 ID")
     now = int(time.time())
     wf_id = req_id or f"wf_{now % 1000000:06d}_{random.randint(1000, 9999)}"
+    raw_vars = body.get("variables")
+    variables = workflow_variables({} if raw_vars is None else raw_vars)
+    if variables and "vars" in used_ids:
+        raise ValueError("使用工作流变量时，步骤 ID 不能为 vars")
     return {
         "id": wf_id,
         "builtin": False,
@@ -606,5 +633,6 @@ def normalize_workflow_def(body: dict[str, Any]) -> dict[str, Any]:
         "description": str(body.get("description") or "").strip()[:400],
         "default_topic": str(body.get("default_topic") or "").strip()[:600],
         "steps": steps,
+        **({"variables": variables} if variables else {}),
         "updated_at": now,
     }

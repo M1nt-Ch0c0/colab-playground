@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from 'motion/react'
+import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useStore, applyTheme, busy } from './store/store'
+import { selectPollInterval, useStore } from './store/store'
 import { Topbar } from './ui/Topbar'
 import { ConfirmHost } from './ui/Overlay'
 import { Composer } from './features/studio/Composer'
@@ -26,9 +27,9 @@ function Studio() {
   const booted = useStore(s => s.booted)
   const bootError = useStore(s => s.bootError)
   const boot = useStore(s => s.boot)
+  const pollInterval = useStore(selectPollInterval)
   const ws = useStore(s => s.workspace)
   const sheet = useStore(s => s.sheet)
-  const theme = useStore(s => s.theme)
   const libOpen = useStore(s => s.libraryOpen)
   const roundsReady = useStore(s => s.roundsRev >= 0)
 
@@ -55,12 +56,11 @@ function Studio() {
       timer = window.setTimeout(async () => {
         await useStore.getState().refresh()
         if (active) schedule()
-      }, document.hidden ? 10000 : busy() ? 1300 : 5000)
+      }, document.hidden ? 10000 : pollInterval)
     }
     schedule()
     return () => { active = false; clearTimeout(timer) }
-  }, [booted])
-  useEffect(() => { applyTheme(theme) }, [theme])
+  }, [booted, pollInterval])
   useShortcuts()
   usePasteUpload()
 
@@ -71,7 +71,7 @@ function Studio() {
     <div className="app">
       <Topbar />
       <AnimatePresence mode="wait" initial={false}>
-        <motion.main key={ws === 'workflow' ? 'wf' : 'studio'} className={cx('workspace', ws === 'workflow' && 'is-wf', ws !== 'workflow' && !libOpen && 'lib-closed')}
+        <motion.main key={ws === 'workflow' ? 'wf' : 'studio'} className={cx('workspace', ws === 'workflow' && 'is-wf')}
           initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
           {ws === 'workflow' ? <WorkflowWorkspace /> : (
             <>
@@ -113,11 +113,12 @@ function Toasts() {
     <div className="toasts" aria-live="polite">
       <AnimatePresence>
         {toasts.map(t => (
-          <motion.div key={t.id} layout className={cx('toast glass', t.kind)} initial={{ opacity: 0, y: 16, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.96 }}
-            transition={{ type: 'spring', stiffness: 500, damping: 34 }}>
+          <motion.div key={t.id} layout="position" className={cx('toast glass', t.kind)} initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}>
             <i className={cx('dot', t.kind === 'ok' ? 'ok' : t.kind === 'err' ? 'bad' : '')} />
             <span>{t.text}</span>
             {t.undo && <button className="undo" onClick={() => { t.undo!.fn(); dismiss(t.id) }}>{t.undo.label}</button>}
+            {t.kind === 'err' && <button className="iconbtn" aria-label="关闭提示" onClick={() => dismiss(t.id)}><X size={14} /></button>}
           </motion.div>
         ))}
       </AnimatePresence>

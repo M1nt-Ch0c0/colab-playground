@@ -457,6 +457,12 @@ class ColabBackend:
 
     # ── Session Lifecycle ─────────────────────────────────────────────
 
+    def _unavailable_error(self, gpu: str, code: int, detail: str) -> RuntimeError:
+        if detail:
+            self.log(f"{gpu} 申请返回 HTTP {code}：{detail}")
+        reason = "暂无空闲库存" if code == 503 else "暂时无法分配"
+        return RuntimeError(f"{gpu} {reason}（HTTP {code}），可换卡、换出口或稍后重试。")
+
     def _assign_with_retries(
         self,
         client: Client,
@@ -662,9 +668,7 @@ class ColabBackend:
                                     self.log(f"{cand_key} 标准规格返回 HTTP {code2}{body2_sfx}，继续下一轮询项…")
                                     continue
                                 if code2 == 503:
-                                    raise RuntimeError(
-                                        f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP 503{body2_sfx}），请换用其他 GPU、切换出口线路或稍后重试。"
-                                    ) from exc2
+                                    raise self._unavailable_error(cand_key, code2, body2) from exc2
                                 raise RuntimeError(f"账号暂不支持或暂无 {cand_key} 配额（HTTP {code2}{body2_sfx}），请切换其他 GPU。") from exc2
                         elif code in (502, 503, 504):
                             self._record_gpu_health(cand_key, "unavailable", int(code), f"HTTP {code} 无库存/超时")
@@ -672,9 +676,7 @@ class ColabBackend:
                             if has_more:
                                 self.log(f"{cand_key} 返回 HTTP {code}{body_sfx}，继续下一轮询项…")
                                 continue
-                            raise RuntimeError(
-                                f"Google Colab 当前暂无 {cand_key} 空闲库存（HTTP {code}{body_sfx}），请换用其他 GPU 或稍后重试。"
-                            ) from exc
+                            raise self._unavailable_error(cand_key, code, body_txt) from exc
                         elif code == 400:
                             self._record_gpu_health(cand_key, "error", 400, "HTTP 400 不支持")
                             last_err = exc
