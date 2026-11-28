@@ -82,6 +82,73 @@ class BrowserTest(unittest.TestCase):
             heights = driver.execute_script("return window.finishStageMeasurement()")
             self.assertLessEqual(max(heights) - min(heights), 1, heights)
 
+    def test_viewer_and_lightbox_fit_portrait_images(self):
+        with signed_in_browser() as (rt, driver, url):
+            portrait = rt.root / "portrait.png"
+            portrait.write_bytes(png(size=(1024, 1536), color="teal"))
+            square = rt.root / "square.png"
+            square.write_bytes(png(size=(1024, 1024), color="coral"))
+            rt.store.save(portrait, "image", {"prompt": "portrait preview", "width": 1024, "height": 1536})
+            rt.store.save(square, "image", {"prompt": "square preview", "width": 1024, "height": 1024})
+            driver.get(url)
+            wait = WebDriverWait(driver, 10)
+            if not driver.find_elements(By.CSS_SELECTOR, ".lib-dock"):
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".lib-toggle"))).click()
+            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, ".lib-grid .tile")) == 2)
+
+            def measure_fit(box_sel, img_sel, bar_sel=None, prev_src=""):
+                wait.until(lambda d: d.execute_script("""
+                    const boxes = document.querySelectorAll(arguments[0]);
+                    const img = document.querySelector(arguments[1]);
+                    return boxes.length === 1 && !!img && img.complete && img.naturalWidth > 0
+                        && (!arguments[2] || img.src !== arguments[2])
+                        && getComputedStyle(boxes[0]).transform === 'none';
+                """, box_sel, img_sel, prev_src))
+                return driver.execute_script("""
+                    const box = document.querySelector(arguments[0]).getBoundingClientRect();
+                    const imgEl = document.querySelector(arguments[1]);
+                    const img = imgEl.getBoundingClientRect();
+                    const bar = arguments[2] ? document.querySelector(arguments[2]).getBoundingClientRect() : null;
+                    return {
+                        src: imgEl.src,
+                        naturalWidth: imgEl.naturalWidth,
+                        naturalHeight: imgEl.naturalHeight,
+                        fits: img.top >= box.top - 1 && img.bottom <= box.bottom + 1
+                              && img.left >= box.left - 1 && img.right <= box.right + 1,
+                        centeredV: Math.abs((img.top - box.top) - (box.bottom - img.bottom)) <= 2,
+                        centeredH: Math.abs((img.left - box.left) - (box.right - img.right)) <= 2,
+                        aspectDiff: Math.abs((img.width / img.height) - (imgEl.naturalWidth / imgEl.naturalHeight)),
+                        clearsBar: bar ? img.bottom <= bar.top + 1 : true,
+                    };
+                """, box_sel, img_sel, bar_sel)
+
+            seen_dims = set()
+            prev_src = ""
+            for index in range(2):
+                tiles = driver.find_elements(By.CSS_SELECTOR, ".lib-grid .tile")
+                tiles[index].click()
+                metrics = measure_fit(".viewer", ".viewer img", prev_src=prev_src)
+                prev_src = metrics["src"]
+                dims = (metrics["naturalWidth"], metrics["naturalHeight"])
+                seen_dims.add(dims)
+                self.assertTrue(metrics["fits"], (dims, metrics))
+                self.assertTrue(metrics["centeredV"], (dims, metrics))
+                self.assertTrue(metrics["centeredH"], (dims, metrics))
+                self.assertLess(metrics["aspectDiff"], 0.02, (dims, metrics))
+                if dims == (1024, 1536):
+                    expand = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".viewer .vnav.expand")))
+                    driver.execute_script("arguments[0].click()", expand)
+                    lb_metrics = measure_fit(".lb-media", ".lb-media img", ".lb-bar")
+                    self.assertEqual((lb_metrics["naturalWidth"], lb_metrics["naturalHeight"]), (1024, 1536))
+                    self.assertTrue(lb_metrics["fits"], lb_metrics)
+                    self.assertTrue(lb_metrics["centeredV"], lb_metrics)
+                    self.assertTrue(lb_metrics["centeredH"], lb_metrics)
+                    self.assertLess(lb_metrics["aspectDiff"], 0.02, lb_metrics)
+                    self.assertTrue(lb_metrics["clearsBar"], lb_metrics)
+                    driver.find_element(By.CSS_SELECTOR, '.lb-bar button[aria-label="关闭"]').click()
+                    wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".lightbox")))
+            self.assertEqual(seen_dims, {(1024, 1536), (1024, 1024)})
+
     def test_grab_failure_is_reported_once_per_attempt(self):
         with signed_in_browser() as (rt, driver, url):
             message = "A100 暂无空闲库存（HTTP 503），可换卡、换出口或稍后重试。"
