@@ -1,10 +1,22 @@
-"""HTML / CSS / JS for Colab Studio (single page, no external assets)."""
+"""HTML / CSS / JS for ColabReel (single page, no external assets)."""
+
+from base64 import b64encode
+
+# Mirrors web/src/assets/colabreel.svg so the standalone legacy page stays asset-free.
+_BRAND_ICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="15" fill="#D8422C"/>
+  <rect x="13" y="14" width="29" height="24" rx="4.5" fill="none" stroke="#FFF5E8" stroke-width="3.5"/>
+  <rect x="23" y="24" width="28" height="25" rx="4.5" fill="#D8422C" stroke="#FFF5E8" stroke-width="3.5"/>
+  <path d="M34 30.5 43 36.5 34 42.5Z" fill="#FFF5E8" stroke="#FFF5E8" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>"""
+_BRAND_ICON_URL = "data:image/svg+xml;base64," + b64encode(_BRAND_ICON.encode()).decode()
 
 LOGIN_HTML = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 · Colab Studio</title>
-<script>(function(){try{var t=localStorage.getItem('colab-studio.theme')||'light';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='light';}})();</script>
+<title>登录 · ColabReel</title>
+<link rel="icon" type="image/svg+xml" href="__BRAND_ICON__">
+<script>(function(){try{var t=localStorage.getItem('colabreel.legacy.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.legacy.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){document.documentElement.dataset.theme='light';}})();</script>
 <style>
   :root{color-scheme:dark;--bg:#07080d;--card:rgba(20,22,34,.78);--line:rgba(255,255,255,.1);--text:#eceef6;--muted:#8b91a7;--in:rgba(0,0,0,.35);--sh:0 30px 80px rgba(0,0,0,.45);--err:#fca5a5}
   :root[data-theme="light"]{color-scheme:light;--bg:#f4f6fb;--card:rgba(255,255,255,.92);--line:rgba(15,23,42,.1);--text:#0f172a;--muted:#64748b;--in:#f8fafc;--sh:0 24px 60px rgba(15,23,42,.1);--err:#dc2626}
@@ -15,8 +27,7 @@ LOGIN_HTML = """<!doctype html>
       radial-gradient(800px 500px at 110%% 110%%,rgba(34,211,238,.12),transparent 60%%),var(--bg)}
   form{width:min(360px,92vw);display:grid;gap:14px;padding:32px 28px;border-radius:20px;
     background:var(--card);border:1px solid var(--line);backdrop-filter:blur(18px);box-shadow:var(--sh)}
-  .logo{width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,#8b5cf6,#6366f1 45%%,#22d3ee);
-    display:grid;place-items:center;box-shadow:0 10px 30px rgba(99,102,241,.35)}
+  .logo{display:block;width:46px;height:46px}
   h1{margin:4px 0 0;font-size:22px;letter-spacing:.2px}
   p{margin:0;color:var(--muted);font-size:13px}
   input{padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--in);
@@ -28,13 +39,13 @@ LOGIN_HTML = """<!doctype html>
   .err{color:var(--err);min-height:1.2em;font-size:13px}
 </style></head>
 <body><form method="post" action="login">
-  <div class="logo"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 3v4M17 5h4M5 17v4M3 19h4"/></svg></div>
-  <div><h1>Colab Studio</h1><p>生图 · 改图 · 生视频 Playground</p></div>
+  <img class="logo" src="__BRAND_ICON__" alt="">
+  <div><h1>ColabReel</h1><p>From Colab to the next shot.</p></div>
   <input type="password" name="password" placeholder="访问密码" autofocus autocomplete="current-password">
   <button>进入工作台</button>
   <div class="err">%s</div>
 </form></body></html>
-"""
+""".replace("__BRAND_ICON__", _BRAND_ICON_URL)
 
 _CSS = r"""
 :root{
@@ -104,7 +115,7 @@ a{color:var(--a2)}
 .topbar{flex:none;z-index:40;display:flex;align-items:center;gap:12px;padding:10px 18px;
   background:var(--topbar-bg);backdrop-filter:blur(16px) saturate(140%);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;letter-spacing:.2px;white-space:nowrap}
-.brand .logo{width:32px;height:32px;border-radius:10px;background:var(--grad);color:#fff;display:grid;place-items:center;box-shadow:0 6px 18px rgba(99,102,241,.35)}
+.brand .logo{display:block;width:32px;height:32px;flex:none}
 .brand small{color:var(--dim);font-weight:500;font-size:11px;margin-left:2px}
 .grow{flex:1}
 .chip{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line);
@@ -529,7 +540,7 @@ input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;bac
 
 _BODY = r"""
 <header class="topbar">
-  <div class="brand"><div class="logo"><i data-i="sparkles"></i></div>Colab Studio<small id="ver"></small></div>
+  <div class="brand"><img class="logo" src="__BRAND_ICON__" alt="">ColabReel<small id="ver"></small></div>
   <nav class="ws-nav" aria-label="工作台切换">
     <button type="button" id="wsImage" class="on"><i data-i="image"></i><span class="hide-sm">生图 / 改图</span></button>
     <button type="button" id="wsVideo"><i data-i="video"></i><span class="hide-sm">生视频</span></button>
@@ -1054,8 +1065,10 @@ const S = {
   grabPool:[], pollRounds:2, pollAllProxies:false,
   wfData:null, wfRun:null, wfAssetStep:'',
 };
-const LS_KEY = 'colab-studio.v2';
-const LS_PHIST_KEY = 'colab-studio.prompt-hist.v1';
+const LS_KEY = 'colabreel.v2';
+const LS_PHIST_KEY = 'colabreel.prompt-hist.v1';
+const LS_LEGACY = {'colabreel.v2':'colab-studio.v2', 'colabreel.prompt-hist.v1':'colab-studio.prompt-hist.v1'};
+Object.entries(LS_LEGACY).forEach(([next, prev]) => { try { if (localStorage.getItem(next) == null) { const old = localStorage.getItem(prev); if (old != null) localStorage.setItem(next, old); } } catch {} });
 const IMAGE_SIZES = [['1:1',1024,1024],['2:3',768,1152],['3:2',1152,768],['3:4',896,1152],['4:3',1152,896],['9:16',768,1344],['16:9',1344,768],['2:3 HD',1024,1536],['3:2 HD',1536,1024]];
 const VIDEO_SIZES = [['16:9 横',1280,768],['9:16 竖',768,1280],['1:1',768,768],['预览',512,768]];
 const FRAMES = [[124,'5 秒'],[175,'7 秒'],[243,'10 秒'],[345,'14 秒']];
@@ -2908,7 +2921,7 @@ function openSettings(){
         <h4 style="margin-top:16px">${I('clock')}空闲自动释放</h4>
         <div class="help" style="margin:0 0 8px">最后一个任务结束后，空闲多久自动释放 Colab 运行时（停止消耗 CU）。选「永不超期」则一直持有，直到手动释放。</div>
         <div class="chips" id="sIdle">${[[5,'5 分钟'],[10,'10 分钟'],[20,'20 分钟'],[30,'30 分钟'],[60,'60 分钟'],[0,'永不超期']].map(([n, label]) => `<button class="pchip ${S.status && S.status.idle_minutes===n?'on':''}" data-idle="${n}">${label}</button>`).join('')}</div></div>
-      <div class="sect"><h4>${I('info')}关于</h4><div class="kv"><span>版本</span><span>Colab Studio v${S.cfg.version}</span>
+      <div class="sect"><h4>${I('info')}关于</h4><div class="kv"><span>版本</span><span>ColabReel v${S.cfg.version}</span>
         <span>快捷键</span><span>Ctrl/⌘+Enter 生成 · ←/→ 切换作品 · S 收藏 · D 下载 · Delete 删除 · F 全屏 · L 日志</span>
         <span>回收站</span><span>删除的作品保留 ${S.cfg.trash_retention_days} 天</span></div></div>
     </div></div>`;
@@ -3463,7 +3476,8 @@ function bind(){
   $('#settingsBtn').onclick = $('#colabChip').onclick = openSettings;
   $('#settingsBtn').disabled = false;
   $('#logBtn').onclick = () => toggleLogs();
-  const THEME_KEY = 'colab-studio.theme';
+  // React 工作台的 colabreel.theme 存 JSON，且支持 system，旧版页面单独存。
+  const THEME_KEY = 'colabreel.legacy.theme';
   const applyTheme = (t) => {
     const mode = t === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = mode;
@@ -3831,8 +3845,8 @@ init();
 PAGE_HTML = (
     "<!doctype html>\n<html lang=\"zh\" data-theme=\"light\">\n<head>\n<meta charset=\"utf-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-    "<title>Colab Studio · 生图 · 生视频 · 长视频工作流</title>\n"
-    "<script>(function(){try{var t=localStorage.getItem('colab-studio.theme')||'light';document.documentElement.dataset.theme=t;}catch(e){}})();</script>\n"
-    "<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b5cf6'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='24' height='24' rx='6' fill='url(%23g)'/%3E%3Cpath d='M12 5l1.5 4 4 1.5-4 1.5L12 16l-1.5-4-4-1.5 4-1.5z' fill='white'/%3E%3C/svg%3E\">\n"
-    "<style>" + _CSS + "</style>\n</head>\n<body>\n" + _BODY + "\n<script>" + _JS + "</script>\n</body>\n</html>\n"
+    "<title>ColabReel · 生图 · 生视频 · 长视频工作流</title>\n"
+    "<script>(function(){try{var t=localStorage.getItem('colabreel.legacy.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.legacy.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){}})();</script>\n"
+    f'<link rel="icon" type="image/svg+xml" href="{_BRAND_ICON_URL}">\n'
+    "<style>" + _CSS + "</style>\n</head>\n<body>\n" + _BODY.replace("__BRAND_ICON__", _BRAND_ICON_URL) + "\n<script>" + _JS + "</script>\n</body>\n</html>\n"
 )

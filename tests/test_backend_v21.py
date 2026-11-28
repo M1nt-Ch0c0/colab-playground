@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive unit & integration tests for Colab Studio v2.1 backend."""
+"""Comprehensive unit & integration tests for ColabReel v2.1 backend."""
 
 from __future__ import annotations
 

@@ -66,7 +66,7 @@ async def open_runtime(data: Path, services: Runtime | None = None) -> AsyncIter
         except sqlite3.OperationalError as exc:
             if exc.sqlite_errorcode not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
-            raise RuntimeError("数据卷已有 Draw Studio 执行进程，请使用一个 worker") from exc
+            raise RuntimeError("数据卷已有 ColabReel 执行进程，请使用一个 worker") from exc
         s = services or Runtime.open(data)
         await asyncio.to_thread(s.recover)
         stop = threading.Event()

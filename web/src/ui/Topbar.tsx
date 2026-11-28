@@ -1,9 +1,10 @@
 // 顶栏：品牌、工作台切换、算力状态、主题、日志、设置。
 import { AnimatePresence, motion } from 'motion/react'
-import { Clapperboard, Film, Image as ImageIcon, LayoutGrid, LogOut, Moon, ScrollText, Settings, Sun, Timer, Zap } from 'lucide-react'
+import { Clapperboard, Film, Image as ImageIcon, LayoutGrid, LogOut, Moon, ScrollText, Settings, Sun, Timer } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import { api } from '../api/client'
 import { useStore } from '../store/store'
+import { BrandMark, PRODUCT_NAME } from './Brand'
 import { Seg, useTick } from './Overlay'
 import { cx, dur, now } from '../lib/util'
 import type { Phase } from '../api/types'
@@ -36,7 +37,7 @@ export function Topbar() {
 
   return (
     <header className="topbar glass">
-      <div className="brand"><span className="mark"><Zap size={15} /></span>Colab Studio<small>{cfg?.version}</small></div>
+      <div className="brand"><BrandMark />{PRODUCT_NAME}<small>{cfg?.version}</small></div>
       <Seg ariaLabel="工作台" value={ws} onChange={v => setWs(v as Workspace)} options={[
         { id: 'image', label: <span className="hide-sm">生图</span>, icon: <ImageIcon size={15} /> },
         { id: 'video', label: <span className="hide-sm">视频</span>, icon: <Clapperboard size={15} /> },

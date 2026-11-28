@@ -1,4 +1,4 @@
-# Colab Studio（colab-playground）HTTP 接口文档
+# ColabReel HTTP 接口文档
 
 服务地址：`https://your-domain.example.com`（服务器本机是 `http://127.0.0.1:8787`）
 

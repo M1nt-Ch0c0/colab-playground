@@ -968,7 +968,7 @@ export function boot() {
   S.refs = [{ id: 'refseed1', bytes: 310_000, source: 'upload', updated_at: sec() - 3600, url: S.urls['seed-ref'] }]
   S.urls['refseed1'] = S.urls['seed-ref']
   armIdle()
-  log('Colab Studio mock 后端已就绪（示例数据，不会产生真实费用）')
+  log('ColabReel mock 后端已就绪（示例数据，不会产生真实费用）')
   log('Colab 已授权（studio@example.com），余额 128.4 CU，当前运行实例 1 台')
   setInterval(() => {
     if (S.idleDeadline && sec() > S.idleDeadline && !S.current && !S.queue.length && S.colab.any_running) {

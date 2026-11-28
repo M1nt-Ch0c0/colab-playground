@@ -65,6 +65,38 @@ export const snap = (v: number, step: number) => Math.round(v / step) * step
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 export const modKey = isMac ? '⌘' : 'Ctrl'
 
+// 浏览器本地状态的 key。旧版用 cs.*，自用数据只存在这一个 origin 里，
+// 首次读取时把旧值搬到新 key，旧 key 保留不删，方便回退。
+export const LS_KEYS = {
+  theme: 'colabreel.theme',
+  draft: 'colabreel.draft',
+  phist: 'colabreel.phist',
+  libopen: 'colabreel.libopen',
+  grab: 'colabreel.grab',
+  rounds: 'colabreel.rounds',
+  pollpx: 'colabreel.pollpx',
+} as const
+
+const LS_LEGACY: Record<string, string> = {
+  [LS_KEYS.theme]: 'cs.theme',
+  [LS_KEYS.draft]: 'cs.draft',
+  [LS_KEYS.phist]: 'cs.phist',
+  [LS_KEYS.libopen]: 'cs.libopen',
+  [LS_KEYS.grab]: 'cs.grab',
+  [LS_KEYS.rounds]: 'cs.rounds',
+  [LS_KEYS.pollpx]: 'cs.pollpx',
+}
+
+export function migrateLocalStorage() {
+  try {
+    for (const [next, prev] of Object.entries(LS_LEGACY)) {
+      if (localStorage.getItem(next) != null) continue
+      const old = localStorage.getItem(prev)
+      if (old != null) localStorage.setItem(next, old)
+    }
+  } catch { /* 私密窗口或被禁用 */ }
+}
+
 export function lsGet<T>(key: string, fallback: T): T {
   try { const v = localStorage.getItem(key); return v ? (JSON.parse(v) as T) : fallback } catch { return fallback }
 }

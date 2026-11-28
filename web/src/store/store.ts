@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import type {
   ComfyConfig, Config, EditMask, GeneratePayload, LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
 } from '../api/types'
-import { lsGet, lsSet, now, setClockSkew } from '../lib/util'
+import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, setClockSkew } from '../lib/util'
 
 export interface ToastItem { id: number; text: string; kind: 'ok' | 'err' | ''; undo?: { label: string; fn: () => void } }
 export type Workspace = 'image' | 'video' | 'workflow'
@@ -109,12 +109,15 @@ function shouldNotifyError(st: Status, previous: Status | null) {
   if (previous?.phase === 'error' && previous.error_id === st.error_id && previous.error === st.error) return false
   if (st.error_id) {
     try {
-      if (sessionStorage.getItem('cs.lastStatusError') === st.error_id) return false
-      sessionStorage.setItem('cs.lastStatusError', st.error_id)
+      if (sessionStorage.getItem('colabreel.lastStatusError') === st.error_id) return false
+      sessionStorage.setItem('colabreel.lastStatusError', st.error_id)
     } catch { /* 存储不可用时仍按当前页面收到的状态去重 */ }
   }
   return true
 }
+
+// 初始状态在模块加载时读取 localStorage，必须先把旧 key 搬过来。
+migrateLocalStorage()
 
 export const useStore = create<Store>((set, get) => ({
   booted: false, bootError: '', statusError: '',
@@ -123,24 +126,24 @@ export const useStore = create<Store>((set, get) => ({
   logSeq: 0, logs: [],
   workspace: 'image',
   videoRefBusy: false,
-  draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>('cs.draft', {}) },
+  draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>(LS_KEYS.draft, {}) },
   sheet: null, sheetArgs: {},
   viewing: null,
   galleryFilter: { kind: '', starred: false, q: '' },
   selected: [], selecting: false,
-  promptHist: lsGet<string[]>('cs.phist', []),
+  promptHist: lsGet<string[]>(LS_KEYS.phist, []),
   toasts: [],
   theme: initialTheme === 'light' || initialTheme === 'dark' ? initialTheme : 'system',
   wfData: null, wfRun: null,
   llm: null,
   // 作品库默认收起，和旧版一致；展开状态按浏览器记住
-  libraryOpen: lsGet<boolean>('cs.libopen', false),
+  libraryOpen: lsGet<boolean>(LS_KEYS.libopen, false),
   loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch (e) { if (!(e instanceof ApiError && e.status === 401)) get().toast(e instanceof Error ? e.message : '加载改写模型失败', 'err') } },
-  setLibraryOpen: v => { lsSet('cs.libopen', v); set({ libraryOpen: v }) },
-  grabPool: lsGet<string[]>('cs.grab', ['A100', 'H100']),
-  setGrabPool: pool => { lsSet('cs.grab', pool); set({ grabPool: pool }) },
-  pollRounds: lsGet<number>('cs.rounds', 2),
-  pollAllProxies: lsGet<boolean>('cs.pollpx', false),
+  setLibraryOpen: v => { lsSet(LS_KEYS.libopen, v); set({ libraryOpen: v }) },
+  grabPool: lsGet<string[]>(LS_KEYS.grab, ['A100', 'H100']),
+  setGrabPool: pool => { lsSet(LS_KEYS.grab, pool); set({ grabPool: pool }) },
+  pollRounds: lsGet<number>(LS_KEYS.rounds, 2),
+  pollAllProxies: lsGet<boolean>(LS_KEYS.pollpx, false),
 
   boot: () => {
     if (booting) return booting
@@ -185,7 +188,7 @@ export const useStore = create<Store>((set, get) => ({
     const draft = { ...get().draft, ...p }
     if (p.useRef || p.chain) draft.editMask = null
     set({ draft })
-    clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet('cs.draft', draft), 300)
+    clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet(LS_KEYS.draft, draft), 300)
   },
   openSheet: (s, args = {}) => set({ sheet: s, sheetArgs: args }),
   closeSheet: () => set({ sheet: null, sheetArgs: {} }),
@@ -200,7 +203,7 @@ export const useStore = create<Store>((set, get) => ({
   setTheme: theme => {
     if (theme === 'system') delete document.documentElement.dataset.theme
     else document.documentElement.dataset.theme = theme
-    lsSet('cs.theme', theme)
+    lsSet(LS_KEYS.theme, theme)
     set({ theme })
   },
   setViewing: id => set({ viewing: id }),
@@ -267,7 +270,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const r = await api.generate(p)
       const hist = [p.prompt, ...promptHist.filter(h => h !== p.prompt)].slice(0, 15)
-      lsSet('cs.phist', hist); set({ promptHist: hist, viewing: null })
+      lsSet(LS_KEYS.phist, hist); set({ promptHist: hist, viewing: null })
       toast(r.jobs.length > 1 ? `已加入队列，${r.jobs.length} 个任务` : '已提交', 'ok')
       if (cfg) { /* 触达 */ }
       get().refresh()

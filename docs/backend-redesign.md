@@ -1,6 +1,6 @@
-# Draw Studio 后端设计与运行说明
+# ColabReel 后端设计与运行说明
 
-Draw Studio 使用 Python、FastAPI 和 Uvicorn。React 和 API 由同一个服务在 8787 端口提供。一个数据卷对应一个执行进程。作品、队列和工作流沿用各自的磁盘格式，模型服务商配置使用 Python 自带的 SQLite。
+ColabReel 使用 Python、FastAPI 和 Uvicorn。React 和 API 由同一个服务在 8787 端口提供。一个数据卷对应一个执行进程。作品、队列和工作流沿用各自的磁盘格式，模型服务商配置使用 Python 自带的 SQLite。
 
 ## 代码与状态归属
 
@@ -77,7 +77,7 @@ JSON API 的错误对象为 `{"error":"中文说明"}`。输入错误返回 400�
 - 运行中的摘要直接读取当前实例。暂停摘要在保存运行记录时更新，在启动恢复时重建。高频状态轮询只访问当前记录和内存中的暂停摘要。
 - 草稿每次创建携带稳定的 32 位小写十六进制 `request_id`。重试相同请求返回同一实例。按步骤与图片内容生成素材文件名，重传会复用文件。首次启动带 `draft_only:true`，服务端在工作流锁内检查状态，防止重复启动。草稿中的 File 在当前页面内暂存。已上传的文件属于运行实例，删除素材或实例会清理相应缩略图。
 - Docker 构建阶段用 Node 22 编译生产前端，最终 Python 3.13 镜像携带静态文件、远端执行脚本、H3 指南和 FFmpeg。Uvicorn 使用一个 worker，每个进程在启动恢复前独占数据卷的 `.studio.lock`。部署采用一个副本，先停旧进程再启动新镜像。
-- 发布沿用标签触发 GitHub Actions、Artifact Registry 和 Dokploy 的流程。`/healthz` 保留 `busy, queue_len, workflow_running`，抢卡和释放期间也会报告忙碌。回退时在 Dokploy 选回上一个镜像并继续挂载原数据卷。私有模型和代理配置随数据卷保留。镜像目标与部署变量见 [自动发布说明](../README.md#github-自动发布)。
+- 发布沿用标签触发 GitHub Actions、Artifact Registry 和 Dokploy 的流程。`/healthz` 保留 `busy, queue_len, workflow_running`，抢卡和释放期间也会报告忙碌。回退时在 Dokploy 选回上一个镜像并继续挂载原数据卷。私有模型和代理配置随数据卷保留。镜像目标与部署变量见 [自动发布说明](deployment.md#github-自动发布维护者)。
 
 ## 本地验证
 

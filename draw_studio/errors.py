@@ -1,4 +1,4 @@
-"""Errors exposed by the Draw Studio services."""
+"""Errors exposed by the ColabReel services."""
 
 
 class StateConflict(RuntimeError):

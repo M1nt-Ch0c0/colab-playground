@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start Draw Studio with python app.py or uvicorn app:app."""
+"""Start ColabReel with python app.py or uvicorn app:app."""
 import os
 
 import uvicorn

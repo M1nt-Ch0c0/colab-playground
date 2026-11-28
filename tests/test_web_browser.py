@@ -139,7 +139,7 @@ class BrowserTest(unittest.TestCase):
             with patch.object(rt.colab, "status_report", return_value=status), \
                  patch.object(rt.colab, "has_credentials", return_value=True), \
                  patch.object(rt.studio, "grab_card") as grab:
-                driver.execute_script("localStorage.setItem('cs.grab', JSON.stringify(['G4', 'H100', 'A100']))")
+                driver.execute_script("localStorage.setItem('colabreel.grab', JSON.stringify(['G4', 'H100', 'A100']))")
                 driver.get(url)
                 wait = WebDriverWait(driver, 10)
                 g4 = "G4 · RTX PRO 6000"
@@ -174,6 +174,23 @@ class BrowserTest(unittest.TestCase):
                 driver.find_element(By.XPATH, "//button[normalize-space(.)='开始抢卡']").click()
                 wait.until(lambda _: grab.called)
                 self.assertEqual(grab.call_args.kwargs["gpu_pool"], ["H100", "A100", "G4"])
+
+    def test_old_storage_keys_migrate_before_first_render(self):
+        with signed_in_browser() as (_, driver, url):
+            wait = WebDriverWait(driver, 10)
+            driver.execute_script("""localStorage.clear();
+                localStorage.setItem('cs.draft', JSON.stringify({prompt: '旧版草稿'}));
+                localStorage.setItem('cs.theme', JSON.stringify('dark'));""")
+            driver.get(url)
+            wait.until(lambda d: d.find_element(By.CSS_SELECTOR, 'textarea[rows="4"]').get_property("value") == "旧版草稿")
+            self.assertEqual(driver.execute_script("return document.documentElement.dataset.theme"), "dark")
+            self.assertEqual(driver.execute_script("return localStorage.getItem('cs.draft')"), '{"prompt":"旧版草稿"}')
+
+            # 旧版页面用自己的主题 key，不能改写工作台的设置。
+            driver.get(url + "/legacy")
+            wait.until(EC.element_to_be_clickable((By.ID, "themeBtn")))
+            self.assertEqual(driver.execute_script("return localStorage.getItem('colabreel.theme')"), '"dark"')
+            self.assertEqual(driver.execute_script("return localStorage.getItem('colabreel.legacy.theme')"), "light")
 
     def test_theme_toggle_uses_the_displayed_scheme(self):
         with signed_in_browser() as (_, driver, url):
@@ -442,7 +459,7 @@ class BrowserTest(unittest.TestCase):
                     age = (By.ID, "cDays")
                     kind = (By.ID, "cKind")
                 else:
-                    driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+                    driver.execute_script("localStorage.setItem('colabreel.libopen', 'true')")
                     driver.refresh()
                     trigger = (By.CSS_SELECTOR, 'button[title="清理旧作品"]')
                     selector = '[role=dialog][aria-label="清理旧作品"] button.solid-danger'
@@ -471,7 +488,7 @@ class BrowserTest(unittest.TestCase):
             character_id = rt.store.save(character, "image", {"prompt": "角色正面", "width": 192, "height": 256})
             rt.studio.set_ref("first", png(), "upload")
             rt.studio.add_ref(png(color="green"), "wardrobe")
-            driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+            driver.execute_script("localStorage.setItem('colabreel.libopen', 'true')")
             status = rt.colab.status_report()
             with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
                  patch.object(rt.studio, "enqueue", return_value=[{"id": "fixture"}]) as enqueue:
@@ -527,8 +544,8 @@ class BrowserTest(unittest.TestCase):
             meta["comfy"]["vae"] = combo["vae"]
             rt.store.save(src, "image", meta)
             rt.store.save(src, "image", {"prompt": "missing combo", "engine": "comfyui"})
-            driver.execute_script("""localStorage.setItem('cs.libopen', 'true');
-                localStorage.setItem('cs.draft', JSON.stringify({comfyDiff: 'wrong', comfyTe: 'wrong', comfyVae: 'wrong'}))""")
+            driver.execute_script("""localStorage.setItem('colabreel.libopen', 'true');
+                localStorage.setItem('colabreel.draft', JSON.stringify({comfyDiff: 'wrong', comfyTe: 'wrong', comfyVae: 'wrong'}))""")
             # Accept the generation request locally and inspect exactly what the queue receives.
             status = rt.colab.status_report()
             with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
@@ -570,7 +587,7 @@ class BrowserTest(unittest.TestCase):
             picture = rt.root / "painting.png"
             picture.write_bytes(png((640, 480)))
             clip = mp4(rt.root / "movement.mp4", 3, audio=True)
-            driver.execute_script("localStorage.setItem('cs.libopen','true')")
+            driver.execute_script("localStorage.setItem('colabreel.libopen','true')")
             driver.get(url)
             wait = WebDriverWait(driver, 12)
             def css(selector):
