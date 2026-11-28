@@ -168,6 +168,23 @@ export type RunStatus = 'draft' | 'running' | 'paused' | 'done' | 'error' | 'can
 export type StepStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'canceled'
 export interface WfStep { id: string; type: StepType; name: string; enabled: boolean; pause_after: boolean; config: Record<string, any>; position?: { x: number; y: number } }
 export interface WfDef { id: string; builtin?: boolean; name: string; description: string; default_topic?: string; steps: WfStep[]; variables?: Record<string, string | number | boolean> }
+export interface EditorSnapshot { workflow: WfDef; topic: string }
+export interface AgentRunRequest { step_id: string; single_step: boolean }
+export type AgentTurnBody = Omit<Wire['AgentTurn'], 'workflow'> & EditorSnapshot
+export type AgentPlugins = Wire['AgentInventory']
+export type AgentPluginAction = Wire['PluginAction']['action']
+export type AgentErrorCode = Wire['HarnessError']['code']
+export interface AgentTool {
+  name: string; op?: unknown; ok: boolean | null; call_id?: string
+}
+export type SavedAgentExchange = Omit<Wire['AgentExchange'], 'tools'> & { tools: AgentTool[] }
+export type AgentEvent =
+  | { type: 'started'; model: string }
+  | { type: 'session'; state: 'new' | 'reused' | 'resumed'; process_id: number }
+  | ({ type: 'tool' } & AgentTool)
+  | { type: 'heartbeat' }
+  | { type: 'error'; code: AgentErrorCode; message: string }
+  | { type: 'done'; message: string; editor: EditorSnapshot | null; run_request: AgentRunRequest | null; base_revision: string | null }
 export interface StepState { status: StepStatus; started_at: number | null; finished_at: number | null; progress: string; output: Record<string, any>; error: string }
 export interface WfRun {
   id: string; topic: string; workflow: WfDef; status: RunStatus; current_step_id: string | null

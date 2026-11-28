@@ -25,7 +25,7 @@ import zlib
 from pathlib import Path
 from unittest import mock
 
-REPO = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
+REPO = Path(sys.argv[1]).resolve() if __name__ == "__main__" and len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 # Stub colab_backend ONLY when running on a dev workstation without google-colab-cli installed
@@ -698,7 +698,7 @@ class StudioV3Tests(unittest.TestCase):
     def test_http_api_presets_and_workflows(self) -> None:
         import urllib.request
         from app import create_app
-        from http_fixture import serving
+        from tests.http_fixture import serving
         from draw_studio.runtime import Runtime
 
         runtime = Runtime(self.tmp, self.secret, self.log, self.colab, self.store, self.studio, self.wf)

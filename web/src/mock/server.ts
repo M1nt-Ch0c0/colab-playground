@@ -4,8 +4,9 @@ import { makeArt } from './art'
 import type {
   ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, Job, Lora, ProxyState, ProxyTest, References, RewriteBody,
   Round, RoundsStats, Status, StepCatalogItem, StudioPreset, WfDef, WfRun, WfStep, WorkflowActive,
-  LlmKind, LlmProvider, LlmProviderBody, LlmState,
+  LlmKind, LlmProvider, LlmProviderBody, LlmState, AgentEvent, AgentPlugins, AgentTurnBody, SavedAgentExchange, AgentErrorCode, AgentPluginAction,
 } from '../api/types'
+import { AGENT_COPY as C, PLUGIN_COPY, approxDuration, errorCopy, toolLabel } from '../features/workflow/agentCopy'
 
 const sec = () => Math.floor(Date.now() / 1000)
 const uid = (p: string) => p + Math.floor(Math.random() * 9000 + 1000).toString(36)
@@ -491,6 +492,80 @@ function makeRun(wf: WfDef, topic: string, requestId?: string): WfRun {
 /* ── 路由 ── */
 function body<T>(b: unknown): T { return (b || {}) as T }
 
+const timingId = 'studio-shot-timing'
+const agentInventory: AgentPlugins = {
+  builtin_tools: Object.fromEntries(['studio_read_workflow', 'studio_list_nodes', 'studio_find_assets', 'studio_edit_workflow', 'studio_request_run']
+    .map(name => [name, toolLabel(name)])),
+  plugin: { id: timingId, ...PLUGIN_COPY[timingId], tool: 'studio_shot_timing', version: '1.0.0', installed: false, enabled: false },
+}
+const conversations = new Map<string, SavedAgentExchange[]>()
+const mockRevision = (run: WfRun) => JSON.stringify([run.topic, run.workflow, run.status])
+
+function agentError(status: number, code: AgentErrorCode, details = {}) {
+  return { status, json: { error: errorCopy(code).text, code, details } }
+}
+
+function agentRoute(method: string, route: string[], raw: unknown) {
+  const [section, id, action] = route
+  const plugin = agentInventory.plugin
+  if (section === 'plugins') {
+    if (method === 'GET' && !id) return ok(agentInventory)
+    const change = body<{ action: AgentPluginAction }>(raw).action
+    if (method !== 'POST' || id !== plugin.id || !['install', 'remove', 'enable', 'disable'].includes(change)) {
+      return agentError(400, 'invalid_argument')
+    }
+    if ((change === 'enable' || change === 'disable') && !plugin.installed) return agentError(409, 'plugin_unavailable')
+    if (change === 'remove') { plugin.installed = false; plugin.enabled = false }
+    if (change === 'install' && !plugin.installed) { plugin.installed = true; plugin.enabled = true }
+    if (change === 'enable' || change === 'disable') plugin.enabled = change === 'enable'
+    return ok(agentInventory)
+  }
+  if (section === 'conversations') {
+    if (!/^wr_[A-Za-z0-9_-]{4,48}$/.test(id ?? '')) return agentError(400, 'invalid_argument')
+    if (method === 'GET' && !action) return ok({ exchanges: conversations.get(id) ?? [] })
+    if (method === 'POST' && action === 'stop') {
+      if (!/^[a-f0-9]{32}$/.test(body<{ turn_id: string }>(raw).turn_id ?? '')) return agentError(400, 'invalid_argument')
+      return ok({ stopped: false })
+    }
+  }
+  if (section === 'turn' && method === 'POST') {
+    const turn = body<AgentTurnBody>(raw)
+    if (!turn.message?.trim() || !Array.isArray(turn.workflow?.steps)) return agentError(400, 'invalid_argument')
+    const key = turn.run_id || (turn.draft_id && 'wr_' + turn.draft_id)
+    const run = key ? S.runs.find(item => item.id === key) : undefined
+    if (run && !turn.run_id) return agentError(409, 'draft_already_saved', { run_id: run.id })
+    if (!run && turn.run_id) return agentError(404, 'not_found')
+
+    const { topic, workflow } = structuredClone(turn)
+    const script = workflow.steps.find(item => item.type === 'llm_script' && item.id === turn.selected_step)
+      ?? workflow.steps.find(item => item.type === 'llm_script')
+    const targetCount = [3, 5].find(count => C.agent.suggestions.sceneCount(count).prompt === turn.message)
+    const changed = targetCount !== undefined && script !== undefined && run?.status !== 'running'
+    let name = changed ? 'studio_edit_workflow' : 'studio_read_workflow'
+    let answer: string = C.board.hint
+    if (changed) {
+      answer = C.agent.applied.sceneCount(script.config.scene_count ?? 3, targetCount)
+      script.config.scene_count = targetCount
+    } else if (turn.message === C.agent.suggestions.timing.prompt && plugin.enabled) {
+      name = plugin.tool
+      const video = workflow.steps.find(item => item.enabled && item.type === 'video_gen')
+      const shots = workflow.steps.find(item => item.enabled && item.id === video?.config.scenes_from)?.config.scene_count
+      answer = video && shots ? approxDuration(shots * video.config.num_frames / 24) : C.board.hint
+    }
+    const exchangeId = turn.turn_id || uid('turn-')
+    const tool = { name, ok: true, call_id: exchangeId }
+    if (key) conversations.set(key, [...(conversations.get(key) ?? []).slice(-23),
+      { id: exchangeId, user: turn.message, answer, tools: [tool], state: 'done' }])
+    return ok([
+      { type: 'started', model: 'mock' },
+      { type: 'tool', ...tool, ok: null }, { type: 'tool', ...tool },
+      { type: 'done', message: answer, editor: changed ? { topic, workflow } : null, run_request: null,
+        base_revision: run ? mockRevision(run) : null },
+    ] satisfies AgentEvent[])
+  }
+  return agentError(404, 'not_found')
+}
+
 export async function handle(method: string, path: string, raw: unknown, q: URLSearchParams) {
   const seg = path.replace(/^\/?api\//, '').split('/').filter(Boolean)
   const head = seg[0] || ''
@@ -857,11 +932,12 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   }
 
   if (head === 'workflows') {
+    if (seg[1] === 'agent') return agentRoute(method, seg.slice(2), raw)
     if (seg.length === 1 && method === 'GET') return ok({ builtin: BUILTIN_WF, custom: S.wfCustom, runs: S.runs.map(runSummary), step_catalog: STEP_CATALOG, ffmpeg_available: true })
     if (seg.length === 1 && method === 'POST') {
       const b = body<Partial<WfDef>>(raw)
       if (!b.name?.trim() || !b.steps?.length) return err(400, '模板需要名称和至少一个步骤')
-      const wf: WfDef = { id: 'wf_' + uid(''), builtin: false, name: b.name!, description: b.description || '', steps: b.steps! }
+      const wf: WfDef = { ...b, id: 'wf_' + uid(''), builtin: false, name: b.name!, description: b.description || '', steps: b.steps! }
       S.wfCustom.unshift(wf); return ok({ ok: true, workflow: wf, custom: S.wfCustom })
     }
     if (seg[1] === 'runs') {
@@ -871,7 +947,7 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         const existing = b.request_id && S.runs.find(r => r.id === `wr_${b.request_id}`)
         if (existing) return ok({ ok: true, run: existing }, 201)
         let wf: WfDef | undefined
-        if (b.workflow?.steps) wf = { id: b.workflow.id || 'wf_' + uid(''), name: b.workflow.name || '自定义工作流', description: b.workflow.description || '', steps: b.workflow.steps }
+        if (b.workflow?.steps) wf = { ...b.workflow, id: b.workflow.id || 'wf_' + uid(''), name: b.workflow.name || '自定义工作流', description: b.workflow.description || '', steps: b.workflow.steps }
         else wf = [...BUILTIN_WF, ...S.wfCustom].find(w => w.id === (b.workflow_id || 'builtin:agent-long-video'))
         if (!wf) return err(400, `未找到工作流：${b.workflow_id}`)
         return ok({ ok: true, run: makeRun(wf, (b.topic ?? wf.default_topic ?? '').slice(0, 2000), b.request_id) }, 201)
@@ -880,8 +956,9 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
       if (!run) return err(404, '工作流运行记录不存在')
       if (seg.length === 3 && method === 'GET') return ok({ run })
       if (seg.length === 3 && method === 'PATCH') {
-        if (run.status === 'running') return err(409, '运行中不能修改配置')
-        const b = body<{ topic?: string; workflow?: WfDef }>(raw)
+        const b = body<{ topic?: string; workflow?: WfDef; if_revision?: string }>(raw)
+        if (run.status === 'running') return b.if_revision ? agentError(409, 'running_locked') : err(409, '运行中不能修改配置')
+        if (b.if_revision && b.if_revision !== mockRevision(run)) return agentError(409, 'revision_conflict', { current_revision: mockRevision(run) })
         if (b.topic != null) run.topic = b.topic
         if (b.workflow) {
           const old = run.step_states
@@ -890,7 +967,12 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
         }
         run.updated_at = sec(); return ok({ ok: true, run })
       }
-      if (seg.length === 3 && method === 'DELETE') { if (run.status === 'running') return err(409, '运行中不能删除'); S.runs = S.runs.filter(r => r.id !== run.id); return ok({ ok: true }) }
+      if (seg.length === 3 && method === 'DELETE') {
+        if (run.status === 'running') return err(409, '运行中不能删除')
+        S.runs = S.runs.filter(item => item.id !== run.id)
+        conversations.delete(run.id)
+        return ok({ ok: true })
+      }
       const action = seg[3]
       if ((action === 'start' || action === 'resume') && method === 'POST') {
         if (body<{ draft_only?: boolean }>(raw).draft_only && run.status !== 'draft') return err(409, '草稿已启动')

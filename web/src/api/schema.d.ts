@@ -3,6 +3,96 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentConversation */
+        AgentConversation: {
+            /** Exchanges */
+            exchanges: components["schemas"]["AgentExchange"][];
+        };
+        /** AgentExchange */
+        AgentExchange: {
+            /** Id */
+            id: string;
+            /** User */
+            user: string;
+            /** Answer */
+            answer: string;
+            /** Tools */
+            tools: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * State
+             * @constant
+             */
+            state: "done";
+        };
+        /** AgentInventory */
+        AgentInventory: {
+            /** Builtin Tools */
+            builtin_tools: {
+                [key: string]: string;
+            };
+            plugin: components["schemas"]["AgentPlugin"];
+        };
+        /** AgentMessage */
+        AgentMessage: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Text */
+            text: string;
+        };
+        /** AgentPlugin */
+        AgentPlugin: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Version */
+            version: string;
+            /** Description */
+            description: string;
+            /** Tool */
+            tool: string;
+            /** Installed */
+            installed: boolean;
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** AgentTurn */
+        AgentTurn: {
+            /** Message */
+            message: string;
+            /** History */
+            history?: components["schemas"]["AgentMessage"][];
+            /** Workflow */
+            workflow: {
+                [key: string]: unknown;
+            };
+            /**
+             * Topic
+             * @default
+             */
+            topic?: string;
+            /**
+             * Selected Step
+             * @default
+             */
+            selected_step?: string;
+            /** Run Id */
+            run_id?: string | null;
+            /** Draft Id */
+            draft_id?: string | null;
+            /** Turn Id */
+            turn_id?: string | null;
+            /**
+             * Reload Plugins
+             * @default false
+             */
+            reload_plugins?: boolean;
+        };
         /** AssetInfo */
         AssetInfo: {
             /** Filename */
@@ -59,6 +149,11 @@ export interface components {
              */
             time_s?: number;
         };
+        /** InterruptTurn */
+        InterruptTurn: {
+            /** Turn Id */
+            turn_id: string;
+        };
         /** LlmState */
         LlmState: {
             /** Providers */
@@ -77,6 +172,14 @@ export interface components {
              * Format: password
              */
             password: string;
+        };
+        /** PluginAction */
+        PluginAction: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "install" | "enable" | "disable" | "remove";
         };
         /** Probe */
         Probe: {
@@ -267,6 +370,11 @@ export interface components {
             /** Model */
             model: string;
         };
+        /** StopResult */
+        StopResult: {
+            /** Stopped */
+            stopped: boolean;
+        };
         /** TestInput */
         TestInput: {
             /** Profile */
@@ -274,6 +382,20 @@ export interface components {
         };
         ApiError: {
             error: string;
+        };
+        /** HarnessErrorBody */
+        HarnessError: {
+            /** Error */
+            error: string;
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "invalid_argument" | "not_found" | "revision_conflict" | "shot_conflict" | "busy" | "running_locked" | "draft_already_saved" | "model_unconfigured" | "model_error" | "turn_stopped" | "turn_timeout" | "plugin_unavailable" | "approval_required" | "queue_full" | "colab_unauthed" | "media_invalid" | "tool_limit_reached" | "internal_error";
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
         };
     };
     responses: never;

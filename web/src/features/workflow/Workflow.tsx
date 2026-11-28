@@ -2,12 +2,16 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowDown, ArrowUp, ChevronDown, Copy, Pause, Play, Plus, RotateCcw, Save, Square, Trash2, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { api, media } from '../../api/client'
+import { api, ApiError, media } from '../../api/client'
 import type { RunStatus, StepState, StepStatus, WfDef, WfRun, WfStep } from '../../api/types'
-import { ago, cx, rid } from '../../lib/util'
+import { ago, cx, requestId as newRequestId, rid } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Toggle, useConfirm } from '../../ui/Overlay'
 import { NamePrompt } from '../../ui/NamePrompt'
+import { AGENT_COPY as C, errorCopy, PROPOSAL_FIELD_LABELS } from './agentCopy'
+import { WorkflowBoard, useWorkflowSelection } from './WorkflowBoard'
+import type { AgentBinding } from './WorkflowAgent'
+import './workbench.css'
 
 const RUN_ZH: Record<RunStatus, string> = { draft: '草稿', running: '运行中', paused: '待审核', done: '已完成', error: '失败', canceled: '已终止' }
 const RUN_TAG: Record<RunStatus, string> = { draft: '', running: 'run', paused: 'warn', done: 'ok', error: 'bad', canceled: '' }
@@ -33,8 +37,9 @@ export function WorkflowWorkspace() {
   const setRun = useStore(s => s.setWfRun)
   // 点模板只是本地草稿，点「运行」才真正建运行记录
   const [draft, setDraft] = useState<WfDef | null>(null)
+  const [library, setLibrary] = useState(true)
   const selection = useRef(0)
-  const openTpl = (d: WfDef) => { selection.current++; setRun(null); setDraft(d) }
+  const openTpl = (d: WfDef) => { selection.current++; setRun(null); setDraft(d); setLibrary(false) }
   const activeStatus = useStore(s => s.status?.workflow_active?.status)
   const activeId = useStore(s => s.status?.workflow_active?.id)
   const toast = useStore(s => s.toast)
@@ -43,14 +48,14 @@ export function WorkflowWorkspace() {
     const version = ++selection.current
     try {
       const r = await api.wf.run(id)
-      if (selection.current === version) { setDraft(null); setRun(r.run) }
+      if (selection.current === version) { setDraft(null); setRun(r.run); setLibrary(false) }
     } catch (e) { toast(e instanceof Error ? e.message : '打开记录失败', 'err') }
   }
   useEffect(() => {
     const version = selection.current
     loadWf().then(() => {
       const state = useStore.getState()
-      const id = state.status?.workflow_active?.id || state.wfData?.runs[0]?.id
+      const id = new URLSearchParams(location.search).get('workflow') || state.status?.workflow_active?.id || state.wfData?.runs[0]?.id
       if (id && !state.wfRun && selection.current === version) void openRun(id)
     })
     return () => { selection.current++ }
@@ -87,11 +92,15 @@ export function WorkflowWorkspace() {
   }, [activeId, activeStatus, run?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="wf">
+    <div className="wf" data-library-open={library} data-has-editor={!!(draft || run)}>
+      <button className="wf-mobile-library btn sm ghost" aria-expanded={library} onClick={() => setLibrary(value => !value)}>
+        <ChevronDown size={13} />{C.board.library}
+      </button>
       <WfSidebar draft={draft} onOpen={openTpl} openRun={openRun} />
       <div className="wf-main">
         {!data ? <div className="empty"><span className="spinner" /></div>
-          : run ? <RunCanvas key={run.id} run={run} /> : draft ? <DraftCanvas key={draft.id || 'blank'} tpl={draft} /> : (
+          : run ? <RunCanvas key={run.id} run={run} openRun={openRun} />
+          : draft ? <DraftCanvas key={draft.id || 'blank'} tpl={draft} openRun={openRun} /> : (
             <div className="empty"><b>先挑一个模板</b><span>点左边的模板可以先看步骤、改主题，点「运行」才开始。</span></div>
           )}
       </div>
@@ -123,17 +132,18 @@ function templateSteps(steps: WfStep[]): WfStep[] {
 }
 
 /** 未落库的模板草稿：编辑主题和步骤，点运行时才创建运行记录 */
-function DraftCanvas({ tpl }: { tpl: WfDef }) {
+function DraftCanvas({ tpl, openRun }: { tpl: WfDef; openRun: (id: string) => void }) {
   const data = useStore(s => s.wfData)!
   const setRun = useStore(s => s.setWfRun)
   const loadWf = useStore(s => s.loadWf)
   const toast = useStore(s => s.toast)
   const [wf, setWf] = useState(() => ({ ...tpl, steps: templateSteps(tpl.steps) }))
   const [files, setFiles] = useState<Record<string, File[]>>({})
-  const [requestId] = useState(() => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''))
+  const [requestId] = useState(newRequestId)
   const attempted = useRef(false)
   const [topic, setTopic] = useState('')
   const [starting, setStarting] = useState(false)
+  const selection = useWorkflowSelection()
   const setSteps = (steps: WfStep[]) => setWf({ ...wf, steps })
   const addStep = (type: WfStep['type']) => {
     const cat = data.step_catalog.find(c => c.type === type)!
@@ -141,7 +151,7 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
     while (wf.steps.some(s => s.id === id)) id = `${type.replace(/_.*/, '')}_${++n}`
     setSteps([...wf.steps, { id, type, name: `${wf.steps.length + 1}. ${cat.label}`, enabled: true, pause_after: false, config: structuredClone(cat.default_config) }])
   }
-  const start = async () => {
+  const start = async (execute = true) => {
     setStarting(true)
     try {
       const retry = attempted.current
@@ -165,10 +175,14 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
           }
         }
       }
-      setRun((await api.wf.start(run.id, undefined, true)).run)
+      setRun(execute ? (await api.wf.start(run.id, undefined, true)).run : (await api.wf.run(run.id)).run)
       await loadWf()
+      if (!execute) { toast(C.toast.saved, 'ok'); return }
       toast(`「${wf.name}」已开始运行`, 'ok')
-    } catch (e) { toast(e instanceof Error ? e.message : '启动失败', 'err') }
+    } catch (e) {
+      await loadWf()
+      toast(execute && e instanceof Error ? e.message : errorCopy(e instanceof ApiError ? e.code : undefined).text, 'err')
+    }
     finally { setStarting(false) }
   }
   return (
@@ -177,14 +191,21 @@ function DraftCanvas({ tpl }: { tpl: WfDef }) {
         <div className="row between">
           <div className="run-title"><h2>{wf.name}</h2><span className="tag">模板</span><span className="dim tabular">{wf.steps.length} 步</span></div>
           <span className="grow" />
-          <button className="btn sm primary" disabled={starting || !wf.steps.some(s => s.enabled)} onClick={start}>{starting ? <span className="spinner" /> : <Play size={13} />}{starting ? '启动中' : '运行'}</button>
+          <button className="btn sm ghost" disabled={starting || !wf.steps.length} onClick={() => void start(false)}><Save size={13} />{C.board.saveDraft}</button>
+          <button className="btn sm primary" disabled={starting || !wf.steps.some(s => s.enabled)} onClick={() => void start()}>
+            {starting ? <span className="spinner" /> : <Play size={13} />}{C.agent.run.start}
+          </button>
         </div>
         <p className="dim">{wf.description}</p>
         <textarea rows={2} value={topic} placeholder="写下这条流水线的主题，例如：雨夜霓虹街头的 3 镜头短片" onChange={e => setTopic(e.target.value)} />
       </div>
+      <WorkflowBoard selection={selection} change={setWf} binding={{
+        editor: { workflow: wf, topic }, draftId: requestId, locked: starting, openRun,
+        apply: async next => { setWf(next.workflow); setTopic(next.topic); return next }, run: () => void start(),
+      }} />
       <ol className="rail">
         {wf.steps.map((step, i) => (
-          <StepCard key={step.id} draft={wf} step={step} idx={i}
+          <StepCard key={step.id} draft={wf} step={step} idx={i} select={selection.select}
             local={{ files: files[step.id] || [], change: next => setFiles(all => ({ ...all, [step.id]: next })) }}
             onChange={next => setSteps(wf.steps.map(x => x.id === step.id ? next : x))}
             onMove={d => { const j = i + d; if (j < 0 || j >= wf.steps.length) return; const a = [...wf.steps]; [a[i], a[j]] = [a[j], a[i]]; setSteps(a) }}
@@ -255,7 +276,7 @@ function WfSidebar({ draft, onOpen, openRun }: { draft: WfDef | null; onOpen: (d
   )
 }
 
-function RunCanvas({ run }: { run: WfRun }) {
+function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void }) {
   const data = useStore(s => s.wfData)!
   const setRun = useStore(s => s.setWfRun)
   const loadWf = useStore(s => s.loadWf)
@@ -268,6 +289,7 @@ function RunCanvas({ run }: { run: WfRun }) {
   const writing = useRef<Promise<boolean> | null>(null)
   const [acting, setActing] = useState(false)
   const running = run.status === 'running'
+  const selection = useWorkflowSelection(run.id)
   useEffect(() => { if (!running) setTopic(run.topic) }, [run.topic]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const flush = async () => {
@@ -360,6 +382,28 @@ function RunCanvas({ run }: { run: WfRun }) {
     setSavingTpl(false)
   }
   const done = run.workflow.steps.filter(s => ['done', 'skipped'].includes(run.step_states[s.id]?.status)).length
+  const applyAgent: AgentBinding['apply'] = async (next, revision) => {
+    setActing(true)
+    try {
+      const saved = (await api.wf.update(run.id, { ...next, if_revision: revision ?? undefined })).run
+      if (useStore.getState().wfRun?.id === run.id) { setTopic(saved.topic); setRun(saved) }
+      await loadWf()
+      return { topic: saved.topic, workflow: saved.workflow }
+    } finally { setActing(false) }
+  }
+  const refreshAgent = async () => {
+    if (pending.current.size || writing.current) return
+    const latest = useStore.getState().wfRun
+    const saved = (await api.wf.run(run.id)).run
+    if (useStore.getState().wfRun === latest && latest?.id === run.id && !pending.current.size) {
+      setTopic(saved.topic)
+      setRun(saved)
+    }
+  }
+  const runAgent: AgentBinding['run'] = action => act(() =>
+    action.step_id ? api.wf.retry(run.id, action.step_id, action.single_step)
+      : run.status === 'paused' ? api.wf.resume(run.id)
+        : api.wf.start(run.id, run.status === 'draft' ? undefined : run.workflow.steps.find(step => step.enabled)?.id))
   const finalRid = [...run.workflow.steps].reverse().map(s => run.step_states[s.id]?.output?.final_round_id).find(Boolean) as string | undefined
 
   return (
@@ -384,9 +428,13 @@ function RunCanvas({ run }: { run: WfRun }) {
         <AnimatePresence>{logOpen && <motion.pre className="logbox sm" initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>{run.logs.join('\n')}</motion.pre>}</AnimatePresence>
       </div>
 
+      <WorkflowBoard selection={selection} run={run} change={workflow => save({ workflow })} binding={{
+        editor: { workflow: run.workflow, topic }, runId: run.id, status: run.status, locked: acting,
+        beforeSend: flush, apply: applyAgent, refresh: refreshAgent, openRun, run: runAgent,
+      }} />
       <ol className="rail">
         {run.workflow.steps.map((s, i) => (
-          <StepCard key={s.id} run={run} step={s} idx={i} state={run.step_states[s.id]} onChange={st => setSteps(run.workflow.steps.map(x => x.id === s.id ? st : x))}
+          <StepCard key={s.id} run={run} step={s} idx={i} state={run.step_states[s.id]} select={selection.select} onChange={st => setSteps(run.workflow.steps.map(x => x.id === s.id ? st : x))}
             onMove={d => { const a = [...run.workflow.steps]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; setSteps(a) }}
             onRemove={() => setSteps(run.workflow.steps.filter(x => x.id !== s.id))}
             onAct={act} outputEditor={{ change: editOutput, flush }} />
@@ -418,11 +466,12 @@ function FinalCut({ id }: { id: string }) {
   )
 }
 
-function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, outputEditor, draft, local }: {
+function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, outputEditor, draft, local, select }: {
   run?: WfRun; step: WfStep; idx: number; state?: StepState
   onChange: (s: WfStep) => void; onMove: (d: number) => void; onRemove: () => void
   onAct?: RunAction; outputEditor?: OutputEditor; local?: DraftFiles
   draft?: { steps: WfStep[] }
+  select: (id: string) => void
 }) {
   const catIcon = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.icon)
   const catLabel = useStore(s => s.wfData?.step_catalog.find(c => c.type === step.type)?.label)
@@ -436,7 +485,10 @@ function StepCard({ run, step, idx, state, onChange, onMove, onRemove, onAct, ou
     <motion.li layout="position" className={cx('step', `s-${st}`, !step.enabled && 'off')}>
       <span className="step-node">{st === 'running' ? <span className="spinner" /> : st === 'done' ? '✓' : idx + 1}</span>
       <div className="step-card glass">
-        <div className="step-h" role="button" tabIndex={0} onClick={() => setOpen(v => !v)} onKeyDown={e => { if (e.key === 'Enter') setOpen(v => !v) }}>
+        <div className="step-h" id={'workflow-step-' + step.id} role="button" tabIndex={0} aria-expanded={open}
+          onClick={() => { select(step.id); setOpen(value => !value) }} onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(step.id); setOpen(value => !value) }
+          }}>
           <span className="step-ic">{catIcon}</span>
           <div className="step-t"><b>{step.name}</b><small className="dim">{catLabel} · {step.id}{state?.progress ? ` · ${state.progress}` : ''}</small></div>
           <span className="grow" />
@@ -629,10 +681,10 @@ function StepOutput({ run, step, state, disabled, editor }: {
           {out.style_bible && <p className="help">风格基调：{out.style_bible}</p>}
           <div className="scenes">{(out.scenes as Record<string, string>[]).map((s, i) => (
             <div key={i} className="scene">
-              <b>{i + 1}. {s.title}</b>
-              <textarea rows={2} disabled={disabled} value={s.keyframe_prompt || ''} aria-label="关键帧提示词"
+              <b data-user-content>{i + 1}. {s.title}</b>
+              <textarea data-user-content rows={2} disabled={disabled} value={s.keyframe_prompt || ''} aria-label={PROPOSAL_FIELD_LABELS.keyframe_prompt}
                 onChange={e => editor.change(step.id, 'scenes', i, e.target.value)} onBlur={() => void editor.flush()} />
-              <small className="dim">{s.video_prompt} · {s.audio_notes}</small>
+              <span className="scene-meta" data-user-content>{[s.video_prompt, s.audio_notes].filter(Boolean).join(' · ')}</span>
             </div>
           ))}</div>
         </>
@@ -644,8 +696,8 @@ function StepOutput({ run, step, state, disabled, editor }: {
       {(step.type === 'image_gen' || step.type === 'video_gen') && Array.isArray(out.round_ids) && thumbs(out.round_ids)}
       {step.type === 'h3_prompt' && Array.isArray(out.items) && (
         <div className="scenes">{(out.items as { title: string; video_prompt: string }[]).map((it, i) => (
-          <div key={i} className="scene"><b>{i + 1}. {it.title}</b>
-            <textarea rows={3} disabled={disabled} value={it.video_prompt || ''} aria-label="视频提示词"
+          <div key={i} className="scene"><b data-user-content>{i + 1}. {it.title}</b>
+            <textarea data-user-content rows={3} disabled={disabled} value={it.video_prompt || ''} aria-label={PROPOSAL_FIELD_LABELS.video_prompt}
               onChange={e => editor.change(step.id, 'items', i, e.target.value)} onBlur={() => void editor.flush()} /></div>
         ))}</div>
       )}

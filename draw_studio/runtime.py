@@ -14,7 +14,10 @@ from .colab.client import ColabBackend
 from .gallery import Store
 from .generation.studio import Studio
 from .logs import LogBuffer
+from .workflows.agent_plugins import prune_profiles
+from .workflows.copilot import HarnessSessions
 from .workflows.engine import WorkflowEngine
+from .workflows.harness_errors import HarnessError
 
 
 @dataclass
@@ -26,6 +29,7 @@ class Runtime:
     store: Store
     studio: Studio
     workflows: WorkflowEngine
+    harness_sessions: HarnessSessions = field(default_factory=HarnessSessions, repr=False)
 
     @classmethod
     def open(cls, root: Path) -> Runtime:
@@ -72,8 +76,16 @@ async def open_runtime(data: Path, services: Runtime | None = None) -> AsyncIter
         stop = threading.Event()
 
         def housekeeping():
+            try:
+                prune_profiles(s.root)
+            except (OSError, HarnessError) as exc:
+                s.log(f"助手插件目录未能清理 ({type(exc).__name__})")
             while not stop.is_set():
                 s.store.auto_purge()
+                try:
+                    s.harness_sessions.prune_drafts(s.root, lambda key: (s.workflows.runs_dir / key / "run.json").is_file())
+                except OSError as exc:
+                    s.log(f"助手草稿对话未能清理 ({type(exc).__name__})")
                 stop.wait(3600)
 
         cleaner = threading.Thread(target=housekeeping, daemon=True)
@@ -83,4 +95,7 @@ async def open_runtime(data: Path, services: Runtime | None = None) -> AsyncIter
         finally:
             stop.set()
             await asyncio.to_thread(cleaner.join)
-            s.studio.shutdown()
+            try:
+                await asyncio.to_thread(s.harness_sessions.shutdown)
+            finally:
+                s.studio.shutdown()

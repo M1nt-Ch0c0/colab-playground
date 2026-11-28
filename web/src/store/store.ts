@@ -124,7 +124,7 @@ export const useStore = create<Store>((set, get) => ({
   cfg: null, status: null, storage: null,
   rounds: [], roundsRev: -1,
   logSeq: 0, logs: [],
-  workspace: 'image',
+  workspace: new URLSearchParams(location.search).has('workflow') ? 'workflow' : 'image',
   videoRefBusy: false,
   draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>(LS_KEYS.draft, {}) },
   sheet: null, sheetArgs: {},

@@ -317,8 +317,19 @@ class WorkflowEngine:
         """Update topic and/or workflow step definitions on a non-running run."""
         with self._lock:
             if self._active_run_id == run_id:
+                if "if_revision" in body:
+                    from .harness_errors import HarnessError
+                    raise HarnessError("running_locked")
                 raise StateConflict("工作流正在运行，请先暂停或停止后再修改步骤配置")
             run = self._read_run_locked(run_id)
+            if "if_revision" in body:
+                from .agent_tools import editor_revision
+                from .harness_errors import HarnessError
+                if not run:
+                    raise HarnessError("not_found")
+                current_revision = editor_revision(run)
+                if body["if_revision"] != current_revision:
+                    raise HarnessError("revision_conflict", details={"current_revision": current_revision})
             if not run:
                 raise ValueError("运行记录不存在")
             if "topic" in body:

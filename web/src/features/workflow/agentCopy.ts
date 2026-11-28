@@ -285,6 +285,8 @@ export const AGENT_COPY = {
     } satisfies Readonly<Record<StepTypeKey, string>>,
     hint: '点选节点编辑，拖动调整位置',
     emptyHint: '在下方添加步骤，或让助手来搭',
+    library: '模板与运行记录',
+    saveDraft: '保存草稿',
     editNode: '编辑节点',
     askAgent: '问助手',
     refs: '参考图',

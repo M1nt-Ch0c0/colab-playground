@@ -4,6 +4,7 @@ COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
+RUN npm install --global --no-audit --no-fund pnpm@10.32.1
 
 FROM python:3.13-slim
 
@@ -18,6 +19,11 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=web /usr/local/bin/node /usr/local/bin/node
+COPY --from=web /usr/local/lib/node_modules/pnpm /usr/local/lib/node_modules/pnpm
+RUN ln -s /usr/local/lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/bin/pnpm \
+    && node --version && pnpm --version
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
