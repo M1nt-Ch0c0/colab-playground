@@ -6,6 +6,7 @@ import type {
   LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult, AgentErrorCode, AgentEvent,
   AgentPlugins, AgentPluginAction, AgentTurnBody, SavedAgentExchange, AgentTelemetry,
   Proposal, ProposalAction, RewriteInput, Shot, ShotEdit, ShotWriteResult,
+  Operation, MaskRecord, EditMask, ComposerPrompt, ComposerWriteResult,
 } from './types'
 
 export class ApiError extends Error {
@@ -61,7 +62,12 @@ async function agentTurn(body: AgentTurnBody, signal: AbortSignal, receive: (eve
   }
   if (__MOCK__ && mockHandler) {
     const events = await request<AgentEvent[]>('POST', path, body)
+    let gathering = true
     for (const event of events) {
+      if (gathering && (event.type === 'done' || event.type === 'tool' && event.ok !== null)) {
+        gathering = false
+        await new Promise(resolve => setTimeout(resolve, 540))
+      }
       signal.throwIfAborted()
       const done = consume(event)
       if (done) return done
@@ -200,6 +206,18 @@ export const api = {
     applyProposal: (id: string, body: ProposalAction) => post<ShotWriteResult>(`api/workflows/agent/proposals/${enc(id)}/apply`, body),
     rejectProposal: (id: string) => post<Proposal>(`api/workflows/agent/proposals/${enc(id)}/reject`),
     undoShots: (id: string) => post<ShotWriteResult>(`api/workflows/agent/undo/${enc(id)}`),
+    applyComposer: (id: string, body: ComposerPrompt) =>
+      post<ComposerWriteResult>(`api/workflows/agent/proposals/${enc(id)}/composer-apply`, body),
+    undoComposer: (id: string, body: ComposerPrompt) =>
+      post<ComposerWriteResult>(`api/workflows/agent/undo/${enc(id)}/composer`, body),
+    operations: (scope: string) => get<{ operations: Operation[] }>(`api/workflows/agent/operations?scope_key=${enc(scope)}`),
+    operation: (id: string) => get<Operation>(`api/workflows/agent/operations/${enc(id)}`),
+    approveOperation: (id: string) => post<Operation>(`api/workflows/agent/operations/${enc(id)}/approve`),
+    cancelOperation: (id: string) => post<Operation>(`api/workflows/agent/operations/${enc(id)}/cancel`),
+    retryOperation: (id: string, item_keys?: string[]) =>
+      post<Operation>(`api/workflows/agent/operations/${enc(id)}/retry-failed`, { item_keys }),
+    createMask: (body: EditMask) => post<MaskRecord>('api/workflows/agent/masks', body),
+    mask: (id: string) => get<MaskRecord>(`api/workflows/agent/masks/${enc(id)}`),
     telemetry: () => get<AgentTelemetry>('api/workflows/agent/telemetry'),
     list: () => get<WorkflowsResponse>('api/workflows'),
     saveTemplate: (wf: Partial<WfDef>) => post<{ workflow: WfDef; custom: WfDef[] }>('api/workflows', wf),

@@ -184,6 +184,14 @@ export type Proposal = Wire['Proposal']
 export type ProposalAction = Wire['ProposalAction']
 export type RewriteInput = Wire['RewriteInput']
 export type AgentTelemetry = Wire['Telemetry']
+export type Operation = Wire['Operation']
+export type OperationItem = Wire['OperationItem']
+export type MaskRecord = Wire['MaskRecord']
+export type ComposerContext = Wire['ComposerContext']
+export type ComposerPrompt = Wire['ComposerPrompt']
+export type ComposerWriteResult = Wire['ComposerWriteResult']
+export type ComposerPatch = { workspace: 'image' | 'video'; base_revision: string | null; changes: Omit<ComposerContext, 'revision'> }
+export type MaskEditorHint = { source_id: string; mask_id?: string | null }
 export interface AgentTool {
   name: string; op?: unknown; ok: boolean | null; call_id?: string; code?: AgentErrorCode
 }
@@ -191,11 +199,12 @@ export type SavedAgentExchange = Omit<Wire['AgentExchange'], 'tools'> & { tools:
 export type AgentEvent =
   | { type: 'started'; model: string }
   | { type: 'session'; state: 'new' | 'reused' | 'resumed'; process_id: number }
-  | ({ type: 'tool' } & AgentTool)
+  | ({ type: 'tool'; operations?: Operation[]; composer_patch?: ComposerPatch } & AgentTool)
   | { type: 'heartbeat' }
   | { type: 'error'; code: AgentErrorCode; message: string }
   | { type: 'done'; message: string; editor: EditorSnapshot | null; run_request: AgentRunRequest | null; base_revision: string | null;
-      proposals?: Proposal[]; run_updated?: RunShotUpdate[]; refresh_run?: boolean; refresh_library?: boolean }
+      proposals?: Proposal[]; run_updated?: RunShotUpdate[]; refresh_run?: boolean; refresh_library?: boolean;
+      operations?: Operation[]; composer_patch?: ComposerPatch | null; mask_editor?: MaskEditorHint | null }
 export interface StepState { status: StepStatus; started_at: number | null; finished_at: number | null; progress: string; output: Record<string, any>; error: string }
 export interface WfRun {
   id: string; topic: string; workflow: WfDef; status: RunStatus; current_step_id: string | null

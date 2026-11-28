@@ -1,4 +1,5 @@
 import json
+import re
 import uuid
 from typing import Annotated, Literal
 
@@ -10,18 +11,21 @@ from ..errors import LlmError
 from ..workflows import agent_plugins
 from ..workflows.agent_tools import EditorTools, editor_revision, editor_value
 from ..workflows.copilot import recent_exchanges, turn_events
+from ..workflows.creative_service import ComposerContext
 from ..workflows.definitions import normalize_workflow_def, workflow_variables
 from ..workflows.engine import RUN_ID_RE
 from ..workflows.harness_errors import HarnessError
 from ..workflows.harness_telemetry import TurnTelemetry
+from ..workflows.operation_service import MaskInput, MaskRecord, OPERATION_ID, Operation, OperationList, RetryItems, SCOPE_KEY
 from ..workflows.shot_service import (
-    Proposal, ProposalAction, RewriteInput, ShotEdit, ShotId, Shots, ShotWriteResult, Telemetry,
-    apply_shot_edits, read_shots, reject_proposal, rewrite_prompt, undo_change,
+    ComposerPrompt, ComposerWriteResult, Proposal, ProposalAction, RewriteInput, ShotEdit, ShotId, Shots, ShotWriteResult, Telemetry,
+    apply_composer, apply_shot_edits, read_shots, reject_proposal, rewrite_prompt, undo_change, undo_composer,
 )
 
 from .core import IMAGE_BODY, Raw, State, flag, image_type, media_file, media_route, readable
 
 router = APIRouter(prefix="/api/workflows", tags=["工作流"])
+re_composer = re.compile(r"cr_[a-f0-9]{32}").fullmatch
 
 
 class AssetInfo(BaseModel):
@@ -42,15 +46,6 @@ class AgentMessage(BaseModel):
     text: str = Field(max_length=3000)
 
 
-class ComposerContext(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    prompt: str = Field(default="", max_length=12000)
-    model: str | None = Field(default=None, max_length=128)
-    workflow: Literal["t2va", "fl2va", "ref2va"] | None = None
-    num_frames: int | None = Field(default=None, ge=1, le=400)
-    video_task: Literal["edit", "continue", "motion"] | None = None
-
-
 class AgentTurn(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[AgentMessage] = Field(default_factory=list, max_length=12)
@@ -60,6 +55,7 @@ class AgentTurn(BaseModel):
     selected_shot: ShotId | None = None
     workspace: Literal["workflow", "image", "video"] = "workflow"
     composer: ComposerContext | None = None
+    composer_scope: str | None = Field(default=None, pattern=r"^cr_[a-f0-9]{32}$")
     run_id: str | None = Field(default=None, max_length=80)
     draft_id: str | None = Field(default=None, pattern="^[a-f0-9]{32}$")
     turn_id: str | None = Field(default=None, pattern="^[a-f0-9]{32}$")
@@ -80,6 +76,7 @@ class AgentExchange(BaseModel):
     tools: list[dict]
     state: Literal["done"]
     proposals: list[Proposal] = Field(default_factory=list)
+    operation_id: str | None = None
 
 
 class AgentConversation(BaseModel):
@@ -125,7 +122,7 @@ def agent_plugin_action(package: str, body: PluginAction, s: State):
 
 @readable(router, "/agent/conversations/{key}", response_model=AgentConversation)
 def agent_conversation(key: str, s: State):
-    if not RUN_ID_RE.fullmatch(key):
+    if not RUN_ID_RE.fullmatch(key) and not re_composer(key):
         raise HarnessError("invalid_argument")
     store = s.harness_store
     exchanges = recent_exchanges(s.root, key)
@@ -138,7 +135,7 @@ def agent_conversation(key: str, s: State):
 
 @router.post("/agent/conversations/{key}/stop", response_model=StopResult)
 def interrupt_turn(key: str, body: InterruptTurn, s: State):
-    if not RUN_ID_RE.fullmatch(key):
+    if not RUN_ID_RE.fullmatch(key) and not re_composer(key):
         raise HarnessError("invalid_argument")
     return {"stopped": s.harness_sessions.interrupt(key, body.turn_id)}
 
@@ -152,7 +149,9 @@ def agent_turn(body: AgentTurn, s: State):
         raise HarnessError("invalid_argument")
     if body.run_id is not None and (not RUN_ID_RE.fullmatch(body.run_id) or body.draft_id is not None):
         raise HarnessError("invalid_argument")
-    key = body.run_id or (f"wr_{body.draft_id}" if body.draft_id else None)
+    if body.composer_scope and (body.workspace == "workflow" or body.run_id or body.draft_id):
+        raise HarnessError("invalid_argument")
+    key = body.run_id or (f"wr_{body.draft_id}" if body.draft_id else body.composer_scope)
     raw = body.workflow
     if raw.get("steps") == [] and not body.run_id:
         wf = {"name": str(raw.get("name") or "工作流")[:80], "steps": [],
@@ -177,7 +176,7 @@ def agent_turn(body: AgentTurn, s: State):
             raise HarnessError("revision_conflict", details={"current_revision": revision})
         normalized.update(id=stored["id"], builtin=bool(stored.get("builtin")))
         snapshot = {"workflow": normalized, "topic": saved["topic"]}
-    elif key and s.workflows.get_run(key):
+    elif key and body.workspace == "workflow" and s.workflows.get_run(key):
         raise HarnessError("draft_already_saved", details={"run_id": key})
 
     try:
@@ -198,6 +197,50 @@ def agent_turn(body: AgentTurn, s: State):
 
     return StreamingResponse(stream(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@readable(router, "/agent/operations", response_model=OperationList)
+def list_operations(s: State, scope_key: Annotated[str | None, Query(pattern="^" + SCOPE_KEY + "$")] = None,
+                    limit: Annotated[int, Query(ge=1, le=50)] = 24):
+    return {"operations": s.operations.list(scope_key, limit)}
+
+
+OperationId = Annotated[str, Path(pattern="^" + OPERATION_ID + "$")]
+
+
+@readable(router, "/agent/operations/{operation_id}", response_model=Operation)
+def get_operation(operation_id: OperationId, s: State):
+    return s.operations.get(operation_id)
+
+
+@router.post("/agent/operations/{operation_id}/approve", response_model=Operation)
+def approve_operation(operation_id: OperationId, s: State):
+    return s.operations.approve(operation_id)
+
+
+@router.post("/agent/operations/{operation_id}/retry-failed", response_model=Operation)
+def retry_operation(operation_id: OperationId, s: State, body: RetryItems = Body(default_factory=RetryItems)):
+    return s.operations.retry(operation_id, body.item_keys)
+
+
+@router.post("/agent/operations/{operation_id}/cancel", response_model=Operation)
+def cancel_operation(operation_id: OperationId, s: State):
+    return s.operations.cancel(operation_id)
+
+
+@media_route(router, "/agent/operations/{operation_id}/refs/{slot}", "image/jpeg")
+def operation_reference(operation_id: OperationId, slot: str, request: Request, s: State):
+    return media_file(request, s.operations.ref_thumb(operation_id, slot), "image/jpeg")
+
+
+@router.post("/agent/masks", response_model=MaskRecord, status_code=201)
+def create_mask(body: MaskInput, s: State):
+    return s.operations.create_mask(body)
+
+
+@readable(router, "/agent/masks/{mask_id}", response_model=MaskRecord)
+def read_mask(mask_id: Annotated[str, Path(pattern=r"^mk_[a-f0-9]{24}$")], s: State):
+    return s.operations.get_mask(mask_id)
 
 
 @readable(router, "/runs/{run_id}/shots", response_model=Shots)
@@ -239,6 +282,16 @@ def discard_proposal(proposal_id: ProposalId, s: State):
 @router.post("/agent/undo/{undo_id}", response_model=ShotWriteResult)
 def undo_proposal(undo_id: UndoId, s: State):
     return undo_change(s, undo_id)
+
+
+@router.post("/agent/proposals/{proposal_id}/composer-apply", response_model=ComposerWriteResult)
+def adopt_composer(proposal_id: ProposalId, body: ComposerPrompt, s: State):
+    return apply_composer(s, proposal_id, body)
+
+
+@router.post("/agent/undo/{undo_id}/composer", response_model=ComposerWriteResult)
+def revert_composer(undo_id: UndoId, body: ComposerPrompt, s: State):
+    return undo_composer(s, undo_id, body)
 
 
 @readable(router, "/agent/telemetry", response_model=Telemetry)

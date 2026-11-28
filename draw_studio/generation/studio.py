@@ -154,6 +154,7 @@ class Studio:
         self._cancel = False
         self._grabbing = False
         self._job_seq = 0
+        self.on_job_finished: Callable[[dict], None] | None = None
         self._recent_models: list[str] = []
         self._comfy_presets: list[dict] = []
         self._studio_presets: list[dict] = []
@@ -418,11 +419,13 @@ class Studio:
         return out
 
     def _remember_job(self, job: dict) -> None:
+        if self.on_job_finished:
+            self.on_job_finished(job)
         if len(self._history) == self._history.maxlen:
             self._cleanup_job_refs(self._history[-1]["id"])
         self._history.appendleft(job)
 
-    def _save_state_locked(self) -> None:
+    def _save_state_locked(self, *, strict=False) -> None:
         try:
             self.queue_state_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
@@ -442,6 +445,8 @@ class Studio:
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(tmp, self.queue_state_path)
         except Exception as exc:
+            if strict:
+                raise
             self.log(f"保存队列状态失败：{exc}")
 
     def recover(self) -> dict:
@@ -1422,8 +1427,9 @@ class Studio:
         last_ref: bytes | None,
         video_snapshot: Path | None = None,
         retrying: dict | None = None,
+        frozen_jobs: list[tuple[str, dict]] | None = None,
     ) -> list[dict]:
-        count = payload.pop("count", 1)
+        count = len(frozen_jobs) if frozen_jobs is not None else payload.pop("count", 1)
         base_seed = payload["seed"]
         if base_seed is None or base_seed < 0:
             base_seed = random.randint(0, 2**31 - 2)
@@ -1454,16 +1460,20 @@ class Studio:
                     raise StateConflict("参考视频已移除或更换，请重新选择")
                 payload["video_reference_source"] = self._refs_meta()["video"]["source"]
             for i in range(count):
-                self._job_seq += 1
-                p = dict(payload)
-                p["seed"] = (base_seed + i) % (2**31 - 1)
+                if frozen_jobs is None:
+                    self._job_seq += 1
+                    jid = f"j{int(time.time()) % 100000:05d}{self._job_seq:03d}"
+                    p = dict(payload, seed=(base_seed + i) % (2**31 - 1))
+                else:
+                    jid, original = frozen_jobs[i]
+                    p = dict(original)
                 orig_prompt = str(p.get("prompt") or "")
                 expanded_prompt = orig_prompt if retrying else expand_prompt_wildcards(orig_prompt, p["seed"])
                 if expanded_prompt != orig_prompt:
                     p["prompt_template"] = orig_prompt
                     p["prompt"] = expanded_prompt[: LIMITS["prompt_max"]]
                 job = {
-                    "id": f"j{int(time.time()) % 100000:05d}{self._job_seq:03d}",
+                    "id": jid,
                     "payload": p,
                     "first_ref": first_ref,
                     "ref_blobs": list(ref_blobs),
@@ -1482,6 +1492,14 @@ class Studio:
                     self._cleanup_job_refs(job["id"])
                 raise
             self._queue.extend(pending)
+            if frozen_jobs is not None:
+                try:
+                    self._save_state_locked(strict=True)
+                except Exception:
+                    for job in pending:
+                        self._queue.pop()
+                        self._cleanup_job_refs(job["id"])
+                    raise
             if retrying:
                 retrying["retried_as"] = pending[0]["id"]
             created = [self._job_public(job) for job in pending]
@@ -1490,7 +1508,8 @@ class Studio:
                 self._recent_models = [x for x in self._recent_models if x != m]
                 self._recent_models.insert(0, m)
                 del self._recent_models[RECENT_MODELS_MAX:]
-            self._save_state_locked()
+            if frozen_jobs is None:
+                self._save_state_locked()
             if self._runner is None or not self._runner.is_alive():
                 self._runner = threading.Thread(target=self._run_loop, daemon=True)
                 self._runner.start()
@@ -1506,6 +1525,11 @@ class Studio:
             f" × {count}，GPU={pool_txt}{poll_suffix}，{payload['width']}x{payload['height']}，steps={payload['steps']}"
         )
         return created
+
+    def enqueue_frozen(self, jobs: list[tuple[str, dict]], refs: list[bytes], last: bytes | None,
+                       video: Path | None) -> list[dict]:
+        """Commit a validated batch with ledger-reserved IDs before the runner can see it."""
+        return self._enqueue_internal(jobs[0][1], ref_blobs=refs, last_ref=last, video_snapshot=video, frozen_jobs=jobs)
 
     def retry_job(self, job_id: str) -> str:
         with self._lock:
@@ -1583,6 +1607,17 @@ class Studio:
                     self.log(f"已从队列移除任务 {job_id}")
                     return True
         return False
+
+    def cancel_job(self, job_id: str) -> bool:
+        with self._lock:
+            if self.remove_queued(job_id):
+                return True
+            if not self._current or self._current["id"] != job_id or self._current["status"] not in {"queued", "running"}:
+                return False
+            self._cancel = True
+            self.colab.interrupt_active()
+            self.log("已发送取消信号给当前任务")
+            return True
 
     def clear_queue(self) -> int:
         with self._lock:

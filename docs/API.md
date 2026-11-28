@@ -383,3 +383,36 @@ H="Authorization: Bearer $QP_TOKEN"
 ## 8. 工作流中的视频参考
 
 `h3_prompt` 与 `video_gen` 在 `config.workflow="ref2va"` 时支持 `video_round_id`、`video_task`（`edit`、`continue`、`motion`）和 `extra_ref_sources`（上游图片步骤 ID 列表）。白模模式用第一张参考图提供角色外观，明确选择的上游图片排在关键帧之前。也可以用 `video_from` 替代 `video_round_id`，选择前面的 `video_gen` 或 `video_stitch` 步骤。保存或更新工作流时会校验这一引用，删除被引用的步骤或把它移到引用方之后会报错。单个视频供各镜头共用，多段视频按 `scene_index` 匹配。缺少相应片段时该步骤报错。H3 提示词步骤会在各镜头的输出里传递视频编号、用途和图片来源。下游参考模式可直接沿用，也可指定新素材。在 `fl2va` 模式下，两个节点也可传递 `last_frame_round_id`。工作流读取自己的配置与上游产出，创作台的参考槽可独立使用。
+
+## 创作助手接口
+
+路径以下均相对于 `/api/workflows`，沿用工作台登录。结构化错误形如 `{"error":"简短说明","code":"shot_conflict","details":{}}`。界面按 `code` 选取文案。
+
+| 方法 | 路径 | 输入与结果 |
+|---|---|---|
+| POST | `/agent/turn` | 发送 `message`、工作流快照及可选 `run_id`、`draft_id`、`selected_step` 和 `selected_shot`。创作台用 `workspace=image\|video`、`composer_scope=cr_<32 hex>` 和 `composer`。返回 NDJSON。 |
+| POST | `/agent/conversations/{key}/stop` | 用活动轮次的 `turn_id` 停止。返回 `stopped`。 |
+| GET | `/agent/conversations/{key}` | 读取对话、提案状态及关联操作。 |
+| GET / POST | `/agent/plugins` / `/agent/plugins/{package}` | 读取内置能力与插件。写入 `action=install\|enable\|disable\|remove`。 |
+| GET | `/runs/{run_id}/shots` | 按可选的 `step_id` 读取分镜、字段版本及关联作品。 |
+| POST | `/runs/{run_id}/steps/{step_id}/shots/rewrite` | 用 `instruction`、可选 `shot_ids`、`field`、`reference_round_ids` 创建候选。空镜头列表选择该步全部镜头，最多 8 镜。 |
+| POST | `/agent/proposals/{proposal_id}/apply` | 分镜采用。默认 `atomicity=all`，`per_shot` 返回已写入项与冲突项。结果含 `undo_id`、`step_output` 和 `run_updated`。 |
+| POST | `/agent/proposals/{proposal_id}/reject` | 放弃待采用候选，返回提案。 |
+| POST | `/agent/undo/{undo_id}` | 校验分镜当前字段版本并撤销。凭据消费一次。 |
+| POST | `/agent/proposals/{proposal_id}/composer-apply` | 按 `{workspace,prompt}` 校验创作台现稿，返回新提示词及可撤销提案。 |
+| POST | `/agent/undo/{undo_id}/composer` | 按 `{workspace,prompt}` 校验已采用的提示词，返回恢复值。 |
+| GET | `/agent/telemetry` | 返回 30 天内最近 20,000 条的脱敏聚合。 |
+| GET | `/agent/operations` | 通过 `scope_key` 筛选账本，`limit` 可选。回读每项的队列、进度与作品。 |
+| GET | `/agent/operations/{operation_id}` | 回读单个操作及其 `items`。 |
+| POST | `/agent/operations/{operation_id}/approve` | 确认后按冻结素材入队。重复确认返回当前操作。算力未连接为 400 `colab_unauthed`，队列满为 409 `queue_full`。 |
+| POST | `/agent/operations/{operation_id}/retry-failed` | 仅重试失败项，可用 `item_keys` 指定子集。沿用冻结素材及种子，保留成功作品。 |
+| POST | `/agent/operations/{operation_id}/cancel` | 取消候选或关联排队与运行中任务。完成项保留。 |
+| GET | `/agent/operations/{operation_id}/refs/{slot}` | 读取操作冻结的参考图缩略图。 |
+| POST | `/agent/masks` | 传入图片 `source_id` 和 `strokes`。返回 201 与七天有效的 `mask_id`。笔刷大小与坐标归一化。 |
+| GET | `/agent/masks/{mask_id}` | 读取蒙版笔迹，供画笔编辑器恢复。 |
+
+`tool` 事件保留 `op` 并可带操作或创作台补丁。`done` 可返回 `proposals`、`run_updated`、`operations`、`composer_patch` 和 `mask_editor`。创作台用发起时的修订号校验参数补丁。
+
+`studio_generation` 的提交操作按会话范围、工具动作和 `idempotency_key` 去重。同键同参数返回已有候选，同键异参返回 400。批准前状态为 `awaiting_approval`。恢复时以预留任务编号向队列和作品核对，结果无法核实时显示 `unknown`，由账本保留记录。`studio_jobs` 的 `retry` 打开相应操作卡，用户可以确认重试单项或全部失败项。
+
+已有步骤输出接口 `POST /runs/{run_id}/steps/{step_id}/output` 接受 `shot_edits` 进行字段级版本校验。

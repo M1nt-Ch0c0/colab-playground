@@ -57,6 +57,82 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code, expected, (method, path, response.status_code, response.text[:160]))
         return response
 
+    def test_harness_operation_and_composer_live_contract(self):
+        prefix = "/api/workflows/agent"
+        scope = "cr_" + "a" * 32
+        revision = "b" * 32
+        self.assertEqual(self.req("GET", prefix + "/operations", auth=False, expected=401).json()["code"], "invalid_argument")
+        source = self.req("POST", "/api/rounds/import?kind=image&name=Sunset", data=png()).json()["id"]
+        mask_body = {"source_id": source, "strokes": [{"size": .08, "points": [[.3, .4], [.4, .4]]}]}
+        mask = self.req("POST", prefix + "/masks", json=mask_body, expected=201).json()
+        self.assertEqual(self.req("GET", prefix + "/masks/" + mask["mask_id"]).json(), mask)
+        self.assertEqual(self.req("POST", prefix + "/masks", json={**mask_body, "source_id": "999"}, expected=400).json()["code"], "media_invalid")
+
+        def turn(name, args):
+            response = self.req("POST", prefix + "/turn", json={
+                "workspace": "image", "composer_scope": scope, "composer": {"prompt": "Blue light", "revision": revision},
+                "message": "USE_CREATIVE_TOOL " + json.dumps([name, args]),
+            })
+            events = [json.loads(line) for line in response.iter_lines()]
+            self.assertEqual(events[-1]["type"], "done", events)
+            tool = next(item for item in events if item["type"] == "tool" and item["ok"] is not None)
+            self.assertTrue(tool["ok"], events)
+            if "op" in args:
+                self.assertEqual(tool["op"], args["op"])
+            return tool, events[-1]
+
+        with stateful_model(self.root) as (base, provider):
+            self.s.studio.llm.save(kind="openai", name="Fixture", base_url_value=base, api_key="model-fixture-key", models=["test"])
+            event, edited = turn("studio_generation", {"op": "edit_composer", "spec": {"width": 1010}})
+            composer_patch = edited["composer_patch"]
+            self.assertEqual(composer_patch, event["composer_patch"])
+            self.assertEqual((composer_patch["base_revision"], composer_patch["changes"]["width"]), (revision, 1024))
+            event, created = turn("studio_generation", {"op": "submit_image", "idempotency_key": "scene-a",
+                                                         "spec": {"mask_id": mask["mask_id"], "count": 2}})
+            op, = created["operations"]
+            self.assertEqual(event["operations"], [op])
+            self.assertEqual((op["scope_key"], op["state"]), (scope, "awaiting_approval"))
+            self.assertFalse(self.s.studio.snapshot()["queue"])
+            url = prefix + "/operations/" + op["operation_id"]
+            self.assertEqual(self.req("GET", prefix + "/operations?scope_key=cr_" + "a" * 32).json()["operations"], [op])
+            self.assertEqual(self.req("GET", prefix + "/operations?scope_key=cr_" + "b" * 32).json(), {"operations": []})
+            for ref in op["references"]:
+                self.req("GET", "/" + ref["thumb"])
+            self.assertEqual(self.req("POST", url + "/approve", json={}, expected=400).json()["code"], "colab_unauthed")
+            with patch.object(self.s.colab, "has_credentials", return_value=True), \
+                 patch.object(self.s.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = self.req("POST", url + "/approve", json={}).json()
+                self.assertEqual(self.req("POST", url + "/approve", json={}).json(), approved)
+                self.assertEqual([item["state"] for item in approved["items"]], ["queued", "queued"])
+                first, second = [item["job_id"] for item in approved["items"]]
+                with self.s.studio._lock:
+                    work = self.s.studio._queue.popleft()
+                    work.update(status="done", round_id=source)
+                    self.s.studio._remember_job(work)
+                    work = self.s.studio._queue.popleft()
+                    work.update(status="error", error="fixture")
+                    self.s.studio._remember_job(work)
+                partial = self.req("GET", url).json()
+                self.assertEqual((partial["state"], partial["done"]), ("partial", 1))
+                retried = self.req("POST", url + "/retry-failed", json={"item_keys": ["1", "2"]}).json()
+                self.assertEqual(retried["items"][0]["job_id"], first)
+                self.assertNotEqual(retried["items"][1]["job_id"], second)
+                canceled = self.req("POST", url + "/cancel", json={}).json()
+                self.assertEqual([i["state"] for i in canceled["items"]], ["done", "canceled"])
+            history = self.req("GET", prefix + "/conversations/" + scope).json()["exchanges"]
+            self.assertEqual(history[-1]["operation_id"], op["operation_id"])
+
+            _, rewrite = turn("studio_rewrite_prompt", {"instruction": "Warmer shadows"})
+            proposal, = rewrite["proposals"]
+            adopt = prefix + "/proposals/" + proposal["proposal_id"] + "/composer-apply"
+            current = {"workspace": "image", "prompt": "Blue light"}
+            self.assertEqual(self.req("POST", adopt, json={**current, "prompt": "New edit"}, expected=409).json()["code"], "shot_conflict")
+            written = self.req("POST", adopt, json=current).json()
+            self.assertEqual(written["prompt"], proposal["after"][0]["text"])
+            undo = prefix + "/undo/" + written["proposal"]["undo_id"] + "/composer"
+            self.assertEqual(self.req("POST", undo, json={**current, "prompt": written["prompt"]}).json()["prompt"], "Blue light")
+            self.assertEqual(self.req("GET", prefix + "/conversations/" + scope).json()["exchanges"][-1]["proposals"][0]["status"], "undone")
+
     def test_stateful_harness_across_turns_and_cancellation(self):
         from draw_studio.workflows.copilot import HarnessSessions
 

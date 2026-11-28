@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { Proposal, RunShotUpdate, ShotConflict } from '../../api/types'
-import { useStore } from '../../store/store'
+import { applyAssistantComposerPrompt, assistantComposerPrompt, useStore } from '../../store/store'
 import { expand, fade, instant, quick, spring } from '../../ui/motion'
 import { AGENT_COPY as C, errorCopy, shotLabel, type ProposalField, type ProposalState } from './agentCopy'
 import { ConflictBar, type ConflictKind } from './ConflictBar'
@@ -156,11 +156,12 @@ function conflictNumbers(proposal: Proposal, conflicts: readonly ShotConflict[])
 }
 
 export function WorkflowProposal({ proposal, variant, changed, disabled, animateEntry, beforeWrite, onChange, onUpdate,
-  onDismiss }: {
+  onDismiss, onRegenerateComposer }: {
   proposal: Proposal; variant: 'panel' | 'inline'; changed?: boolean; disabled?: boolean; animateEntry?: boolean;
   beforeWrite?: () => Promise<boolean>; onChange: (proposal: Proposal) => void;
   onUpdate: (update: RunShotUpdate, output: Record<string, unknown>) => void;
   onDismiss: () => void;
+  onRegenerateComposer?: () => void;
 }) {
   const toast = useStore(s => s.toast)
   const [busy, setBusy] = useState<'applying' | 'undoing' | 'other'>()
@@ -192,6 +193,14 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
     setBusy('undoing')
     try {
       if (!await ready()) return
+      if (proposal.kind === 'composer') {
+        const current = assistantComposerPrompt()
+        if (!current) { toast(C.toast.undoBlocked, 'err'); return }
+        const result = await api.wf.undoComposer(id, current)
+        onChange(result.proposal)
+        if (!applyAssistantComposerPrompt(current, result.prompt)) toast(C.toast.undoBlocked, 'err')
+        return
+      }
       const result = await api.wf.undoShots(id)
       onChange(result.proposal ?? { ...proposal, status: 'undone' })
       setStatus(undefined)
@@ -206,6 +215,16 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
     setBusy('applying')
     try {
       if (!await ready()) return
+      if (proposal.kind === 'composer') {
+        const current = assistantComposerPrompt()
+        if (!current) { setStatus({ kind: 'changed' }); return }
+        const result = await api.wf.applyComposer(proposal.proposal_id, current)
+        onChange(result.proposal)
+        if (!applyAssistantComposerPrompt(current, result.prompt)) { toast(C.conflict.changed, 'err'); return }
+        const id = result.proposal.undo_id
+        toast(C.toast.applied, 'ok', id ? { label: C.toast.undo, fn: () => void undo(id) } : undefined)
+        return
+      }
       const result = await api.wf.applyProposal(proposal.proposal_id, {
         atomicity: proposal.before.length > 1 ? 'per_shot' : 'all',
       })
@@ -238,6 +257,7 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
 
   async function regenerate() {
     const { run_id: runId, step_id: stepId, target } = proposal
+    if (proposal.kind === 'composer') { onRegenerateComposer?.(); return }
     if (!runId || !stepId) return
     setBusy('other')
     try {

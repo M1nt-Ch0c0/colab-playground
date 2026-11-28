@@ -19,6 +19,7 @@ from ..generation.catalog import (
 from ..generation.parameters import normalize_loras
 from ..generation.video_reference import VIDEO_TASKS
 from ..logs import redact_secrets
+from . import creative_service as creative
 from .definitions import STEP_CATALOG, STEP_ID_RE, STEPS_MAX, VAR_RE, normalize_workflow_def, step_position, workflow_variables
 from .harness_errors import HarnessError
 from .shot_service import RewriteInput, ShotEdit, apply_shot_edits, read_shots, rewrite_prompt, undo_change
@@ -103,11 +104,42 @@ TOOLS = {
     "studio_find_assets": ("按关键词、媒体类型或收藏筛选作品库。", obj({
         "query": TEXT, "kind": enum("image", "video"), "starred": BOOL, "offset": integer(0, 10000), "limit": integer(1, 24)})),
     "studio_inspect_asset": ("读取单件作品的尺寸、时长、来源和生成参数。", obj({"round_id": TEXT}, ["round_id"])),
+    "studio_edit_media": ("裁剪图片、从视频取帧或保存一段视频。图片裁框用原图像素，视频用秒。", obj({
+        "op": enum("crop", "extract_frame", "clip_video"), "round_id": TEXT, "x": integer(0, 20000), "y": integer(0, 20000),
+        "width": integer(1, 20000), "height": integer(1, 20000), "position": enum("first", "time", "last"),
+        **dict.fromkeys(("time_s", "start_s", "end_s"), {"type": "number", "minimum": 0}), "mute": BOOL,
+    }, ["op", "round_id"])),
+    "studio_prepare_mask": ("为图片保存归一化笔迹，或打开画笔选区。", obj({
+        "source_id": TEXT, "strokes": array(obj({
+            "size": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "points": array(array({"type": "number", "minimum": 0, "maximum": 1}, 2, minimum=2), 12000, minimum=1),
+        }, ["size", "points"]), 256, minimum=1),
+    }, ["source_id"])),
+    "studio_references": ("读取或调整首帧、尾帧、视频和有序参考图。append 在末尾添加，reference_id 可原位替换。", obj({
+        "op": enum("read", "use_round", "remove", "clear"), "slot": enum("first", "last", "video"),
+        "round_id": TEXT, "reference_id": TEXT, "append": BOOL,
+    }, ["op"])),
+    "studio_library_actions": ("收藏、移入回收站、查看回收站或恢复单件作品。", obj({
+        "op": enum("star", "trash", "list_trash", "restore"), "round_id": TEXT, "starred": BOOL,
+        "offset": integer(0, 10000), "limit": integer(1, 24),
+    }, ["op"])),
+    "studio_presets": ("列出、保存、删除创作参数预设，或解析 ComfyUI 模型链接。", obj({
+        "op": enum("list", "save", "delete", "parse_comfy_link"), "kind": enum("studio", "comfy"),
+        "preset_id": TEXT, "url": TEXT, "preset": {"type": "object", "description": "名称和创作参数（name、mode、model、comfy、width、height、steps、cfg 等）。"},
+    }, ["op"])),
+    "studio_generation": ("调整创作台、预检参数、或冻结素材并准备待确认的图片或视频。submit_image 和 submit_video 必须提供 idempotency_key。", obj({
+        "op": enum("edit_composer", "prepare", "submit_image", "submit_video"), "idempotency_key": TEXT,
+        "spec": {"type": "object", "description": "创作参数：prompt、mode、model、engine、comfy、loras、width、height、steps、cfg、seed、count、workflow、video_task、num_frames、offload_mode、reference_round_ids、last_frame_round_id、video_round_id、mask_id、has_image、has_last_image、chain。"},
+    }, ["op"])),
+    "studio_jobs": ("查看任务或操作状态，按任务 ID 停止，或打开失败操作供用户重试。", obj({
+        "op": enum("list", "read", "cancel", "retry"), "job_id": TEXT, "operation_id": TEXT,
+    }, ["op"])),
 }
 TOOL_LABELS = dict(zip(TOOLS, [
     "查看工作台", "查看模型参数", "浏览模板", "整理模板", "查看运行记录", "新建草稿",
     "读取工作流", "查看节点", "修改工作流", "检查工作流", "整理素材",
     "读取分镜", "改写提示词", "应用修改", "撤销修改", "准备运行", "查看进度", "查找作品", "查看作品信息",
+    "编辑素材", "准备选区", "调整参考图", "整理作品", "管理预设", "准备生成", "查看任务",
 ], strict=True))
 REF_TYPES = {"asset_input", "web_asset_fetch", "image_gen"}
 REF_LISTS = ("ref_sources", "extra_ref_sources")
@@ -361,6 +393,9 @@ class EditorTools:
         self.run_request = None
         self.calls: list[str] = []
         self.proposal_ids: list[str] = []
+        self.operation_ids: list[str] = []
+        self.composer_patch = None
+        self.mask_editor = None
         self.run_updates: list[dict] = []
         self.refresh_run = False
         self.refresh_library = False
@@ -603,6 +638,24 @@ class EditorTools:
             rows = [{"id": item["id"], "kind": item["kind"], "starred": bool(item.get("starred")),
                      "prompt": str(item.get("prompt") or "")[:180]} for item in page["rounds"]]
             return rows
+        if name == "studio_edit_media":
+            result = creative.edit_media(runtime, creative.MediaEdit.model_validate(args))
+            self.refresh_library = True
+            return result
+        if name == "studio_prepare_mask":
+            return creative.prepare_mask(self, args)
+        if name == "studio_references":
+            return creative.references(runtime, creative.ReferencesAction.model_validate(args))
+        if name == "studio_library_actions":
+            result = creative.library_action(runtime.store, creative.LibraryAction.model_validate(args))
+            self.refresh_library |= args["op"] != "list_trash"
+            return result
+        if name == "studio_presets":
+            return creative.presets(runtime, args)
+        if name == "studio_generation":
+            return creative.generation(self, args)
+        if name == "studio_jobs":
+            return creative.jobs(self, creative.JobAction.model_validate(args))
         rid = args["round_id"]
         if not Store.valid_id(rid):
             raise ValueError("作品编号无效")

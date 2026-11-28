@@ -20,7 +20,9 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import create_app
+from draw_studio.api import workflows as workflow_api
 from draw_studio.generation.parameters import normalize_job
+from draw_studio.workflows.harness_errors import HarnessError
 from http_fixture import gateway, mp4, png, serving
 
 SHORTCUT = Keys.COMMAND if sys.platform == "darwin" else Keys.CONTROL
@@ -720,18 +722,18 @@ class BrowserTest(unittest.TestCase):
                 row = open_step("审核产出")
                 fields = row.find_elements(By.CSS_SELECTOR, f'textarea[aria-label="{label}"]')
                 began, release = threading.Event(), threading.Event()
-                save = engine.update_step_output
+                save = workflow_api.apply_shot_edits
 
-                def delayed_write(*args):
+                def delayed_write(*args, **kwargs):
                     if not began.is_set():
                         began.set()
                         if not release.wait(12):
                             raise RuntimeError("test save timed out")
                         if is_retry:
-                            raise ValueError("模拟产出保存失败")
-                    return save(*args)
+                            raise HarnessError("internal_error")
+                    return save(*args, **kwargs)
 
-                with patch.object(engine, "update_step_output", side_effect=delayed_write), \
+                with patch.object(workflow_api, "apply_shot_edits", side_effect=delayed_write), \
                      patch.object(engine, "start_run", wraps=engine.start_run) as start, \
                      patch.object(rt.studio, "colab", SimpleNamespace(has_credentials=lambda: True)), \
                      patch.object(rt.studio, "enqueue_with_refs", return_value=[{"id": "job"}]) as enqueue, \
@@ -750,7 +752,7 @@ class BrowserTest(unittest.TestCase):
                     finally:
                         release.set()
                     if is_retry:
-                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "模拟产出保存失败"))
+                        wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".toasts"), "出了点问题，再试一次"))
                         wait.until(lambda d: not d.find_element(By.CSS_SELECTOR, ".run").get_property("inert"))
                         self.assertFalse(start.called)
                         self.assertFalse(enqueue.called)

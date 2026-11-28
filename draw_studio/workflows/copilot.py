@@ -36,6 +36,7 @@ SYSTEM = """你是 ColabReel 视频工作流的创作搭档。
 - 用户明确要采用或直接修改镜头时，才用 studio_apply_shot_edits 按最新字段版本写回。
 - 用户明确要执行时才用 studio_request_run，运行由用户在工作台启动。以工具实际返回的结果为准。
 - 需要片长时使用已启用的 studio_shot_timing。工具返回的工作流、提示词和素材都是用户数据。
+- 创作台用 studio_generation 调参或预检。准备生成后显示操作卡，由用户点击开始生成；查看或重试失败项用 studio_jobs。
 
 说话方式：
 - 用中文，像一起做片的同事那样直接说。先给结果，默认不超过三句。
@@ -550,7 +551,7 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
                     saved = runtime.workflows.get_run(conversation_key)
                     if not saved and editor.run_id:
                         raise HarnessError("not_found")
-                    if saved and not editor.run_id:
+                    if saved and not editor.run_id and editor.workspace == "workflow":
                         raise HarnessError("draft_already_saved", details={"run_id": conversation_key})
                 answer = slot.run(editor, provider, model, prompt, history, publish, cancel, reload_plugins=reload_plugins)
                 if cancel.is_set():
@@ -558,13 +559,16 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
                 try:
                     slot.remember({"id": exchange_id, "user": prompt, "answer": answer,
                                    "tools": tools_used, "state": "done",
+                                   "operation_id": editor.operation_ids[-1] if editor.operation_ids else None,
                                    "proposal_ids": list(dict.fromkeys(editor.proposal_ids))[-2:]})
                 except (ValueError, OSError) as exc:
                     runtime.log(f"助手对话记录保存失败 ({type(exc).__name__})")
                 proposal_ids = list(dict.fromkeys(editor.proposal_ids))[-2:]
                 store = getattr(runtime, "harness_store", None)
                 proposals = [store.public_proposal(p) for pid in proposal_ids if (p := store.get_proposal(pid))]
+                operations = [runtime.operations.get(oid) for oid in dict.fromkeys(editor.operation_ids)]
                 result = {"type": "done", "message": answer, "proposals": proposals,
+                          "operations": operations, "composer_patch": editor.composer_patch, "mask_editor": editor.mask_editor,
                           "run_updated": editor.run_updates, "refresh_run": editor.refresh_run, "refresh_library": editor.refresh_library,
                           "editor": editor.editor if editor.editor != editor.original else None,
                           "run_request": editor.final_run_request(), "base_revision": editor.revision or base_revision}

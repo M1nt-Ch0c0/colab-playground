@@ -259,6 +259,7 @@
   .graph-heading { gap: 6px; }
   .graph-footer { min-height: 36px; height: auto; gap: 4px; }
   .agent-launch { right: max(12px, env(safe-area-inset-right, 0px)); height: 44px; }
+  .agent-launch[data-composer] { bottom: calc(max(12px, env(safe-area-inset-bottom, 0px)) + 64px); }
   .workflow-agent[data-dock='sheet'] {
     left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom, 0px));
     width: auto; height: min(62dvh, 520px);
@@ -270,3 +271,28 @@
   .var-row-content { min-height: 36px; }
   .agent-builtins summary { min-height: 36px; }
 }
+
+.op-card {
+  width: 100%; min-width: 0; padding: 10px 12px; overflow: hidden; background: var(--glass-solid); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.op-h, .op-progress, .op-item, .op-f { display: flex; align-items: center; min-width: 0; gap: 6px; }
+.op-h { position: relative; }
+.op-h > svg { flex: none; color: var(--fg-soft); }
+.op-h b, .op-meta, .op-item-error { overflow: hidden; text-overflow: ellipsis; text-wrap: nowrap; }
+.op-h b { font-size: 12.5px; font-weight: 620; }
+.op-h .tag { flex: none; }
+.op-h .spinner, .op-item .spinner { width: 12px; height: 12px; }
+.op-meta { margin: 6px 0 0; color: var(--fg-soft); font-size: 12.5px; line-height: 20px; }
+.op-card .proposal-refs, .op-progress, .op-f { margin-top: 8px; }
+.op-progress { color: var(--fg-soft); font-size: 12.5px; }
+.op-progress .bar { flex: 1; min-width: 0; }
+.op-progress .bar:not(.indet) > i { transition: width .5s var(--ease); }
+.op-items { list-style: none; padding: 0; margin: 0; }
+.op-items li { overflow: hidden; }
+.op-item { padding-top: 4px; font-size: 13px; line-height: 20px; }
+.op-item-error, .op-more { color: var(--fg-soft); }
+.op-more { padding-top: 4px; font-size: 12.5px; }
+.op-card .warnbox { margin-top: 8px; padding: 8px; flex-wrap: wrap; align-items: center; color: var(--fg); border-radius: var(--r-sm); }
+.op-card .warnbox svg { color: var(--warn); flex: none; }
+.op-f { justify-content: flex-end; flex-wrap: wrap; }

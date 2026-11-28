@@ -104,6 +104,7 @@ class ProposalTarget(BaseModel):
     instruction: str
     reference_round_ids: list[RoundId]
     conflicts: list[ShotConflict] = Field(default_factory=list)
+    workspace: Literal["image", "video"] | None = None
 
 
 class Proposal(BaseModel):
@@ -128,6 +129,16 @@ class Proposal(BaseModel):
 class ProposalAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
     atomicity: Atomicity = "all"
+
+
+class ComposerPrompt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace: Literal["image", "video"]
+    prompt: str = Field(max_length=LIMITS["prompt_max"])
+
+
+class ComposerWriteResult(ComposerPrompt):
+    proposal: Proposal
 
 
 class ShotWriteResult(BaseModel):
@@ -331,6 +342,7 @@ def rewrite_prompt(runtime, request: RewriteInput, *, scope, run_id=None, step_i
     proposal = {"proposal_id": "pr_" + secrets.token_hex(12), "scope_key": scope,
                 "kind": "composer" if composer is not None else "shots", "run_id": run_id, "step_id": step_id,
                 "target": {"shot_ids": [item["shot_id"] for item in reads], "field": field, "instruction": instruction,
+                           **({"workspace": composer["mode"]} if composer is not None else {}),
                            "reference_round_ids": list(explicit), "conflicts": []},
                 "readset": reads, "writeset": writes, "before": before, "after": after,
                 "references_used": list(refs.values()), "model": model, "status": "pending", "undo_id": None,
@@ -456,6 +468,46 @@ def reject_proposal(runtime, proposal_id):
             raise _conflict(status="expired" if proposal["status"] == "pending" else proposal["status"])
         store.proposal_status(db, proposal, "rejected")
         return store.public_proposal(proposal)
+
+
+def apply_composer(runtime, proposal_id, current: ComposerPrompt):
+    store = runtime.harness_store
+    with store.transaction() as db:
+        proposal = store.read_proposal(db, proposal_id)
+        if not proposal or proposal["kind"] != "composer":
+            raise HarnessError("not_found")
+        before, after = proposal["before"][0]["text"], proposal["after"][0]["text"]
+        workspace = proposal["target"].get("workspace", current.workspace)
+        if workspace != current.workspace:
+            raise _conflict()
+        if proposal["status"] == "applied" and current.prompt in (before, after):
+            return {"workspace": workspace, "prompt": after, "proposal": store.public_proposal(proposal)}
+        if proposal["status"] != "pending" or proposal["expires_at"] <= time.time():
+            raise _conflict(status="expired" if proposal["status"] == "pending" else proposal["status"])
+        if before != current.prompt:
+            raise _conflict()
+        undo_id = "un_" + secrets.token_hex(12)
+        db.execute("""INSERT INTO undo_records (undo_id,scope_key,run_id,step_id,inverse_json,expected_versions_json,created_at)
+                      VALUES (?, ?, '', '', ?, ?, ?)""", (undo_id, proposal["scope_key"],
+                   dump({"workspace": workspace, "prompt": before}), dump({"workspace": workspace, "prompt": after}), int(time.time())))
+        store.proposal_status(db, proposal, "applied", undo_id=undo_id)
+        return {"workspace": workspace, "prompt": after, "proposal": store.public_proposal(proposal)}
+
+
+def undo_composer(runtime, undo_id, current: ComposerPrompt):
+    store = runtime.harness_store
+    with store.transaction() as db:
+        record = db.execute("SELECT * FROM undo_records WHERE undo_id=? AND run_id=''", (undo_id,)).fetchone()
+        proposal = store.decode_proposal(db.execute("SELECT * FROM proposals WHERE undo_id=?", (undo_id,)).fetchone())
+        if not record or not proposal:
+            raise HarnessError("not_found")
+        if record["consumed"] or record["created_at"] + UNDO_TTL <= time.time():
+            raise _conflict(status="expired")
+        if json.loads(record["expected_versions_json"]) != current.model_dump():
+            raise _conflict()
+        db.execute("UPDATE undo_records SET consumed=1 WHERE undo_id=?", (undo_id,))
+        store.proposal_status(db, proposal, "undone", undo_id=undo_id)
+        return {**json.loads(record["inverse_json"]), "proposal": store.public_proposal(proposal)}
 
 
 def undo_change(runtime, undo_id, *, scope=None):

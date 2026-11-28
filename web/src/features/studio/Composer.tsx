@@ -4,10 +4,13 @@ import { ChevronDown, Dices, Film, ImagePlus, Link2, Lock, Minus, Plus, RefreshC
 import { api, media } from '../../api/client'
 import type { ComfyPreset, LlmKind, Lora, StudioPreset } from '../../api/types'
 import { cx, mp, parseHfLink, ratio, rid } from '../../lib/util'
-import { comfyDraftFields, comfyPayload, useStore } from '../../store/store'
+import { assistantComposerScope, comfyDraftFields, comfyPayload, useStore } from '../../store/store'
 import { Field, Seg, Slider, Toggle } from '../../ui/Overlay'
 import { NamePrompt } from '../../ui/NamePrompt'
 import type { Draft } from '../../store/store'
+import { WorkflowAgent } from '../workflow/WorkflowAgent'
+import { AGENT_COPY as C } from '../workflow/agentCopy'
+import '../workflow/workbench.css'
 
 const IMAGE_SIZES: [string, number, number][] = [['1:1', 1024, 1024], ['2:3', 768, 1152], ['3:2', 1152, 768], ['3:4', 896, 1152], ['4:3', 1152, 896], ['9:16', 768, 1344], ['16:9', 1344, 768], ['2:3 高清', 1024, 1536], ['3:2 高清', 1536, 1024]]
 const VIDEO_SIZES: [string, number, number][] = [['16:9 横', 1280, 768], ['9:16 竖', 768, 1280], ['1:1', 768, 768], ['预览', 512, 768]]
@@ -15,6 +18,24 @@ const FRAMES: [number, string][] = [[124, '5 秒'], [175, '7 秒'], [243, '10 �
 const REF_TASKS: [Draft['videoTask'], string][] = [
   ['images', '参考图'], ['edit', '翻修原片'], ['continue', '续拍下一段'], ['motion', '白模 + 人设'],
 ]
+
+function ComposerAssistant({ workspace }: { workspace: 'image' | 'video' }) {
+  const [open, setOpen] = useState(false)
+  const [scope] = useState(assistantComposerScope)
+  const locked = useStore(s => !!s.sheet)
+  const label = C.board.nodeTypes[workspace === 'image' ? 'image_gen' : 'video_gen']
+  return <WorkflowAgent binding={{
+    editor: { topic: '', workflow: { id: '', name: label, description: '', steps: [] } },
+    workspace, composerScope: scope, locked,
+    apply: async next => next,
+    openRun: async id => {
+      const { run } = await api.wf.run(id)
+      useStore.getState().setWfRun(run)
+      useStore.getState().setWorkspace('workflow')
+    },
+    run: () => {},
+  }} selected="" clearSelection={() => {}} open={open} setOpen={setOpen} />
+}
 
 export function Composer() {
   const ws = useStore(s => s.workspace)
@@ -190,6 +211,7 @@ export function Composer() {
         <button className="btn primary go" onClick={gen} disabled={grabbing}><Sparkles size={16} />{busy ? '加入队列' : '开始生成'}</button>
       </div>
       {savingPreset && <NamePrompt title="保存为预设" placeholder="例如：人像 2:3 精细" onClose={() => setSavingPreset(false)} onSubmit={savePreset} />}
+      <ComposerAssistant workspace={video ? 'video' : 'image'} />
     </aside>
   )
 }

@@ -3,20 +3,23 @@ import { animate, AnimatePresence, motion, useMotionValue, useReducedMotion } fr
 import { useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { api, ApiError } from '../../api/client'
-import type { AgentPlugins as Inventory, AgentRunRequest, AgentTool, EditorSnapshot, Proposal, RunShotUpdate, RunStatus, SavedAgentExchange } from '../../api/types'
+import type { AgentPlugins as Inventory, AgentRunRequest, AgentTool, EditorSnapshot, Operation, Proposal, RunShotUpdate, RunStatus, SavedAgentExchange } from '../../api/types'
 import { clamp, requestId } from '../../lib/util'
-import { useStore } from '../../store/store'
+import { applyAssistantComposerPatch, assistantComposerContext, useStore } from '../../store/store'
 import { fade, instant, quick, spring, springSmall } from '../../ui/motion'
 import { Seg } from '../../ui/Overlay'
 import { AgentPlugins } from './AgentPlugins'
 import { AGENT_COPY as C, ERROR_ACTION_LABELS, errorCopy, toolLabel, type ErrorAction, type HarnessErrorCode } from './agentCopy'
 import { ConflictBar } from './ConflictBar'
 import { WorkflowProposal } from './ProposalCard'
+import { OperationCard, operationActive } from './OperationCard'
 
 export interface AgentBinding {
   editor: EditorSnapshot
   runId?: string
   draftId?: string
+  composerScope?: string
+  workspace?: 'image' | 'video'
   status?: RunStatus
   locked?: boolean
   beforeSend?: () => Promise<boolean>
@@ -63,7 +66,7 @@ function mergeHistory(saved: SavedAgentExchange[], current: Exchange[], complete
     if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) return { ...own, proposals }
     return {
       ...row, tools: row.tools.filter(tool => typeof tool.name === 'string'),
-      applied: own?.applied, action: own?.action, version: own?.version, proposals,
+      applied: own?.applied, action: own?.action, version: own?.version, proposals, operation_id: row.operation_id ?? own?.operation_id,
     }
   })
   return [...ordered, ...[...local.values()].filter(row => row.state !== 'done' || !completedBeforeFetch.has(row.id))]
@@ -116,6 +119,9 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
   const [exchanges, setExchanges] = useState<Exchange[]>([])
   const exchangeRef = useRef(exchanges)
   exchangeRef.current = exchanges
+  const [operations, setOperations] = useState<Operation[]>([])
+  const operationRef = useRef<Operation[]>([])
+  const operationVersion = useRef(0)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -145,12 +151,51 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
   shown.current = { open, tab }
   const request = useRef<{ controller: AbortController; id: string; started: boolean } | null>(null)
   const reloadPlugins = useRef(false)
-  const key = binding.runId || (binding.draftId ? 'wr_' + binding.draftId : '')
+  const key = binding.runId || binding.composerScope || (binding.draftId ? 'wr_' + binding.draftId : '')
   const step = binding.editor.workflow.steps.find(item => item.id === selected)
   const titleId = useId()
   const settings = useStore(s => s.openSheet)
   const toast = useStore(s => s.toast)
   const locked = !!binding.locked
+
+  function rememberOperations(incoming: Operation[], polled = false) {
+    const previous = operationRef.current
+    if (polled && !shown.current.open) {
+      for (const op of incoming) {
+        const before = previous.find(item => item.operation_id === op.operation_id)
+        if (!before || !operationActive(before.state)) continue
+        if (op.state === 'done') toast(C.toast.operationDone(op.done, op.kind), 'ok')
+        else if (op.state === 'partial' || op.state === 'failed') {
+          const failed = op.items.filter(item => item.state === 'failed').length
+          if (failed) toast(C.toast.operationFailed(failed), 'err')
+        }
+      }
+    }
+    const next = polled ? incoming : [
+      ...incoming, ...previous.filter(item => !incoming.some(op => op.operation_id === item.operation_id)),
+    ]
+    if (JSON.stringify(next) === JSON.stringify(previous)) return
+    operationVersion.current++
+    operationRef.current = next
+    setOperations(next)
+  }
+
+  const watching = operations.some(op => operationActive(op.state))
+  useEffect(() => {
+    if (!key) return
+    let active = true
+    let timer = 0
+    async function poll() {
+      const version = operationVersion.current
+      try {
+        const result = await api.wf.operations(key)
+        if (active && version === operationVersion.current) rememberOperations(result.operations, true)
+      } catch { /* The next poll will reload the ledger. */ }
+      if (active && (open || operationRef.current.some(op => operationActive(op.state)))) timer = window.setTimeout(poll, 1200)
+    }
+    void poll()
+    return () => { active = false; clearTimeout(timer) }
+  }, [key, open, watching]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open || !key) return
@@ -211,7 +256,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     if (open && tab === 'chat' && element && nearBottom.current) {
       element.scrollTo({ top: element.scrollHeight, behavior: reduce ? 'auto' : 'smooth' })
     }
-  }, [exchanges, open, tab, reduce])
+  }, [exchanges, operations, open, tab, reduce])
 
   function openPanel() {
     launchRect.current = launcher.current?.getBoundingClientRect() ?? null
@@ -356,12 +401,17 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       const done = await api.wf.agentTurn({
         ...base.editor, selected_step: selected, selected_shot: selectedShot?.id,
         run_id: base.runId, draft_id: base.draftId, turn_id: id, message,
+        workspace: base.workspace, composer_scope: base.composerScope, composer: base.workspace ? assistantComposerContext() : undefined,
         reload_plugins: restartWithPlugins || reloadPlugins.current,
       }, controller.signal, event => {
         if (event.type === 'started') active.started = true
         if (event.type === 'session') reloadPlugins.current = false
         if (event.type === 'tool') {
-          const { type: _, ...tool } = event
+          if (event.operations?.length) {
+            rememberOperations(event.operations)
+            amend(id, { operation_id: event.operations.at(-1)?.operation_id })
+          }
+          const { type: _, operations: _operations, composer_patch: _patch, ...tool } = event
           setExchanges(rows => rows.map(row => {
             if (row.id !== id) return row
             const index = tool.call_id ? row.tools.findIndex(item => item.call_id === tool.call_id) : -1
@@ -376,7 +426,21 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       const updates = done.run_updated ?? []
       for (const update of updates) latest.current.onShotUpdate?.(update)
       amend(id, { answer: done.message, proposals })
-      if (done.refresh_library) void useStore.getState().loadWf()
+      if (done.operations?.length) {
+        rememberOperations(done.operations)
+        amend(id, { operation_id: done.operations.at(-1)?.operation_id })
+      }
+      if (done.refresh_library) {
+        void useStore.getState().loadWf()
+        void useStore.getState().loadRounds()
+      }
+      const composerUpdated = done.composer_patch ? await applyAssistantComposerPatch(done.composer_patch) : false
+      if (done.composer_patch && !composerUpdated) toast(C.conflict.changed, 'err')
+      if (done.mask_editor && !useStore.getState().sheet) {
+        const store = useStore.getState()
+        await store.loadRounds()
+        if (!useStore.getState().sheet) store.openSheet('mask', { id: done.mask_editor.source_id, maskId: done.mask_editor.mask_id })
+      }
       const refresh = async () => { if (done.refresh_run) await latest.current.refresh?.().catch(() => {}) }
       let next = base.editor
       if (done.editor || done.run_request) {
@@ -396,7 +460,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
         .flatMap(update => update.changes.map(change => change.n)))].sort((a, b) => a - b)
       const applied = previous && stepChanged
         ? chat.applied.sceneCount(previous.config.scene_count, stepChanged.config.scene_count)
-        : done.editor ? chat.applied.workflow : numbers.length ? chat.applied.shots(numbers) : undefined
+        : done.editor ? chat.applied.workflow : numbers.length ? chat.applied.shots(numbers) : composerUpdated ? C.toast.applied : undefined
       amend(id, { state: 'done', applied, action: done.run_request, version: version(next) })
     } catch (failure) {
       const error = failure instanceof ApiError ? failure : undefined
@@ -442,9 +506,11 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     : step.type === 'h3_prompt' ? [chat.suggestions.polish, chat.suggestions.step] : [chat.suggestions.step]
   const choices = inventory?.plugin.enabled ? [...suggestions.slice(0, 2), chat.suggestions.timing] : suggestions
   const activeVersion = version(binding.editor)
-  const panelTransition = reduce ? instant : spring
+  const operationOwners = new Map(exchanges.flatMap(item => item.operation_id ? [[item.operation_id, item.id] as const] : []))
+  const panelTransition = reduce ? instant : { ...spring, opacity: fade, scale: springSmall }
   return createPortal(<AnimatePresence initial={false}>
     {!open ? <motion.button key="launch" ref={launcher} className="agent-launch glass" aria-haspopup="dialog" aria-expanded={false}
+      data-composer={binding.workspace}
       aria-label={busy ? chat.launcherBusy : unread ? chat.launcherUnread : undefined}
       initial={reduce ? false : { opacity: 0, scale: .9 }} animate={{ opacity: 1, scale: 1 }}
       exit={reduce ? { opacity: 0 } : { opacity: 0, scale: .9, transition: quick }}
@@ -489,7 +555,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                 nearBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 48
                 setJump(!nearBottom.current)
               }}>
-              {!exchanges.length && <div className="agent-empty">
+              {!exchanges.length && !operations.length && <div className="agent-empty">
                 <h3>{step ? chat.empty.step : chat.empty.workflow}</h3>
                 {choices.map(item => <button key={item.label} disabled={locked} onClick={() => fill(item.prompt)}>
                   {item.label}<ChevronRight size={14} />
@@ -500,6 +566,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                 const info = item.error && errorCopy(item.error.code)
                 const actions: ErrorAction[] = info?.action && info.action !== 'edit' ? [info.action, 'edit'] : ['edit']
                 const action = item.action
+                const operation = operationOwners.get(item.operation_id ?? '') === item.id
+                  ? operations.find(op => op.operation_id === item.operation_id) : undefined
                 const target = action?.step_id && binding.editor.workflow.steps.find(node => node.id === action.step_id && node.enabled)
                 return <div key={item.id} className="agent-exchange">
                   <motion.p className="agent-user" data-user-content style={{ originX: 1, originY: 1, whiteSpace: 'pre-wrap' }}
@@ -518,7 +586,10 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                     beforeWrite={() => latest.current.beforeSend?.() ?? Promise.resolve(true)}
                     onUpdate={(update, output) => latest.current.onShotUpdate?.(update, output)}
                     onChange={next => updateProposal(item.id, proposal.proposal_id, next)}
+                    onRegenerateComposer={() => void send(proposal.target.instruction)}
                     onDismiss={() => updateProposal(item.id, proposal.proposal_id)} />)}
+                  {operation && <OperationCard key={operation.operation_id} operation={operation}
+                    update={next => rememberOperations([next])} animateEntry={!!item.fresh} disabled={locked} />}
                   <AnimatePresence initial={false}>
                     {item.state === 'stale' && <ConflictBar key="stale" conflict={{ kind: 'stale' }} disabled={locked || busy}
                       onRegenerate={() => { amend(item.id, { state: 'done' }); void send(item.user) }}
@@ -546,6 +617,10 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                     </button>}
                 </div>
               })}
+              {operations.filter(op => !operationOwners.has(op.operation_id)).slice().reverse().map(op =>
+                <div className="agent-exchange" key={op.operation_id}>
+                  <OperationCard operation={op} update={next => rememberOperations([next])} animateEntry={false} disabled={locked} />
+                </div>)}
             </div>
             <AnimatePresence>
               {jump && <motion.button className="chip agent-jump" initial={reduce ? false : { opacity: 0, y: 6 }}

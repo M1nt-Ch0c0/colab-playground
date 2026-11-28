@@ -215,12 +215,14 @@ class HarnessToolTests(unittest.TestCase):
         self.assertEqual(HarnessError("model_error").status, 502)
         self.assertEqual(HarnessError("turn_timeout").status, 504)
 
-    def test_m2_registry_is_static_and_creative_only(self):
+    def test_registry_is_static_and_creative_only(self):
         expected = (
             "studio_read_context", "studio_get_catalog", "studio_list_templates", "studio_manage_template", "studio_list_runs",
             "studio_create_draft", "studio_read_workflow", "studio_list_nodes", "studio_edit_workflow", "studio_validate_workflow",
             "studio_manage_run_assets", "studio_read_shots", "studio_rewrite_prompt", "studio_apply_shot_edits", "studio_undo_change",
             "studio_request_run", "studio_run_status", "studio_find_assets", "studio_inspect_asset",
+            "studio_edit_media", "studio_prepare_mask", "studio_references", "studio_library_actions",
+            "studio_presets", "studio_generation", "studio_jobs",
         )
         self.assertEqual(tuple(TOOLS), expected)
         with tempfile.TemporaryDirectory() as tmp:
@@ -349,3 +351,89 @@ class HarnessToolTests(unittest.TestCase):
             self.assert_code("invalid_argument", tools.call, "studio_rewrite_prompt", {"target": "composer", "instruction": "x", "field": "video_prompt"})
             edit = {"shot_id": "sh_abcdef123456", "field": "keyframe_prompt", "generation": True, "expected_version": 1, "value": "x"}
             self.assert_code("invalid_argument", tools.call, "studio_apply_shot_edits", {"run_id": "wr_other", "step_id": "script", "edits": [edit]})
+
+    def test_media_tools_and_library_scope(self):
+        from tests.http_fixture import mp4
+
+        with tempfile.TemporaryDirectory() as tmp, local_runtime(Path(tmp)) as runtime:
+            tools = EditorTools(runtime, {"topic": "", "workflow": {"name": "Cut", "steps": []}})
+            picture = Path(tmp) / "source.png"
+            picture.write_bytes(png((64, 48)))
+            rid = runtime.store.save(picture, "image", {})
+            clip = runtime.store.save(mp4(Path(tmp) / "source.mp4", 3, audio=True), "video", {})
+            crop = {"op": "crop", "round_id": rid, "x": 4, "y": 6, "width": 20, "height": 16}
+            result = tools.call("studio_edit_media", crop)["round_id"]
+            asset = runtime.store.get(result)
+            self.assertEqual((asset["width"], asset["height"], asset["source_rounds"]), (20, 16, [rid]))
+            self.assert_code("media_invalid", tools.call, "studio_edit_media", {**crop, "width": 1000})
+            self.assert_code("invalid_argument", tools.call, "studio_edit_media", {**crop, "x": True})
+            self.assert_code("media_invalid", tools.call, "studio_edit_media", {**crop, "round_id": clip})
+
+            framed = tools.call("studio_edit_media", {"op": "extract_frame", "round_id": clip, "time_s": 1})["round_id"]
+            self.assertEqual(runtime.store.get(framed)["source_rounds"], [clip])
+            cut = tools.call("studio_edit_media", {"op": "clip_video", "round_id": clip, "start_s": .5, "end_s": 2.5, "mute": True})
+            self.assertEqual(runtime.store.get(cut["round_id"])["media_duration_s"], 2)
+            self.assert_code("media_invalid", tools.call, "studio_edit_media", {"op": "extract_frame", "round_id": clip, "time_s": 9})
+
+            name = "studio_library_actions"
+            self.assertTrue(tools.call(name, {"op": "star", "round_id": rid})["starred"])
+            self.assertEqual(tools.call(name, {"op": "trash", "round_id": rid})["state"], "trashed")
+            self.assertEqual(tools.call(name, {"op": "list_trash"})["rounds"][0]["id"], rid)
+            self.assert_code("invalid_argument", tools.call, name, {"op": "purge", "round_id": rid})
+            self.assert_code("invalid_argument", tools.call, name, {"op": "trash", "round_id": rid, "permanent": True})
+            self.assertEqual(tools.call(name, {"op": "restore", "round_id": rid})["state"], "restored")
+            self.assertTrue(runtime.store.get(rid)["starred"])
+
+    def test_reference_order_masks_presets_and_composer_patch(self):
+        with tempfile.TemporaryDirectory() as tmp, local_runtime(Path(tmp)) as runtime:
+            source = Path(tmp) / "source.png"
+            source.write_bytes(png((24, 16)))
+            first, second, third = [runtime.store.save(source, "image", {}) for _ in range(3)]
+            tools = EditorTools(runtime, {"topic": "", "workflow": {"name": "Cut", "steps": []}},
+                                workspace="image", composer={"prompt": "Fog", "revision": "a" * 32})
+            ref = "studio_references"
+            def bind(rid, **fields):
+                return tools.call(ref, {"op": "use_round", "slot": "first", "round_id": rid, **fields})
+            bind(first)
+            after = bind(second, append=True)
+            a, b = [item["id"] for item in after["items"]]
+            replaced = bind(third, reference_id=a)
+            self.assertEqual([(item["id"], item["source"]) for item in replaced["items"]], [(a, "round:" + third), (b, "round:" + second)])
+            removed = tools.call(ref, {"op": "remove", "slot": "first", "reference_id": a})
+            self.assertEqual(removed["items"][0]["id"], b)
+            tools.call(ref, {"op": "use_round", "slot": "last", "round_id": first})
+            self.assertTrue(tools.call(ref, {"op": "read"})["last"]["set"])
+            self.assertFalse(tools.call(ref, {"op": "clear", "slot": "last"})["last"]["set"])
+
+            hint = tools.call("studio_prepare_mask", {"source_id": third})["mask_editor"]
+            self.assertEqual(hint, {"source_id": third, "mask_id": None})
+            self.assert_code("invalid_argument", tools.call, "studio_prepare_mask",
+                             {"source_id": third, "strokes": [{"size": True, "points": [[0, .5]]}]})
+            strokes = [{"size": .1, "points": [[.3, .4]]}]
+            mask = tools.call("studio_prepare_mask", {"source_id": third, "strokes": strokes})
+            self.assertEqual(tools.mask_editor["mask_id"], mask["mask_id"])
+            self.assertEqual(runtime.operations.get_mask(mask["mask_id"])["source_id"], third)
+
+            preset = "studio_presets"
+            parsed = tools.call(preset, {"op": "parse_comfy_link", "url": "org/repo :: weights/main.gguf"})
+            self.assertEqual(parsed["spec"]["basename"], "main.gguf")
+            sp = tools.call(preset, {"op": "save", "preset": {"name": "Preview", "width": 1024}})["preset"]
+            self.assertEqual(tools.call(preset, {"op": "list"})["custom"][0]["id"], sp["id"])
+            cp = tools.call(preset, {"op": "save", "kind": "comfy", "preset": {"name": "Comfy", "comfy": {
+                "diffusion": "test/weights:q.gguf"}}})["preset"]
+            self.assertEqual(tools.call(preset, {"op": "list", "kind": "comfy"})["custom"][0]["id"], cp["id"])
+            self.assertEqual(tools.call(preset, {"op": "delete", "kind": "comfy", "preset_id": cp["id"]})["deleted"], cp["id"])
+            self.assert_code("invalid_argument", tools.call, preset, {"op": "delete", "preset_id": "builtin:qwen"})
+            self.assert_code("invalid_argument", tools.call, preset, {"op": "save", "preset": {"name": "Infra", "idle_minutes": 5}})
+            patch_result = tools.call("studio_generation", {"op": "edit_composer", "spec": {"width": 1000, "mask_id": mask["mask_id"]}})
+            self.assertEqual(patch_result["composer_patch"]["changes"]["width"], 1024)
+            self.assertEqual(patch_result["composer_patch"]["base_revision"], "a" * 32)
+            prepared = tools.call("studio_generation", {"op": "prepare"})
+            self.assertEqual(prepared["references"], {"images": 1, "last": False, "video": False, "mask": True})
+            self.assert_code("invalid_argument", tools.call, "studio_generation", {"op": "edit_composer",
+                             "spec": {"workflow": "ref2va"}})
+            self.assert_code("invalid_argument", tools.call, "studio_generation", {"op": "submit_video", "idempotency_key": "z",
+                             "spec": {"model": "MiniMax-H3", "prompt": "Fog"}})
+            self.assert_code("invalid_argument", tools.call, "studio_generation", {"op": "submit_image", "idempotency_key": "z",
+                             "spec": {"poll_all_proxies": True}})
+            self.assertFalse(runtime.studio.snapshot()["queue"])

@@ -19,6 +19,7 @@ from .workflows.copilot import HarnessSessions
 from .workflows.engine import WorkflowEngine
 from .workflows.harness_errors import HarnessError
 from .workflows.harness_store import HarnessStore
+from .workflows.operation_service import Operations
 
 
 @dataclass
@@ -32,10 +33,13 @@ class Runtime:
     workflows: WorkflowEngine
     harness_sessions: HarnessSessions = field(default_factory=HarnessSessions, repr=False)
     harness_store: HarnessStore = field(init=False, repr=False)
+    operations: Operations = field(init=False, repr=False)
 
     def __post_init__(self):
         self.harness_store = HarnessStore(self.root)
         self.workflows.harness_store = self.harness_store
+        self.operations = Operations(self.harness_store, self.studio)
+        self.studio.on_job_finished = self.operations.record_terminal
 
     @classmethod
     def open(cls, root: Path) -> Runtime:
@@ -70,6 +74,8 @@ class Runtime:
             self.harness_sessions.shutdown()
         finally:
             try:
+                with self.studio._lock:
+                    self.studio.on_job_finished = None
                 self.workflows.detach_harness()
             finally:
                 self.studio.shutdown()

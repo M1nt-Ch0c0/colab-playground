@@ -74,6 +74,7 @@ export const modKey = isMac ? '⌘' : 'Ctrl'
 export const LS_KEYS = {
   theme: 'colabreel.theme',
   draft: 'colabreel.draft',
+  composerScope: 'colabreel.composerScope',
   phist: 'colabreel.phist',
   libopen: 'colabreel.libopen',
   grab: 'colabreel.grab',

@@ -6,6 +6,7 @@ import type {
   Round, RoundsStats, Status, StepCatalogItem, StudioPreset, WfDef, WfRun, WfStep, WorkflowActive,
   LlmKind, LlmProvider, LlmProviderBody, LlmState, AgentEvent, AgentPlugins, AgentTurnBody, SavedAgentExchange, AgentErrorCode, AgentPluginAction,
   AgentTelemetry, Proposal, ProposalAction, RewriteInput, Shot, ShotConflict, ShotEdit, ShotField, ShotWriteResult,
+  ComposerPatch, ComposerPrompt, EditMask, MaskRecord, Operation, OperationItem,
 } from '../api/types'
 import { AGENT_COPY as C, PLUGIN_COPY, STATIC_TOOLS, approxDuration, errorCopy, toolLabel, shotList } from '../features/workflow/agentCopy'
 
@@ -548,18 +549,115 @@ function body<T>(b: unknown): T { return (b || {}) as T }
 
 const timingId = 'studio-shot-timing'
 const agentInventory: AgentPlugins = {
-  builtin_tools: Object.fromEntries(STATIC_TOOLS.slice(0, STATIC_TOOLS.indexOf('studio_inspect_asset') + 1).map(name => [name, toolLabel(name)])),
+  builtin_tools: Object.fromEntries(STATIC_TOOLS.map(name => [name, toolLabel(name)])),
   plugin: { id: timingId, ...PLUGIN_COPY[timingId], tool: 'studio_shot_timing', version: '1.0.0', installed: false, enabled: false },
 }
 const conversations = new Map<string, SavedAgentExchange[]>()
 const proposals = new Map<string, Proposal>()
 const adoptedProposals = new Map<string, ShotWriteResult>()
+const mockOperations = new Map<string, Operation>()
+const masks = new Map<string, MaskRecord>()
+const composerUndo = new Map<string, string>()
 const shotUndo = new Map<string, { runId: string; stepId: string; edits: ShotEdit[]; consumed: boolean; expires: number; proposalId?: string }>()
 const agentUses: { name: string; at: number; latency: number; code?: AgentErrorCode; proposalId?: string }[] = []
 const mockRevision = (run: WfRun) => JSON.stringify([run.topic, run.workflow, run.status])
 
 function agentError(status: number, code: AgentErrorCode, details = {}) {
   return { status, json: { error: errorCopy(code).text, code, details } }
+}
+
+function makeOperation(key: string, turn: AgentTurnBody) {
+  const video = turn.workspace === 'video' || /视频/.test(turn.message)
+  const total = Math.min(4, Math.max(1, Number(turn.message.match(/([1-4])\s*[张段]/)?.[1]) || turn.composer?.count || 1))
+  const refs = S.rounds.filter(r => r.kind === 'image').slice(0, 2)
+  const items: OperationItem[] = Array.from({ length: total }, (_, i) => ({ item_key: String(i + 1), seq: i + 1,
+    job_id: null, round_id: null, state: 'awaiting_approval', error_code: null }))
+  const op: Operation = { operation_id: mockId('op_', 24), kind: video ? 'video' : 'image', scope_key: key,
+    state: 'awaiting_approval', total, done: 0, items, created_at: sec(), updated_at: sec(), needs_compute: !S.colab.authed,
+    model: video ? 'MiniMax-H3' : 'Qwen-Image-2.1', width: turn.composer?.width ?? 1280, height: turn.composer?.height ?? 768,
+    num_frames: video ? turn.composer?.num_frames ?? 124 : null,
+    references: refs.map(ref => ({ id: ref.id, thumb: S.urls[ref.id], label: ref.prompt })), results: [],
+  }
+  mockOperations.set(op.operation_id, op)
+  return op
+}
+
+function updateMockOperation(op: Operation) {
+  const states = new Set(op.items.map(item => item.state))
+  op.state = states.has('awaiting_approval') ? 'awaiting_approval' : states.has('running') ? 'running'
+    : states.has('queued') ? 'queued' : states.has('unknown') ? 'unknown' : states.size === 1 && states.has('done') ? 'done'
+      : states.has('done') ? 'partial' : states.has('failed') ? 'failed' : 'canceled'
+  op.done = op.items.filter(item => item.state === 'done').length
+  op.updated_at = sec()
+}
+
+function submitMockOperation(op: Operation, items: OperationItem[], retry: boolean) {
+  if (!items.length) return ok(op)
+  if (!S.colab.authed) return agentError(400, 'colab_unauthed')
+  if (S.queue.length + items.length > 12) return agentError(409, 'queue_full')
+  for (const item of items) {
+    const id = mockId('j', 24)
+    Object.assign(item, { job_id: id, state: 'queued', error_code: null })
+    setTimeout(() => {
+      if (item.job_id !== id || item.state !== 'queued') return
+      item.state = 'running'
+      updateMockOperation(op)
+    }, retry ? 100 : 320)
+    setTimeout(() => {
+      if (item.job_id !== id || item.state !== 'running') return
+      if (!retry && op.total >= 3 && item.seq > 2) {
+        item.state = 'failed'
+        item.error_code = item.seq % 2 ? 'media_invalid' : 'model_error'
+      } else {
+        const round = addRound({ kind: op.kind, model: op.model, width: op.width, height: op.height,
+          prompt: op.references[0]?.label ?? '', seed: item.seq })
+        item.state = 'done'
+        item.round_id = round.id
+        op.results = op.items.flatMap(row => row.round_id ? [{ id: row.round_id, thumb: S.urls[row.round_id], label: round.prompt }] : [])
+      }
+      updateMockOperation(op)
+    }, retry ? 480 : 850 + (item.seq - 1) * 1050)
+  }
+  updateMockOperation(op)
+  return ok(op)
+}
+
+function mockOperationRoute(method: string, id: string | undefined, action: string | undefined, raw: unknown, q: URLSearchParams) {
+  const view = (op: Operation) => ({ ...op, needs_compute: !S.colab.authed })
+  if (method === 'GET' && !id) {
+    const scope = q.get('scope_key')
+    return ok({ operations: [...mockOperations.values()].reverse().filter(op => !scope || op.scope_key === scope).slice(0, 24).map(view) })
+  }
+  const op = id && mockOperations.get(id)
+  if (!op) return agentError(404, 'not_found')
+  if (method === 'GET' && !action) return ok(view(op))
+  if (method !== 'POST') return agentError(404, 'not_found')
+  if (action === 'approve') return submitMockOperation(op, op.items.filter(i => i.state === 'awaiting_approval'), false)
+  if (action === 'retry-failed') {
+    const { item_keys: keys } = body<{ item_keys?: string[] }>(raw)
+    if (keys && (!keys.length || keys.some(key => !op.items.some(i => i.item_key === key)))) return agentError(400, 'invalid_argument')
+    return submitMockOperation(op, op.items.filter(i => i.state === 'failed' && (!keys || keys.includes(i.item_key))), true)
+  }
+  if (action === 'cancel') {
+    for (const item of op.items) if (['awaiting_approval', 'queued', 'running'].includes(item.state)) item.state = 'canceled'
+    updateMockOperation(op)
+    return ok(view(op))
+  }
+  return agentError(404, 'not_found')
+}
+
+function mockComposerWrite(proposal: Proposal | undefined, raw: unknown, undo: boolean) {
+  if (!proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+  const current = body<ComposerPrompt>(raw)
+  const before = proposal.before[0].text, after = proposal.after[0].text
+  if (proposal.target.workspace !== current.workspace || (undo ? current.prompt !== after || proposal.status !== 'applied'
+    : current.prompt !== before || proposal.status !== 'pending')) return agentError(409, 'shot_conflict', { conflicts: [] })
+  if (!undo) {
+    proposal.undo_id = mockId('un_', 24)
+    composerUndo.set(proposal.undo_id, proposal.proposal_id)
+  }
+  proposal.status = undo ? 'undone' : 'applied'
+  return ok({ workspace: current.workspace, prompt: undo ? before : after, proposal: proposalView(proposal) })
 }
 
 function proposalView(proposal: Proposal): Proposal {
@@ -665,13 +763,31 @@ function mockTelemetry(): AgentTelemetry {
     proposal_outcomes: outcomes, proposal_adoption_rate: decided ? adopted / decided : 0 }
 }
 
-function agentRoute(method: string, route: string[], raw: unknown) {
+function agentRoute(method: string, route: string[], raw: unknown, q: URLSearchParams) {
   const [section, id, action] = route
   const plugin = agentInventory.plugin
+  if (section === 'operations') return mockOperationRoute(method, id, action, raw, q)
+  if (section === 'masks') {
+    if (method === 'GET' && id) {
+      const record = masks.get(id)
+      return record && record.expires_at > sec() ? ok(record) : agentError(404, 'not_found')
+    }
+    if (method !== 'POST' || id) return agentError(404, 'not_found')
+    const { source_id, strokes } = body<EditMask>(raw)
+    if (!Array.isArray(strokes) || !strokes.length || strokes.length > 256 ||
+      strokes.some(s => !(s.size > 0 && s.size <= 1) || !s.points.length ||
+        s.points.some(p => p.length !== 2 || p.some(v => typeof v !== 'number' || !(v >= 0 && v <= 1)))) ||
+      strokes.reduce((n, s) => n + s.points.length, 0) > 12000) return agentError(400, 'invalid_argument')
+    if (!S.rounds.some(r => r.id === source_id && r.kind === 'image')) return agentError(400, 'media_invalid')
+    const record: MaskRecord = { mask_id: mockId('mk_', 24), source_id, strokes, created_at: sec(), expires_at: sec() + 604800 }
+    masks.set(record.mask_id, structuredClone(record))
+    return ok(record, 201)
+  }
   if (section === 'telemetry' && method === 'GET') return ok(mockTelemetry())
   if (section === 'proposals' && method === 'POST') {
     const proposal = proposals.get(id)
     if (!proposal) return agentError(404, 'not_found')
+    if (action === 'composer-apply') return mockComposerWrite(proposal, raw, false)
     if (action === 'reject' && proposal.status === 'rejected') return ok(proposalView(proposal))
     if (action === 'apply' && proposal.status === 'applied') {
       const run = S.runs.find(item => item.id === proposal.run_id)
@@ -697,6 +813,7 @@ function agentRoute(method: string, route: string[], raw: unknown) {
     }
   }
   if (section === 'undo' && method === 'POST') {
+    if (action === 'composer') return mockComposerWrite(proposals.get(composerUndo.get(id) ?? ''), raw, true)
     const record = shotUndo.get(id)
     if (!record) return agentError(404, 'not_found')
     if (record.consumed || record.expires <= sec()) return agentError(409, 'shot_conflict', { status: 'expired', conflicts: [] })
@@ -720,7 +837,7 @@ function agentRoute(method: string, route: string[], raw: unknown) {
     return ok(agentInventory)
   }
   if (section === 'conversations') {
-    if (!/^wr_[A-Za-z0-9_-]{4,48}$/.test(id ?? '')) return agentError(400, 'invalid_argument')
+    if (!/^(?:wr_[A-Za-z0-9_-]{4,48}|cr_[a-f0-9]{32})$/.test(id ?? '')) return agentError(400, 'invalid_argument')
     if (method === 'GET' && !action) return ok({ exchanges: (conversations.get(id) ?? []).map(exchange => ({ ...exchange,
       proposals: exchange.proposals?.flatMap(item => {
         const proposal = proposals.get(item.proposal_id)
@@ -736,7 +853,8 @@ function agentRoute(method: string, route: string[], raw: unknown) {
     const start = performance.now()
     const turn = body<AgentTurnBody>(raw)
     if (!turn.message?.trim() || !Array.isArray(turn.workflow?.steps)) return agentError(400, 'invalid_argument')
-    const key = turn.run_id || (turn.draft_id && 'wr_' + turn.draft_id)
+    if (!S.llm.active) return agentError(400, 'model_unconfigured')
+    const key = turn.run_id || turn.composer_scope || (turn.draft_id && 'wr_' + turn.draft_id)
     const run = key ? S.runs.find(item => item.id === key) : undefined
     if (run && !turn.run_id) return agentError(409, 'draft_already_saved', { run_id: run.id })
     if (!run && turn.run_id) return agentError(404, 'not_found')
@@ -750,9 +868,33 @@ function agentRoute(method: string, route: string[], raw: unknown) {
     let answer: string = C.board.hint
     let proposal: Proposal | undefined
     let code: AgentErrorCode | undefined
+    let operation: Operation | undefined
+    let composerPatch: ComposerPatch | undefined
+    let op: string | undefined
     if (changed) {
       answer = C.agent.applied.sceneCount(script.config.scene_count ?? 3, targetCount)
       script.config.scene_count = targetCount
+    } else if (/生成|出图/.test(turn.message)) {
+      operation = makeOperation(key || mockId('once-', 24), turn)
+      name = 'studio_generation'
+      op = operation.kind === 'image' ? 'submit_image' : 'submit_video'
+      answer = operation.kind === 'image' ? '画面准备好了，点「开始生成」就进队列。' : '片段准备好了，点「开始生成」就进队列。'
+    } else if (turn.workspace && turn.workspace !== 'workflow' && /改写|润色/.test(turn.message)) {
+      name = 'studio_rewrite_prompt'
+      const current = turn.composer?.prompt ?? ''
+      const now = sec()
+      proposal = { proposal_id: mockId('pr_', 24), scope_key: key ?? '', kind: 'composer', run_id: null, step_id: null,
+        target: { shot_ids: [], field: 'prompt', instruction: turn.message, reference_round_ids: [], workspace: turn.workspace },
+        before: [{ shot_id: null, n: 0, text: current }],
+        after: [{ shot_id: null, n: 0, text: current + '，斜光落在人行道上，街角的人物渐渐清晰。' }],
+        references_used: [], model: 'mock', status: 'pending', readset: [], writeset: [], undo_id: null, created_at: now, expires_at: now + 86400 }
+      proposals.set(proposal.proposal_id, proposal)
+      answer = '提示词写了一版，看下面的卡片。'
+    } else if (turn.workspace && turn.workspace !== 'workflow' && /方图|方形/.test(turn.message)) {
+      name = 'studio_generation'
+      op = 'edit_composer'
+      composerPatch = { workspace: turn.workspace, base_revision: turn.composer?.revision ?? null, changes: { width: 1024, height: 1024 } }
+      answer = '画幅改成 1024 × 1024 了。'
     } else if (turn.message === C.agent.suggestions.timing.prompt && plugin.enabled) {
       name = plugin.tool
       const video = workflow.steps.find(item => item.enabled && item.type === 'video_gen')
@@ -771,16 +913,23 @@ function agentRoute(method: string, route: string[], raw: unknown) {
       }
     }
     const exchangeId = turn.turn_id || uid('turn-')
-    const tool = { name, ok: !code, code, call_id: exchangeId }
+    const tool = { name, ok: !code, code, call_id: exchangeId, op }
+    const tools = changed ? [
+      { name: 'studio_validate_workflow', ok: false, code: 'invalid_argument' as const, call_id: exchangeId + '-check' },
+      tool, { name: 'studio_request_run', ok: true, call_id: exchangeId + '-run' },
+    ] : [tool]
     const cards = proposal ? [proposal] : []
     recordMockUse(name, start, code, proposal?.proposal_id)
     if (key) conversations.set(key, [...(conversations.get(key) ?? []).slice(-23),
-      { id: exchangeId, user: turn.message, answer, tools: [tool], state: 'done', proposals: cards }])
+      { id: exchangeId, user: turn.message, answer, tools, state: 'done', proposals: cards, operation_id: operation?.operation_id }])
     return ok([
       { type: 'started', model: 'mock' },
-      { type: 'tool', ...tool, ok: null }, { type: 'tool', ...tool },
-      { type: 'done', message: answer, editor: changed ? { topic, workflow } : null, run_request: null,
-        base_revision: run ? mockRevision(run) : null, proposals: cards },
+      ...tools.map(row => ({ type: 'tool' as const, ...row, ok: null })),
+      ...tools.map(row => ({ type: 'tool' as const, ...row,
+        ...(operation ? { operations: [operation] } : {}), ...(composerPatch ? { composer_patch: composerPatch } : {}) })),
+      { type: 'done', message: answer, editor: changed ? { topic, workflow } : null,
+        run_request: changed && run && script ? { step_id: script.id, single_step: true } : null,
+        base_revision: run ? mockRevision(run) : null, proposals: cards, operations: operation ? [operation] : [], composer_patch: composerPatch },
     ] satisfies AgentEvent[])
   }
   return agentError(404, 'not_found')
@@ -1152,7 +1301,7 @@ export async function handle(method: string, path: string, raw: unknown, q: URLS
   }
 
   if (head === 'workflows') {
-    if (seg[1] === 'agent') return agentRoute(method, seg.slice(2), raw)
+    if (seg[1] === 'agent') return agentRoute(method, seg.slice(2), raw, q)
     if (seg.length === 1 && method === 'GET') return ok({ builtin: BUILTIN_WF, custom: S.wfCustom, runs: S.runs.map(runSummary), step_catalog: STEP_CATALOG, ffmpeg_available: true })
     if (seg.length === 1 && method === 'POST') {
       const b = body<Partial<WfDef>>(raw)

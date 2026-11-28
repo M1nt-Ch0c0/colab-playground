@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS proposals (
     model TEXT NOT NULL, status TEXT NOT NULL, undo_id TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS proposals_undo ON proposals (undo_id);
+CREATE TABLE IF NOT EXISTS masks (
+    mask_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, strokes_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS operations (
+    operation_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, tool TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    spec_hash TEXT NOT NULL, state TEXT NOT NULL, spec_json TEXT NOT NULL, frozen_refs_json TEXT NOT NULL,
+    executor_ids_json TEXT NOT NULL, result_json TEXT NOT NULL, error_code TEXT, error_detail TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    UNIQUE(scope_key, tool, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS operations_scope ON operations (scope_key, created_at DESC);
+CREATE TABLE IF NOT EXISTS operation_items (
+    operation_id TEXT NOT NULL, item_key TEXT NOT NULL, seq INTEGER NOT NULL, frozen_input_json TEXT NOT NULL,
+    job_id TEXT, state TEXT NOT NULL, round_id TEXT, error TEXT, updated_at INTEGER NOT NULL,
+    PRIMARY KEY(operation_id, item_key)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS operation_job ON operation_items (job_id) WHERE job_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS undo_records (
     undo_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, run_id TEXT NOT NULL, step_id TEXT NOT NULL,
     inverse_json TEXT NOT NULL, expected_versions_json TEXT NOT NULL,

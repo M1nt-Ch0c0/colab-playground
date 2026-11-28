@@ -20,7 +20,7 @@ import requests
 
 from draw_studio.workflows import agent_plugins as plugins, copilot
 from draw_studio.workflows.agent_bridge import ToolBridge
-from draw_studio.workflows.agent_tools import TOOLS
+from draw_studio.workflows.agent_tools import TOOLS, EditorTools
 from draw_studio.workflows.harness_errors import HarnessError
 from draw_studio.workflows.harness_store import TELEMETRY_MAX, TELEMETRY_TTL, UNDO_TTL
 from draw_studio.workflows.harness_telemetry import TurnTelemetry
@@ -510,7 +510,7 @@ class ShotPersistenceTests(unittest.TestCase):
         with self.store.transaction() as db:
             self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             self.assertEqual({row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")},
-                             {"shots", "proposals", "undo_records", "tool_telemetry"})
+                             {"shots", "proposals", "undo_records", "tool_telemetry", "masks", "operations", "operation_items"})
             self.assertEqual([row[0] for row in db.execute("SELECT shot_id FROM shots ORDER BY seq")], [shot["shot_id"] for shot in shots])
         proposal = self.proposal(shots[:1])
         self.runtime.shutdown()
@@ -664,3 +664,150 @@ class ShotPersistenceTests(unittest.TestCase):
         with self.store.transaction() as db:
             row = db.execute("SELECT COUNT(*) AS kept, MIN(call_seq) AS first FROM tool_telemetry").fetchone()
             self.assertEqual((row["kept"], row["first"]), (TELEMETRY_MAX, 3))
+
+
+class OperationTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.runtime = self.enterContext(local_runtime(self.root))
+        self.studio = self.runtime.studio
+        self.ops = self.runtime.operations
+        self.scope = "cr_" + "f" * 32
+        self.enterContext(patch.object(self.studio, "_runner", SimpleNamespace(is_alive=lambda: True)))
+        self.enterContext(patch.object(self.runtime.colab, "has_credentials", return_value=True))
+
+    def ready_image(self, count=1, **fields):
+        from draw_studio.generation.parameters import normalize_job
+        return normalize_job({"mode": "image", "prompt": "Evening exterior", "count": count, "seed": 43, **fields})
+
+    def image_asset(self, color):
+        from tests.http_fixture import png
+        source = self.root / (color + ".png")
+        source.write_bytes(png((32, 24), color))
+        return self.runtime.store.save(source, "image", {}), source.read_bytes()
+
+    def finish(self, job_id, state, rid=None):
+        with self.studio._lock:
+            job = next(j for j in self.studio._queue if j["id"] == job_id)
+            self.studio._queue.remove(job)
+            job.update(status=state, round_id=rid)
+            self.studio._remember_job(job)
+            self.studio._save_state_locked()
+
+    def test_idempotent_submit_freezes_video_and_ordered_images(self):
+        from tests.http_fixture import mp4
+
+        first, first_bytes = self.image_asset("navy")
+        second, second_bytes = self.image_asset("gold")
+        source = mp4(self.root / "clip.mp4", 2.5)
+        video_bytes = source.read_bytes()
+        video = self.runtime.store.save(source, "video", {})
+        self.studio.use_round(first)
+        self.studio.use_round(second, append=True)
+        self.studio.use_round(video, "video")
+        tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "Cut"}}, scope=self.scope)
+        payload = {"mode": "video", "workflow": "ref2va", "video_task": "motion",
+                   "video_reference_id": self.studio.refs_report()["video"]["id"], "prompt": "Follows the turn"}
+        submitted = {"op": "submit_video", "spec": payload, "idempotency_key": "video-1"}
+        op = tools.call("studio_generation", submitted)["operation"]
+        oid = op["operation_id"]
+        self.assertEqual((op["state"], op["total"], len(op["references"])), ("awaiting_approval", 1, 2))
+        self.assertTrue(self.studio.ref_count())
+        self.assertFalse(self.studio.snapshot()["queue"])
+        self.studio.clear_ref("first")
+        self.studio.clear_video_ref(payload["video_reference_id"])
+        self.runtime.store.delete([first, second, video])
+        self.assertEqual(tools.call("studio_generation", submitted)["operation_id"], oid)
+        with self.assertRaises(HarnessError) as collision:
+            tools.call("studio_generation", {**submitted, "spec": {**payload, "prompt": "Different request"}})
+        self.assertEqual(collision.exception.code, "invalid_argument")
+        with ThreadPoolExecutor(2) as pool:
+            copies = list(pool.map(self.ops.approve, [oid, oid]))
+        job_id = copies[0]["items"][0]["job_id"]
+        self.assertEqual(copies[1]["items"][0]["job_id"], job_id)
+        self.assertEqual(len(self.studio.snapshot()["queue"]), 1)
+        self.assertEqual([self.studio._ref_snapshot_path(job_id, slot).read_bytes() for slot in ("first", "ref_1", "video")],
+                         [first_bytes, second_bytes, video_bytes])
+        thumb = self.ops.ref_thumb(oid, "image0")
+        self.assertEqual(stat.S_IMODE(thumb.stat().st_mode), 0o600)
+
+    def test_mask_and_tail_snapshots_survive_changes_before_approval(self):
+        from draw_studio.generation.parameters import normalize_job
+        from draw_studio.workflows.operation_service import MaskInput
+
+        rid, original = self.image_asset("navy")
+        strokes = [{"points": [[.2, .4], [.3, .5]], "size": .08}]
+        mask = self.ops.create_mask(MaskInput(source_id=rid, strokes=strokes))
+        saved = self.ops.create(self.scope, "masked", self.ready_image(), mask["mask_id"])
+        self.studio.use_round(rid, "last")
+        video = self.ops.create(self.scope, "tail", normalize_job({
+            "mode": "video", "workflow": "fl2va", "has_last_image": True, "has_image": False, "prompt": "A turn",
+        }))
+        self.studio.clear_ref("last")
+        self.runtime.store.delete([rid])
+        with self.ops.store.transaction() as db:
+            db.execute("UPDATE masks SET expires_at=0 WHERE mask_id=?", (mask["mask_id"],))
+        a, b = (self.ops.approve(item["operation_id"])["items"][0]["job_id"] for item in (saved, video))
+        self.assertEqual(self.studio._ref_snapshot_path(a, "first").read_bytes(), original)
+        self.assertEqual(self.studio._queue[0]["payload"]["edit_mask"]["strokes"], strokes)
+        self.assertEqual(self.studio._ref_snapshot_path(b, "last").read_bytes(), original)
+
+    def test_partial_retry_keeps_success_and_survives_shutdown(self):
+        op = self.ops.create(self.scope, "batch", self.ready_image(3))
+        oid = op["operation_id"]
+        job_ids = [i["job_id"] for i in self.ops.approve(oid)["items"]]
+        rid, _ = self.image_asset("navy")
+        self.finish(job_ids[0], "done", rid)
+        for jid in job_ids[1:]:
+            self.finish(jid, "error")
+        self.assertEqual((self.ops.get(oid)["state"], self.ops.get(oid)["done"]), ("partial", 1))
+        tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "Cut"}}, scope=self.scope)
+        self.assertTrue(tools.call("studio_jobs", {"op": "retry", "job_id": job_ids[1]})["retry_requires_approval"])
+        self.assertFalse(self.studio.snapshot()["queue"])
+        retried = self.ops.retry(oid, ["1", "2"])
+        current = [i["job_id"] for i in retried["items"]]
+        self.assertEqual((current[0], current[2]), (job_ids[0], job_ids[2]))
+        self.assertNotEqual(current[1], job_ids[1])
+        self.assertEqual(retried["items"][0]["round_id"], rid)
+        self.assertEqual(self.studio._queue[0]["payload"]["seed"], 44)
+        self.assertEqual(self.ops.retry(oid, ["2"])["items"][1]["job_id"], current[1])
+        self.runtime.shutdown()
+        with local_runtime(self.root) as restarted:
+            restarted.studio.recover()
+            recovered, = restarted.operations.list(self.scope)
+            self.assertEqual([i["job_id"] for i in recovered["items"]], current)
+            self.assertEqual([i["state"] for i in recovered["items"]], ["done", "queued", "failed"])
+
+    def test_approval_failures_and_precise_cancellation(self):
+        import collections
+        from draw_studio.generation.catalog import QUEUE_MAX
+
+        pending = self.ops.create(self.scope, "cancel", self.ready_image(2))["operation_id"]
+        with patch.object(self.runtime.colab, "has_credentials", return_value=False), self.assertRaises(HarnessError) as unauthed:
+            self.ops.approve(pending)
+        self.assertEqual(unauthed.exception.code, "colab_unauthed")
+        with patch.object(self.studio, "_queue", collections.deque([None] * QUEUE_MAX)), self.assertRaises(HarnessError) as full:
+            self.ops.approve(pending)
+        self.assertEqual(full.exception.code, "queue_full")
+        with patch.object(self.studio, "_save_state_locked", side_effect=OSError), self.assertRaises(HarnessError) as failed:
+            self.ops.approve(pending)
+        self.assertEqual(failed.exception.code, "internal_error")
+        self.assertEqual(self.ops.get(pending)["state"], "awaiting_approval")
+        self.assertFalse(self.studio.snapshot()["queue"])
+        aborted = self.ops.create(self.scope, "future", self.ready_image(1))["operation_id"]
+        self.assertEqual(self.ops.cancel(aborted)["state"], "canceled")
+        self.assertEqual(self.ops.approve(aborted)["state"], "canceled")
+        running = self.ops.approve(pending)
+        target, queued = (row["job_id"] for row in running["items"])
+        with self.studio._lock:
+            self.studio._current = self.studio._queue.popleft()
+            self.studio._current["status"] = "running"
+        def interrupt():
+            self.assertTrue(self.studio._lock._is_owned())
+            self.assertEqual(self.studio._current["id"], target)
+        with patch.object(self.runtime.colab, "interrupt_active", side_effect=interrupt) as interrupted:
+            self.assertFalse(self.studio.cancel_job("j00000000"))
+            self.assertTrue(self.studio.cancel_job(queued))
+            interrupted.assert_not_called()
+            self.assertTrue(self.studio.cancel_job(target))
+            interrupted.assert_called_once()
