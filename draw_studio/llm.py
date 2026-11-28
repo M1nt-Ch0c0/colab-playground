@@ -1,4 +1,4 @@
-"""Persistent provider selection and native chat/model-list adapters for Draw Studio."""
+"""Persistent provider selection and native chat/model-list adapters for ColabReel."""
 from __future__ import annotations
 
 import json

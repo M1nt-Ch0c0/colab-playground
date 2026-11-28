@@ -3,7 +3,7 @@ import { Bot, Cpu, HardDrive, KeyRound, LogOut, Palette, Pencil, Plus, Power, Re
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { LlmKind, LlmProvider } from '../../api/types'
-import { ago, cx, fmtBytes, lsSet } from '../../lib/util'
+import { LS_KEYS, ago, cx, fmtBytes, lsSet } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Drawer, Seg, Toggle, useConfirm } from '../../ui/Overlay'
 
@@ -86,7 +86,7 @@ function GrabBox() {
   const c = st.colab
   const lim = cfg.limits
   const grabbing = st.phase === 'starting' && !st.current
-  const setPool = (p: string[]) => { lsSet('cs.grab', p); useStore.setState({ grabPool: p }) }
+  const setPool = (p: string[]) => { lsSet(LS_KEYS.grab, p); useStore.setState({ grabPool: p }) }
   const toggle = (id: string) => setPool(pool.includes(id) ? pool.filter(x => x !== id) : [...pool, id])
   const move = (id: string, d: number) => { const i = pool.indexOf(id); const j = i + d; if (i < 0 || j < 0 || j >= pool.length) return; const p = [...pool]; [p[i], p[j]] = [p[j], p[i]]; setPool(p) }
   const grab = async () => {
@@ -125,9 +125,9 @@ function GrabBox() {
       </div>
       <div className="row wrap">
         <span className="lbl">轮询</span>
-        <input type="number" className="inl" min={lim.poll_rounds_min} max={lim.poll_rounds_max} value={rounds} onChange={e => { const v = Math.max(lim.poll_rounds_min, Math.min(lim.poll_rounds_max, +e.target.value || 1)); lsSet('cs.rounds', v); useStore.setState({ pollRounds: v }) }} />
+        <input type="number" className="inl" min={lim.poll_rounds_min} max={lim.poll_rounds_max} value={rounds} onChange={e => { const v = Math.max(lim.poll_rounds_min, Math.min(lim.poll_rounds_max, +e.target.value || 1)); lsSet(LS_KEYS.rounds, v); useStore.setState({ pollRounds: v }) }} />
         <span className="dim">轮</span>
-        <Toggle on={allPx} onChange={v => { lsSet('cs.pollpx', v); useStore.setState({ pollAllProxies: v }) }}>每轮换遍所有出口</Toggle>
+        <Toggle on={allPx} onChange={v => { lsSet(LS_KEYS.pollpx, v); useStore.setState({ pollAllProxies: v }) }}>每轮换遍所有出口</Toggle>
       </div>
       <div className="row">
         <button className="btn primary grow-btn" disabled={!c.authed || !pool.length || grabbing || !!st.current} onClick={grab}>{grabbing ? <><span className="spinner" />正在抢卡</> : '开始抢卡'}</button>

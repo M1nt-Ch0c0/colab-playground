@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gallery storage for Colab Studio.
+"""Gallery storage for ColabReel.
 
 Layout (all under ``<root>/out``):
 

@@ -283,7 +283,7 @@ class BrowserTest(unittest.TestCase):
                     age = (By.ID, "cDays")
                     kind = (By.ID, "cKind")
                 else:
-                    driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+                    driver.execute_script("localStorage.setItem('colabreel.libopen', 'true')")
                     driver.refresh()
                     trigger = (By.CSS_SELECTOR, 'button[title="清理旧作品"]')
                     selector = '[role=dialog][aria-label="清理旧作品"] button.solid-danger'
@@ -312,7 +312,7 @@ class BrowserTest(unittest.TestCase):
             character_id = rt.store.save(character, "image", {"prompt": "角色正面", "width": 192, "height": 256})
             rt.studio.set_ref("first", png(), "upload")
             rt.studio.add_ref(png(color="green"), "wardrobe")
-            driver.execute_script("localStorage.setItem('cs.libopen', 'true')")
+            driver.execute_script("localStorage.setItem('colabreel.libopen', 'true')")
             status = rt.colab.status_report()
             with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
                  patch.object(rt.studio, "enqueue", return_value=[{"id": "fixture"}]) as enqueue:
@@ -368,8 +368,8 @@ class BrowserTest(unittest.TestCase):
             meta["comfy"]["vae"] = combo["vae"]
             rt.store.save(src, "image", meta)
             rt.store.save(src, "image", {"prompt": "missing combo", "engine": "comfyui"})
-            driver.execute_script("""localStorage.setItem('cs.libopen', 'true');
-                localStorage.setItem('cs.draft', JSON.stringify({comfyDiff: 'wrong', comfyTe: 'wrong', comfyVae: 'wrong'}))""")
+            driver.execute_script("""localStorage.setItem('colabreel.libopen', 'true');
+                localStorage.setItem('colabreel.draft', JSON.stringify({comfyDiff: 'wrong', comfyTe: 'wrong', comfyVae: 'wrong'}))""")
             # Accept the generation request locally and inspect exactly what the queue receives.
             status = rt.colab.status_report()
             with patch.object(rt.colab, "status_report", return_value=status), patch.object(rt.colab, "has_credentials", return_value=True), \
@@ -411,7 +411,7 @@ class BrowserTest(unittest.TestCase):
             picture = rt.root / "painting.png"
             picture.write_bytes(png((640, 480)))
             clip = mp4(rt.root / "movement.mp4", 3, audio=True)
-            driver.execute_script("localStorage.setItem('cs.libopen','true')")
+            driver.execute_script("localStorage.setItem('colabreel.libopen','true')")
             driver.get(url)
             wait = WebDriverWait(driver, 12)
             def css(selector):

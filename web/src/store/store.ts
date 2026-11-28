@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import type {
   ComfyConfig, Config, EditMask, GeneratePayload, LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
 } from '../api/types'
-import { lsGet, lsSet, now, setClockSkew } from '../lib/util'
+import { LS_KEYS, lsGet, lsSet, now, setClockSkew } from '../lib/util'
 
 export interface ToastItem { id: number; text: string; kind: 'ok' | 'err' | ''; undo?: { label: string; fn: () => void } }
 export type Workspace = 'image' | 'video' | 'workflow'
@@ -108,23 +108,23 @@ export const useStore = create<Store>((set, get) => ({
   logSeq: 0, logs: [],
   workspace: 'image',
   videoRefBusy: false,
-  draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>('cs.draft', {}) },
+  draft: { ...EMPTY_DRAFT, ...lsGet<Partial<Draft>>(LS_KEYS.draft, {}) },
   sheet: null, sheetArgs: {},
   viewing: null,
   galleryFilter: { kind: '', starred: false, q: '' },
   selected: [], selecting: false,
-  promptHist: lsGet<string[]>('cs.phist', []),
+  promptHist: lsGet<string[]>(LS_KEYS.phist, []),
   toasts: [],
-  theme: lsGet<Store['theme']>('cs.theme', 'system'),
+  theme: lsGet<Store['theme']>(LS_KEYS.theme, 'system'),
   wfData: null, wfRun: null,
   llm: null,
   // 作品库默认收起，和旧版一致；展开状态按浏览器记住
-  libraryOpen: lsGet<boolean>('cs.libopen', false),
+  libraryOpen: lsGet<boolean>(LS_KEYS.libopen, false),
   loadLlm: async () => { try { set({ llm: await api.llm.get() }) } catch (e) { if (!(e instanceof ApiError && e.status === 401)) get().toast(e instanceof Error ? e.message : '加载改写模型失败', 'err') } },
-  setLibraryOpen: v => { lsSet('cs.libopen', v); set({ libraryOpen: v }) },
-  grabPool: lsGet<string[]>('cs.grab', ['A100', 'H100']),
-  pollRounds: lsGet<number>('cs.rounds', 2),
-  pollAllProxies: lsGet<boolean>('cs.pollpx', false),
+  setLibraryOpen: v => { lsSet(LS_KEYS.libopen, v); set({ libraryOpen: v }) },
+  grabPool: lsGet<string[]>(LS_KEYS.grab, ['A100', 'H100']),
+  pollRounds: lsGet<number>(LS_KEYS.rounds, 2),
+  pollAllProxies: lsGet<boolean>(LS_KEYS.pollpx, false),
 
   boot: () => {
     if (booting) return booting
@@ -167,7 +167,7 @@ export const useStore = create<Store>((set, get) => ({
     const draft = { ...get().draft, ...p }
     if (p.useRef || p.chain) draft.editMask = null
     set({ draft })
-    clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet('cs.draft', draft), 300)
+    clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet(LS_KEYS.draft, draft), 300)
   },
   openSheet: (s, args = {}) => set({ sheet: s, sheetArgs: args }),
   closeSheet: () => set({ sheet: null, sheetArgs: {} }),
@@ -177,7 +177,7 @@ export const useStore = create<Store>((set, get) => ({
     setTimeout(() => get().dismissToast(id), undo ? 6000 : 3200)
   },
   dismissToast: id => set({ toasts: get().toasts.filter(t => t.id !== id) }),
-  setTheme: t => { lsSet('cs.theme', t); set({ theme: t }); applyTheme(t) },
+  setTheme: t => { lsSet(LS_KEYS.theme, t); set({ theme: t }); applyTheme(t) },
   setViewing: id => set({ viewing: id }),
   toggleSelect: id => {
     const s = new Set(get().selected)
@@ -242,7 +242,7 @@ export const useStore = create<Store>((set, get) => ({
     try {
       const r = await api.generate(p)
       const hist = [p.prompt, ...promptHist.filter(h => h !== p.prompt)].slice(0, 15)
-      lsSet('cs.phist', hist); set({ promptHist: hist, viewing: null })
+      lsSet(LS_KEYS.phist, hist); set({ promptHist: hist, viewing: null })
       toast(r.jobs.length > 1 ? `已加入队列，${r.jobs.length} 个任务` : '已提交', 'ok')
       if (cfg) { /* 触达 */ }
       get().refresh()

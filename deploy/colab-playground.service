@@ -1,5 +1,5 @@
 [Unit]
-Description=Colab Studio (Image & Video playground)
+Description=ColabReel (Image & Video playground)
 After=network-online.target
 Wants=network-online.target
 

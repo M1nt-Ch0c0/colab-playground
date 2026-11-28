@@ -1,1 +1,1 @@
-"""HTTP boundary for Draw Studio."""
+"""HTTP boundary for ColabReel."""

@@ -1,4 +1,4 @@
-"""Draw Studio ASGI application. Run python app.py to serve the built web client."""
+"""ColabReel ASGI application. Run python app.py to serve the built web client."""
 from __future__ import annotations
 
 import os
@@ -53,7 +53,7 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
             app.state.runtime = runtime
             yield
 
-    app = FastAPI(title="Draw Studio", version=__version__, lifespan=lifespan,
+    app = FastAPI(title="ColabReel", version=__version__, lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
     app.add_middleware(HttpBoundary)
 

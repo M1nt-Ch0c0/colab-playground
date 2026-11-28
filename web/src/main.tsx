@@ -5,8 +5,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { installMock, mockMedia } from './api/client'
+import { migrateLocalStorage } from './lib/util'
 
 async function start() {
+  migrateLocalStorage()
   if (__MOCK__) {
     const m = await import('./mock/server')
     m.boot()

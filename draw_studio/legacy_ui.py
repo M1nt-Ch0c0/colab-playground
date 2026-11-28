@@ -16,7 +16,7 @@ LOGIN_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · ColabReel</title>
 <link rel="icon" type="image/svg+xml" href="__BRAND_ICON__">
-<script>(function(){try{var t=localStorage.getItem('colab-studio.theme')||'light';document.documentElement.dataset.theme=t;}catch(e){document.documentElement.dataset.theme='light';}})();</script>
+<script>(function(){try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){document.documentElement.dataset.theme='light';}})();</script>
 <style>
   :root{color-scheme:dark;--bg:#07080d;--card:rgba(20,22,34,.78);--line:rgba(255,255,255,.1);--text:#eceef6;--muted:#8b91a7;--in:rgba(0,0,0,.35);--sh:0 30px 80px rgba(0,0,0,.45);--err:#fca5a5}
   :root[data-theme="light"]{color-scheme:light;--bg:#f4f6fb;--card:rgba(255,255,255,.92);--line:rgba(15,23,42,.1);--text:#0f172a;--muted:#64748b;--in:#f8fafc;--sh:0 24px 60px rgba(15,23,42,.1);--err:#dc2626}
@@ -1065,8 +1065,10 @@ const S = {
   grabPool:[], pollRounds:2, pollAllProxies:false,
   wfData:null, wfRun:null, wfAssetStep:'',
 };
-const LS_KEY = 'colab-studio.v2';
-const LS_PHIST_KEY = 'colab-studio.prompt-hist.v1';
+const LS_KEY = 'colabreel.v2';
+const LS_PHIST_KEY = 'colabreel.prompt-hist.v1';
+const LS_LEGACY = {'colabreel.v2':'colab-studio.v2', 'colabreel.prompt-hist.v1':'colab-studio.prompt-hist.v1'};
+Object.entries(LS_LEGACY).forEach(([next, prev]) => { try { if (localStorage.getItem(next) == null) { const old = localStorage.getItem(prev); if (old != null) localStorage.setItem(next, old); } } catch {} });
 const IMAGE_SIZES = [['1:1',1024,1024],['2:3',768,1152],['3:2',1152,768],['3:4',896,1152],['4:3',1152,896],['9:16',768,1344],['16:9',1344,768],['2:3 HD',1024,1536],['3:2 HD',1536,1024]];
 const VIDEO_SIZES = [['16:9 横',1280,768],['9:16 竖',768,1280],['1:1',768,768],['预览',512,768]];
 const FRAMES = [[124,'5 秒'],[175,'7 秒'],[243,'10 秒'],[345,'14 秒']];
@@ -3473,7 +3475,7 @@ function bind(){
   $('#settingsBtn').onclick = $('#colabChip').onclick = openSettings;
   $('#settingsBtn').disabled = false;
   $('#logBtn').onclick = () => toggleLogs();
-  const THEME_KEY = 'colab-studio.theme';
+  const THEME_KEY = 'colabreel.theme';
   const applyTheme = (t) => {
     const mode = t === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = mode;
@@ -3842,7 +3844,7 @@ PAGE_HTML = (
     "<!doctype html>\n<html lang=\"zh\" data-theme=\"light\">\n<head>\n<meta charset=\"utf-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
     "<title>ColabReel · 生图 · 生视频 · 长视频工作流</title>\n"
-    "<script>(function(){try{var t=localStorage.getItem('colab-studio.theme')||'light';document.documentElement.dataset.theme=t;}catch(e){}})();</script>\n"
+    "<script>(function(){try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){}})();</script>\n"
     f'<link rel="icon" type="image/svg+xml" href="{_BRAND_ICON_URL}">\n'
     "<style>" + _CSS + "</style>\n</head>\n<body>\n" + _BODY.replace("__BRAND_ICON__", _BRAND_ICON_URL) + "\n<script>" + _JS + "</script>\n</body>\n</html>\n"
 )
