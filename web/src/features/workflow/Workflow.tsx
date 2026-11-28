@@ -1,14 +1,16 @@
 // 工作流工作区：左侧模板与运行记录，中间是纵向步骤轨道，每步可展开配置与产出。
-import { AnimatePresence, motion } from 'motion/react'
-import { ArrowDown, ArrowUp, ChevronDown, Copy, Pause, Play, Plus, RotateCcw, Save, Square, Trash2, Upload, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { ArrowDown, ArrowUp, ChevronDown, Copy, Pause, Play, Plus, RotateCcw, Save, Square, Trash2, Upload, WandSparkles, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, ApiError, media } from '../../api/client'
-import type { RunStatus, StepState, StepStatus, WfDef, WfRun, WfStep } from '../../api/types'
+import type { Proposal, RunShotUpdate, RunStatus, ShotEdit, ShotField, StepState, StepStatus, WfDef, WfRun, WfStep } from '../../api/types'
 import { ago, cx, requestId as newRequestId, rid } from '../../lib/util'
 import { useStore } from '../../store/store'
 import { Toggle, useConfirm } from '../../ui/Overlay'
 import { NamePrompt } from '../../ui/NamePrompt'
-import { AGENT_COPY as C, errorCopy, PROPOSAL_FIELD_LABELS } from './agentCopy'
+import { expand, instant } from '../../ui/motion'
+import { AGENT_COPY as C, errorCopy, PROPOSAL_FIELD_LABELS, STEP_OUTPUT_COPY } from './agentCopy'
+import { WorkflowProposal } from './ProposalCard'
 import { WorkflowBoard, useWorkflowSelection } from './WorkflowBoard'
 import type { AgentBinding } from './WorkflowAgent'
 import './workbench.css'
@@ -111,9 +113,19 @@ export function WorkflowWorkspace() {
 type DraftFiles = { files: File[]; change: (next: File[]) => void }
 type RunAction = (fn: () => Promise<{ run: WfRun }>, msg?: string) => void
 interface OutputEditor {
-  change: (stepId: string, list: 'scenes' | 'items', index: number, text: string) => void
+  change: (stepId: string, shot: OutputShot, field: EditablePrompt, text: string) => void
   flush: () => Promise<boolean>
+  receive: (update: RunShotUpdate, output?: Record<string, unknown>) => void
+  flashes: Record<string, number>
+  clearFlash: (key: string, version: number) => void
+  selectShot: (stepId: string, id: string, n: number) => void
 }
+type EditablePrompt = 'keyframe_prompt' | 'video_prompt'
+type OutputShot = Partial<Record<ShotField, string>> & {
+  shot_id: string; generation: number; field_versions: Partial<Record<ShotField, number>>
+  title?: string; index?: number; scene_index?: number
+}
+const outputKey = (id: string, field: ShotField) => id + ':' + field
 
 function LocalImage({ file, remove }: { file: File; remove: () => void }) {
   const [url, setUrl] = useState('')
@@ -287,6 +299,10 @@ function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void
   const timer = useRef(0)
   const pending = useRef(new Map<string, () => Promise<unknown>>())
   const writing = useRef<Promise<boolean> | null>(null)
+  const outputEdits = useRef(new Map<string, ShotEdit>())
+  const [flashes, setFlashes] = useState<Record<string, number>>({})
+  const flashSeq = useRef(0)
+  const reducedMotion = useReducedMotion()
   const [acting, setActing] = useState(false)
   const running = run.status === 'running'
   const selection = useWorkflowSelection(run.id)
@@ -303,7 +319,7 @@ function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void
           if (pending.current.get(key) === write) pending.current.delete(key)
           return true
         }, error => {
-          toast(error instanceof Error ? error.message : '保存修改失败', 'err')
+          toast(errorCopy(error instanceof ApiError ? error.code : undefined).text, 'err')
           return false
         }).finally(() => { writing.current = null })
       }
@@ -321,33 +337,100 @@ function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void
     const merged = { ...current, ...next }
     if (next.workflow) {
       for (const s of current.workflow.steps) {
-        if (!merged.workflow.steps.some(step => step.id === s.id)) pending.current.delete('output:' + s.id)
+        if (!merged.workflow.steps.some(step => step.id === s.id)) {
+          const prefix = 'output:' + s.id + ':'
+          for (const key of outputEdits.current.keys()) if (key.startsWith(prefix)) {
+            pending.current.delete(key)
+            outputEdits.current.delete(key)
+          }
+        }
       }
     }
     pending.current.set('config', () => api.wf.update(run.id, { topic: merged.topic, workflow: merged.workflow }))
     setRun(merged)
     scheduleSave()
   }
-  const editOutput: OutputEditor['change'] = (stepId, list, index, text) => {
+  const receiveOutput = (update: RunShotUpdate, output?: Record<string, unknown>, animate = true) => {
     const current = useStore.getState().wfRun
-    if (current?.id !== run.id) return
-    const state = current.step_states[stepId]
-    const rows = state?.output[list]
-    const field = list === 'scenes' ? 'keyframe_prompt' : 'video_prompt'
-    if (!Array.isArray(rows) || !rows[index] || rows[index][field] === text) return
-    const edited = rows.slice()
-    edited[index] = { ...rows[index], [field]: text }
-    const output = { ...state.output, [list]: edited }
-    pending.current.set('output:' + stepId, async () => {
-      const { run: saved } = await api.wf.saveOutput(run.id, stepId, { [list]: edited })
-      const latest = useStore.getState().wfRun
-      if (latest?.id === run.id && latest.step_states[stepId]?.output === output) {
-        setRun({ ...latest, updated_at: saved.updated_at, logs: saved.logs,
-          step_states: { ...latest.step_states, [stepId]: saved.step_states[stepId] } })
-        toast('已保存修改', 'ok')
+    if (!current || current.id !== update.run_id) return
+    const state = current.step_states[update.step_id]
+    const list = Array.isArray(state?.output.scenes) ? 'scenes' : 'items'
+    const rows = state?.output[list] as OutputShot[] | undefined
+    if (!state || !Array.isArray(rows)) return
+    const snapshot = Array.isArray(output?.[list]) ? output[list] as OutputShot[] : undefined
+    const rendered = snapshot?.length && (snapshot[0].generation > (rows[0]?.generation ?? 0)) ? snapshot : rows
+    const acknowledged = new Map(update.changes.map(change => [outputKey(change.shot_id, change.field), change.version]))
+    const highlight: Record<string, number> = {}
+    const next = rendered.map(row => {
+      let result = row
+      const remote = snapshot?.find(shot => shot.shot_id === row.shot_id && shot.generation === row.generation)
+      const changes = remote ? (Object.entries(remote.field_versions) as [ShotField, number][])
+        .map(([field, version]) => ({ field, version, value: remote[field] ?? '' }))
+        : update.changes.filter(change => row.shot_id === change.shot_id && row.generation === change.generation)
+      for (const { field, version, value } of changes) {
+        if ((result.field_versions[field] ?? 0) >= version) continue
+        const key = outputKey(row.shot_id, field)
+        const committed = acknowledged.get(key) === version
+        const dirty = outputEdits.current.has('output:' + update.step_id + ':' + key)
+        if (dirty && (animate || !committed)) continue
+        result = {
+          ...result, ...(!dirty ? { [field]: value } : {}), field_versions: { ...result.field_versions, [field]: version },
+        }
+        if (animate && committed && !reducedMotion) highlight[key] = ++flashSeq.current
       }
+      return result
     })
-    setRun({ ...current, step_states: { ...current.step_states, [stepId]: { ...state, output } } })
+    if (next.some((item, i) => item !== rows[i])) setRun({
+      ...current, step_states: { ...current.step_states, [update.step_id]: { ...state, output: { ...state.output, [list]: next } } },
+    })
+    if (Object.keys(highlight).length) {
+      setFlashes(prior => ({ ...prior, ...highlight }))
+      window.setTimeout(() => {
+        for (const [key, version] of Object.entries(highlight)) clearFlash(key, version)
+      }, 900)
+    }
+  }
+  const clearFlash = (key: string, version: number) => setFlashes(items => {
+    if (items[key] !== version) return items
+    const next = { ...items }
+    delete next[key]
+    return next
+  })
+  const editOutput: OutputEditor['change'] = (stepId, shot, field, text) => {
+    const current = useStore.getState().wfRun
+    if (!current || current.id !== run.id) return
+    const state = current.step_states[stepId]
+    const list = field === 'keyframe_prompt' ? 'scenes' : 'items'
+    const rows = state?.output[list] as OutputShot[] | undefined
+    const row = rows?.find(item => item.shot_id === shot.shot_id)
+    if (!row || row[field] === text) return
+    const key = 'output:' + stepId + ':' + outputKey(row.shot_id, field)
+    const version = outputEdits.current.get(key)?.expected_version ?? row.field_versions[field]
+    if (!version) return
+    const edit = { shot_id: row.shot_id, field, generation: row.generation, expected_version: version, value: text }
+    outputEdits.current.set(key, edit)
+    pending.current.set(key, async () => {
+      const sent = outputEdits.current.get(key)
+      if (!sent) return
+      const result = await api.wf.saveShotEdits(run.id, stepId, [sent]).catch(async error => {
+        if (error instanceof ApiError && error.code === 'shot_conflict') {
+          const { run: saved } = await api.wf.run(run.id)
+          outputEdits.current.delete(key)
+          pending.current.delete(key)
+          receiveOutput({ run_id: run.id, step_id: stepId, changes: [] }, saved.step_states[stepId]?.output, false)
+        }
+        throw error
+      })
+      const queued = outputEdits.current.get(key)
+      if (queued === sent) outputEdits.current.delete(key)
+      else if (queued && result.applied[0] && queued.generation === sent.generation) {
+        outputEdits.current.set(key, { ...queued, expected_version: result.applied[0].version })
+      }
+      receiveOutput(result.run_updated, result.step_output, false)
+      toast(C.toast.saved, 'ok')
+    })
+    const edited = rows!.map(item => item === row ? { ...item, [field]: text } : item)
+    setRun({ ...current, step_states: { ...current.step_states, [stepId]: { ...state, output: { ...state.output, [list]: edited } } } })
     scheduleSave()
   }
   const setSteps = (steps: WfStep[]) => save({ workflow: { ...run.workflow, steps } })
@@ -430,14 +513,15 @@ function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void
 
       <WorkflowBoard selection={selection} run={run} change={workflow => save({ workflow })} binding={{
         editor: { workflow: run.workflow, topic }, runId: run.id, status: run.status, locked: acting,
-        beforeSend: flush, apply: applyAgent, refresh: refreshAgent, openRun, run: runAgent,
+        beforeSend: flush, apply: applyAgent, refresh: refreshAgent, openRun, run: runAgent, onShotUpdate: receiveOutput,
       }} />
       <ol className="rail">
         {run.workflow.steps.map((s, i) => (
           <StepCard key={s.id} run={run} step={s} idx={i} state={run.step_states[s.id]} select={selection.select} onChange={st => setSteps(run.workflow.steps.map(x => x.id === s.id ? st : x))}
             onMove={d => { const a = [...run.workflow.steps]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; setSteps(a) }}
             onRemove={() => setSteps(run.workflow.steps.filter(x => x.id !== s.id))}
-            onAct={act} outputEditor={{ change: editOutput, flush }} />
+            onAct={act} outputEditor={{ change: editOutput, flush, receive: receiveOutput,
+              flashes, clearFlash, selectShot: selection.selectShot }} />
         ))}
       </ol>
       {!running && (
@@ -670,39 +754,152 @@ function StepOutput({ run, step, state, disabled, editor }: {
 }) {
   const rounds = useStore(s => s.rounds)
   const out = state.output
+  const script = step.type === 'llm_script'
+  const video = step.type === 'h3_prompt'
+  const entries = script ? out.scenes : video ? out.items : undefined
   const thumbs = (ids: string[]) => (
     <div className="out-grid">{ids.map(id => { const r = rounds.find(x => x.id === id); return r ? <figure key={id}><img src={media.thumb(r)} alt="" /><figcaption>{rid(id)}</figcaption></figure> : <figure key={id} className="missing"><figcaption>{rid(id)}</figcaption></figure> })}</div>
   )
+  if (Array.isArray(entries)) return <ShotOutputs runId={run.id} stepId={step.id} shots={entries}
+    field={script ? 'keyframe_prompt' : 'video_prompt'} styleBible={script ? out.style_bible : undefined}
+    disabled={disabled} editor={editor} />
   return (
     <div className="step-out">
-      <span className="lbl">产出</span>
-      {step.type === 'llm_script' && Array.isArray(out.scenes) && (
-        <>
-          {out.style_bible && <p className="help">风格基调：{out.style_bible}</p>}
-          <div className="scenes">{(out.scenes as Record<string, string>[]).map((s, i) => (
-            <div key={i} className="scene">
-              <b data-user-content>{i + 1}. {s.title}</b>
-              <textarea data-user-content rows={2} disabled={disabled} value={s.keyframe_prompt || ''} aria-label={PROPOSAL_FIELD_LABELS.keyframe_prompt}
-                onChange={e => editor.change(step.id, 'scenes', i, e.target.value)} onBlur={() => void editor.flush()} />
-              <span className="scene-meta" data-user-content>{[s.video_prompt, s.audio_notes].filter(Boolean).join(' · ')}</span>
-            </div>
-          ))}</div>
-        </>
-      )}
-      {step.type === 'llm_script' && out.format === 'text' && <pre className="logbox sm">{out.text}</pre>}
+      <span className="lbl">{STEP_OUTPUT_COPY.label}</span>
+      {script && out.format === 'text' && <pre className="logbox sm" data-user-content>{out.text}</pre>}
       {step.type === 'web_asset_fetch' && Array.isArray(out.images) && (
-        <div className="out-grid">{(out.images as { filename: string; title: string }[]).map(im => <figure key={im.filename}><img src={media.assetThumb(run.id, im.filename)} alt="" /><figcaption>{im.title}</figcaption></figure>)}</div>
+        <div className="out-grid">{(out.images as { filename: string; title: string }[]).map(im => <figure key={im.filename}><img src={media.assetThumb(run.id, im.filename)} alt="" /><figcaption data-user-content>{im.title}</figcaption></figure>)}</div>
       )}
       {(step.type === 'image_gen' || step.type === 'video_gen') && Array.isArray(out.round_ids) && thumbs(out.round_ids)}
-      {step.type === 'h3_prompt' && Array.isArray(out.items) && (
-        <div className="scenes">{(out.items as { title: string; video_prompt: string }[]).map((it, i) => (
-          <div key={i} className="scene"><b data-user-content>{i + 1}. {it.title}</b>
-            <textarea data-user-content rows={3} disabled={disabled} value={it.video_prompt || ''} aria-label={PROPOSAL_FIELD_LABELS.video_prompt}
-              onChange={e => editor.change(step.id, 'items', i, e.target.value)} onBlur={() => void editor.flush()} /></div>
-        ))}</div>
-      )}
-      {step.type === 'video_stitch' && out.final_round_id && <p className="help">已合成 {out.clip_count} 段，约 {out.duration_s} 秒，成片 {rid(out.final_round_id)}。</p>}
-      {step.type === 'asset_input' && <p className="help">已登记素材，供后续步骤引用。</p>}
+      {step.type === 'video_stitch' && out.final_round_id && <p className="help">{STEP_OUTPUT_COPY.stitched(out.clip_count, out.duration_s, rid(out.final_round_id))}</p>}
+      {step.type === 'asset_input' && <p className="help">{STEP_OUTPUT_COPY.assets}</p>}
     </div>
   )
+}
+
+function ShotOutputs({ runId, stepId, shots, field, styleBible, disabled, editor }: {
+  runId: string; stepId: string; shots: OutputShot[]; field: EditablePrompt; styleBible?: string;
+  disabled: boolean; editor: OutputEditor
+}) {
+  const reduce = useReducedMotion()
+  const toast = useStore(s => s.toast)
+  const [form, setForm] = useState<{ target: string; instruction: string }>()
+  const [waiting, setWaiting] = useState<string>()
+  const [proposals, setProposals] = useState<Record<string, Proposal>>({})
+  const input = useRef<HTMLInputElement>(null)
+  const target = form?.target
+  const batch = 'all'
+  const script = field === 'keyframe_prompt'
+
+  useLayoutEffect(() => {
+    if (target !== undefined && !disabled) input.current?.focus({ preventScroll: true })
+  }, [target, disabled])
+
+  function saveProposal(id: string, proposal?: Proposal) {
+    setProposals(current => {
+      if (proposal && id === batch) return { [batch]: proposal }
+      const next = { ...current }
+      if (proposal) {
+        delete next[batch]
+        next[id] = proposal
+      } else delete next[id]
+      return next
+    })
+  }
+
+  async function rewrite(id: string, text: string) {
+    if (disabled || waiting !== undefined) return
+    setWaiting(id)
+    try {
+      if (!await editor.flush()) return
+      const proposal = await api.wf.rewriteShots(runId, stepId, {
+        shot_ids: id === batch ? [] : [id], field, instruction: text.trim() || C.stepAi.defaultInstruction,
+      })
+      saveProposal(id, proposal)
+      setForm(undefined)
+    } catch (err) {
+      toast(errorCopy(err instanceof ApiError ? err.code : undefined).text, 'err')
+    } finally { setWaiting(undefined) }
+  }
+
+  function rewriteButton(id: string, n?: number) {
+    return !disabled && <button className="btn sm ghost" aria-expanded={target === id}
+      aria-label={waiting === id || n === undefined ? undefined : C.stepAi.triggerAria(n)} disabled={waiting !== undefined}
+      onClick={() => {
+        if (n !== undefined) editor.selectShot(stepId, id, n)
+        setForm(target === id ? undefined : { target: id, instruction: '' })
+      }}>
+      {waiting === id ? <><span className="spinner" />{C.stepAi.generating}</>
+        : <><WandSparkles size={13} />{id === batch ? C.stepAi.rewriteAll : C.stepAi.trigger}</>}
+    </button>
+  }
+
+  function rewriteForm(id: string) {
+    return <AnimatePresence initial={false}>
+      {form?.target === id && !disabled && <motion.form className="shot-ai" key="instruction"
+        initial={reduce ? false : { height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
+        exit={reduce ? { opacity: 0 } : { height: 0, opacity: 0 }} transition={reduce ? instant : expand}
+        onSubmit={event => { event.preventDefault(); void rewrite(id, form.instruction) }}>
+        <div className="shot-ai-fields">
+          <input type="text" ref={input} data-user-content aria-label={C.stepAi.placeholder} placeholder={C.stepAi.placeholder}
+            maxLength={3000} disabled={waiting !== undefined} value={form.instruction}
+            onChange={event => setForm({ target: id, instruction: event.target.value })} />
+          <button className="btn sm primary" disabled={waiting !== undefined}>{C.stepAi.submit}</button>
+          <button type="button" className="iconbtn sm" disabled={waiting !== undefined} aria-label={C.stepAi.cancel}
+            onClick={() => setForm(undefined)}><X size={14} /></button>
+        </div>
+      </motion.form>}
+    </AnimatePresence>
+  }
+
+  function proposalCard(id: string) {
+    const proposal = proposals[id]
+    const changed = proposal?.readset.some(read => {
+      const shot = shots.find(item => item.shot_id === read.shot_id)
+      const original = proposal.before.find(item => item.shot_id === read.shot_id)
+      return !shot || shot.generation !== read.generation || shot.field_versions[field] !== read.expected_version ||
+        (shot[field] || '') !== original?.text
+    })
+    return <AnimatePresence initial={false}>
+      {proposal && <WorkflowProposal key={proposal.proposal_id} variant="inline" proposal={proposal}
+        disabled={disabled || waiting !== undefined} changed={changed} beforeWrite={editor.flush}
+        onChange={next => saveProposal(id, next)} onUpdate={editor.receive} onDismiss={() => saveProposal(id)} />}
+    </AnimatePresence>
+  }
+
+  return <div className="step-out">
+    <div className="row between"><span className="lbl">{STEP_OUTPUT_COPY.label}</span>
+      {shots.length >= 2 && rewriteButton(batch)}
+    </div>
+    {rewriteForm(batch)}{proposalCard(batch)}
+    {styleBible && <p className="help" data-user-content>{STEP_OUTPUT_COPY.styleBible(styleBible)}</p>}
+    <div className="scenes">{shots.map((shot, i) => {
+      const { shot_id: id } = shot
+      const n = shot.scene_index ?? shot.index ?? i + 1
+      return <div key={id} className="scene">
+        <div className="scene-h"><b data-user-content>{n}. {shot.title}</b><span className="grow" />{rewriteButton(id, n)}</div>
+        <ShotPrompt stepId={stepId} shot={shot} n={n} field={field} disabled={disabled} editor={editor} />
+        {rewriteForm(id)}{proposalCard(id)}
+        {script && <span className="scene-meta" data-user-content>{[shot.video_prompt, shot.audio_notes].filter(Boolean).join(' · ')}</span>}
+      </div>
+    })}</div>
+  </div>
+}
+
+function ShotPrompt({ stepId, shot, n, field, disabled, editor }: {
+  stepId: string; shot: OutputShot; n: number; field: EditablePrompt; disabled: boolean; editor: OutputEditor
+}) {
+  const reduce = useReducedMotion()
+  const input = useRef<HTMLTextAreaElement>(null)
+  const key = outputKey(shot.shot_id, field)
+  const flash = reduce ? undefined : editor.flashes[key]
+  useLayoutEffect(() => {
+    if (!flash) return
+    const active = input.current?.getAnimations().find(animation => 'animationName' in animation && animation.animationName === 'agent-flash')
+    if (active) active.currentTime = 0
+  }, [flash])
+  return <textarea ref={input} data-user-content data-flash={flash} rows={field === 'keyframe_prompt' ? 2 : 3} disabled={disabled}
+    value={shot[field] || ''} aria-label={PROPOSAL_FIELD_LABELS[field]} onChange={event => editor.change(stepId, shot, field, event.target.value)}
+    onFocus={() => editor.selectShot(stepId, shot.shot_id, n)} onBlur={() => void editor.flush()}
+    onAnimationEnd={event => { if (flash && event.animationName === 'agent-flash') editor.clearFlash(key, flash) }} />
 }

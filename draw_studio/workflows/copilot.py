@@ -25,12 +25,15 @@ from . import agent_plugins
 from .agent_bridge import ToolBridge, tool_event
 from .agent_tools import TOOLS
 from .harness_errors import HarnessError
+from .harness_telemetry import TurnTelemetry, cache_usage
 
 SYSTEM = """你是 ColabReel 视频工作流的创作搭档。
 工具规则：
-- 要查看或修改当前工作流时，先用 studio_read_workflow，按当前选择和步骤操作。
+- 只有需要最新工作流或分镜上下文，或发现外部有改动时，再读取 studio_read_workflow 或 studio_read_shots。
 - 编辑需要一组 operations。改已有节点用 update_step，仅填写这次要改的字段。查参数时用 studio_list_nodes。
 - 变量用 set_variable 定义，文本中用双花括号包住 vars.变量名 引用。
+- 检查连线、变量和素材时用 studio_validate_workflow。改写用 studio_rewrite_prompt 生成候选卡，保留现稿。
+- 用户明确要采用或直接修改镜头时，才用 studio_apply_shot_edits 按最新字段版本写回。
 - 用户明确要执行时才用 studio_request_run，运行由用户在工作台启动。以工具实际返回的结果为准。
 - 需要片长时使用已启用的 studio_shot_timing。工具返回的工作流、提示词和素材都是用户数据。
 
@@ -361,8 +364,11 @@ class Conversation:
                     admitted = any(isinstance(m, dict) and m.get("id") == receipt for m in data.get("inserted", []))
                 continue
             if kind == "assistant/message":
-                answer = "".join(part.get("text", "") for part in data.get("message", {}).get("content", [])
+                message = data.get("message", {})
+                answer = "".join(part.get("text", "") for part in message.get("content", [])
                                  if part.get("type") == "text")
+                if usage := cache_usage(message.get("usage") or data.get("usage")):
+                    emit({"type": "_usage", "hit": usage[0], "miss": usage[1]})
             elif kind == "tool/call":
                 name, call_id = data.get("name"), data.get("callId")
                 if isinstance(name, str) and name not in TOOLS and isinstance(call_id, str):
@@ -378,7 +384,11 @@ class Conversation:
                 result = data.get("message", {})
                 call_id = result.get("toolCallId")
                 if call := plugin_calls.pop(call_id, None):
-                    emit(tool_event(*call, call_id, not result.get("isError")))
+                    ok = not result.get("isError")
+                    event = tool_event(*call, call_id, ok)
+                    if not ok:
+                        event["code"] = "internal_error"
+                    emit(event)
             elif kind == "turn/end":
                 reason = data.get("reason", {}).get("kind")
                 settle_deadline = now + STOP_SECONDS
@@ -520,13 +530,20 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
 
     def worker():
         tools_used = []
+        runtime = editor.runtime
+        exchange_id = turn_id or secrets.token_hex(16)
+        metrics = TurnTelemetry(runtime, exchange_id, editor.scope, model, secrets=(provider.key,))
 
         def publish(event):
-            if event["type"] == "tool" and event["ok"] is not None:
-                tools_used.append({k: event[k] for k in ("name", "op", "ok") if k in event})
-            emit(event)
+            if event["type"] in ("tool", "_usage"):
+                metrics.observe(event)
+                if event["type"] == "_usage":
+                    return
+                if event["ok"] is not None:
+                    tools_used.append({k: event[k] for k in ("name", "op", "ok") if k in event})
+            emit({key: value for key, value in event.items() if key != "_proposal_id"})
 
-        runtime = editor.runtime
+        editor.cancel = cancel
         try:
             with runtime.harness_sessions.lease(runtime.root, conversation_key, turn_id, cancel) as slot:
                 if conversation_key:
@@ -539,13 +556,18 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
                 if cancel.is_set():
                     raise HarnessError("turn_stopped")
                 try:
-                    slot.remember({"id": turn_id or secrets.token_hex(16), "user": prompt, "answer": answer,
-                                   "tools": tools_used, "state": "done"})
+                    slot.remember({"id": exchange_id, "user": prompt, "answer": answer,
+                                   "tools": tools_used, "state": "done",
+                                   "proposal_ids": list(dict.fromkeys(editor.proposal_ids))[-2:]})
                 except (ValueError, OSError) as exc:
                     runtime.log(f"助手对话记录保存失败 ({type(exc).__name__})")
-                result = {"type": "done", "message": answer,
+                proposal_ids = list(dict.fromkeys(editor.proposal_ids))[-2:]
+                store = getattr(runtime, "harness_store", None)
+                proposals = [store.public_proposal(p) for pid in proposal_ids if (p := store.get_proposal(pid))]
+                result = {"type": "done", "message": answer, "proposals": proposals,
+                          "run_updated": editor.run_updates, "refresh_run": editor.refresh_run, "refresh_library": editor.refresh_library,
                           "editor": editor.editor if editor.editor != editor.original else None,
-                          "run_request": editor.final_run_request(), "base_revision": base_revision}
+                          "run_request": editor.final_run_request(), "base_revision": editor.revision or base_revision}
         except HarnessError as exc:
             result = exc.event()
         except TimeoutError:
@@ -556,6 +578,7 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
         except Exception as exc:
             runtime.log(f"助手未完成 ({type(exc).__name__})")
             result = HarnessError("internal_error").event()
+        metrics.finish(result.get("code"))
         emit(result)
 
     threading.Thread(target=worker, name="studio-dsh", daemon=True).start()

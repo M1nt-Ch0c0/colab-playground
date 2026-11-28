@@ -1,9 +1,10 @@
 import json
-from typing import Literal
+import uuid
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Path, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..errors import LlmError
 from ..workflows import agent_plugins
@@ -12,6 +13,11 @@ from ..workflows.copilot import recent_exchanges, turn_events
 from ..workflows.definitions import normalize_workflow_def, workflow_variables
 from ..workflows.engine import RUN_ID_RE
 from ..workflows.harness_errors import HarnessError
+from ..workflows.harness_telemetry import TurnTelemetry
+from ..workflows.shot_service import (
+    Proposal, ProposalAction, RewriteInput, ShotEdit, ShotId, Shots, ShotWriteResult, Telemetry,
+    apply_shot_edits, read_shots, reject_proposal, rewrite_prompt, undo_change,
+)
 
 from .core import IMAGE_BODY, Raw, State, flag, image_type, media_file, media_route, readable
 
@@ -36,16 +42,35 @@ class AgentMessage(BaseModel):
     text: str = Field(max_length=3000)
 
 
+class ComposerContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(default="", max_length=12000)
+    model: str | None = Field(default=None, max_length=128)
+    workflow: Literal["t2va", "fl2va", "ref2va"] | None = None
+    num_frames: int | None = Field(default=None, ge=1, le=400)
+    video_task: Literal["edit", "continue", "motion"] | None = None
+
+
 class AgentTurn(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     history: list[AgentMessage] = Field(default_factory=list, max_length=12)
     workflow: dict
     topic: str = Field(default="", max_length=2000)
     selected_step: str = Field(default="", max_length=48)
+    selected_shot: ShotId | None = None
+    workspace: Literal["workflow", "image", "video"] = "workflow"
+    composer: ComposerContext | None = None
     run_id: str | None = Field(default=None, max_length=80)
     draft_id: str | None = Field(default=None, pattern="^[a-f0-9]{32}$")
     turn_id: str | None = Field(default=None, pattern="^[a-f0-9]{32}$")
     reload_plugins: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def composer_workflow(cls, value):
+        if isinstance(value, dict) and value.get("workspace") in ("image", "video") and "workflow" not in value:
+            return {**value, "workflow": {"steps": []}}
+        return value
 
 
 class AgentExchange(BaseModel):
@@ -54,6 +79,7 @@ class AgentExchange(BaseModel):
     answer: str
     tools: list[dict]
     state: Literal["done"]
+    proposals: list[Proposal] = Field(default_factory=list)
 
 
 class AgentConversation(BaseModel):
@@ -101,7 +127,13 @@ def agent_plugin_action(package: str, body: PluginAction, s: State):
 def agent_conversation(key: str, s: State):
     if not RUN_ID_RE.fullmatch(key):
         raise HarnessError("invalid_argument")
-    return {"exchanges": recent_exchanges(s.root, key)}
+    store = s.harness_store
+    exchanges = recent_exchanges(s.root, key)
+    for row in exchanges:
+        ids = row.get("proposal_ids")
+        row["proposals"] = [store.public_proposal(proposal) for pid in ids[-2:] if isinstance(pid, str)
+                            and (proposal := store.get_proposal(pid)) and proposal["scope_key"] == key] if isinstance(ids, list) else []
+    return {"exchanges": exchanges}
 
 
 @router.post("/agent/conversations/{key}/stop", response_model=StopResult)
@@ -152,7 +184,11 @@ def agent_turn(body: AgentTurn, s: State):
         provider, model = s.studio.llm.resolve()
     except (ValueError, LlmError) as exc:
         raise HarnessError("model_unconfigured") from exc
-    editor = EditorTools(s, snapshot, selected=body.selected_step, run_id=body.run_id)
+    if body.workspace != "workflow" and (body.run_id or body.selected_step or body.selected_shot):
+        raise HarnessError("invalid_argument")
+    editor = EditorTools(s, snapshot, selected=body.selected_step, run_id=body.run_id, scope=key, revision=revision,
+                         workspace=body.workspace, selected_shot=body.selected_shot,
+                         composer=body.composer.model_dump(exclude_none=True) if body.composer else None)
 
     async def stream():
         async for event in turn_events(editor, provider, model, body.message.strip(), revision, key, body.turn_id,
@@ -162,6 +198,52 @@ def agent_turn(body: AgentTurn, s: State):
 
     return StreamingResponse(stream(), media_type="application/x-ndjson",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@readable(router, "/runs/{run_id}/shots", response_model=Shots)
+def run_shots(run_id: str, s: State, step_id: Annotated[str | None, Query(max_length=48)] = None):
+    return {"shots": read_shots(s, run_id, step_id)}
+
+
+@router.post("/runs/{run_id}/steps/{step_id}/shots/rewrite", response_model=Proposal)
+def rewrite_shots(run_id: str, step_id: str, body: RewriteInput, s: State):
+    call = {"type": "tool", "call_id": "rewrite", "name": "studio_rewrite_prompt"}
+    metrics = TurnTelemetry(s, uuid.uuid4().hex, run_id if RUN_ID_RE.fullmatch(run_id) else "", "")
+    metrics.observe({**call, "ok": None})
+    code = "internal_error"
+    try:
+        proposal = rewrite_prompt(s, body, scope=run_id, run_id=run_id, step_id=step_id, record_model=metrics.record_model)
+        metrics.observe({**call, "ok": True, "_proposal_id": proposal["proposal_id"]})
+        return proposal
+    except HarnessError as exc:
+        code = exc.code
+        raise
+    finally:
+        metrics.finish(code)
+
+
+ProposalId = Annotated[str, Path(pattern=r"^pr_[a-f0-9]{24}$")]
+UndoId = Annotated[str, Path(pattern=r"^un_[a-f0-9]{24}$")]
+
+
+@router.post("/agent/proposals/{proposal_id}/apply", response_model=ShotWriteResult)
+def adopt_proposal(proposal_id: ProposalId, s: State, body: ProposalAction = Body(default_factory=ProposalAction)):
+    return apply_shot_edits(s, proposal_id=proposal_id, atomicity=body.atomicity)
+
+
+@router.post("/agent/proposals/{proposal_id}/reject", response_model=Proposal)
+def discard_proposal(proposal_id: ProposalId, s: State):
+    return reject_proposal(s, proposal_id)
+
+
+@router.post("/agent/undo/{undo_id}", response_model=ShotWriteResult)
+def undo_proposal(undo_id: UndoId, s: State):
+    return undo_change(s, undo_id)
+
+
+@readable(router, "/agent/telemetry", response_model=Telemetry)
+def agent_telemetry(s: State):
+    return s.harness_store.telemetry()
 
 
 @readable(router, "")
@@ -231,6 +313,14 @@ def retry(run_id: str, step_id: str, s: State, body: dict = Body(default_factory
 @router.post("/runs/{run_id}/steps/{step_id}/output")
 @router.patch("/runs/{run_id}/steps/{step_id}/output")
 def save_output(run_id: str, step_id: str, body: dict, s: State):
+    if "shot_edits" in body:
+        if body.keys() != {"shot_edits"} or not isinstance(body["shot_edits"], list) or not 1 <= len(body["shot_edits"]) <= 32:
+            raise HarnessError("invalid_argument")
+        try:
+            edits = [ShotEdit.model_validate(row).model_dump() for row in body["shot_edits"]]
+        except ValidationError as exc:
+            raise HarnessError("invalid_argument") from exc
+        return apply_shot_edits(s, run_id=run_id, step_id=step_id, patches=edits, record_undo=False)
     patch = body["output"] if isinstance(body.get("output"), dict) else body
     return {"ok": True, "run": s.workflows.update_step_output(run_id, step_id, patch)}
 

@@ -38,13 +38,16 @@ function layout(steps: WfStep[]) {
 export function useWorkflowSelection(runId?: string) {
   const params = new URLSearchParams(location.search)
   const linked = !!runId && params.get('workflow') === runId
-  const [selected, select] = useState(linked ? params.get('node') || '' : '')
+  const [selected, setSelected] = useState(linked ? params.get('node') || '' : '')
+  const [shot, setShot] = useState<{ stepId: string; id: string; n: number }>()
   const [agentOpen, setAgentOpen] = useState(linked && params.get('assistant') === 'open')
+  function select(id: string) { setSelected(id); setShot(undefined) }
+  function selectShot(stepId: string, id: string, n: number) { setSelected(stepId); setShot({ stepId, id, n }) }
   function ask(id: string) {
     select(id)
     setAgentOpen(true)
   }
-  return { selected, select, agentOpen, setAgentOpen, ask }
+  return { selected, select, shot, selectShot, agentOpen, setAgentOpen, ask }
 }
 
 type VariableKind = keyof typeof C.vars.types
@@ -161,6 +164,10 @@ export function WorkflowBoard({ binding, change, selection, run }: {
   const disabled = !!binding.locked || binding.status === 'running'
   const { selected, select, ask } = selection
   const current = wf.steps.find(step => step.id === selected)
+  const output = current && run?.step_states[current.id]?.output
+  const shots = output?.scenes ?? output?.items
+  const shot = selection.shot?.stepId === current?.id && Array.isArray(shots) &&
+    shots.some(row => row?.shot_id === selection.shot?.id) ? selection.shot : undefined
   const [showVars, setShowVars] = useState(false)
   const [scale, setScale] = useState(1)
   const [preview, setPreview] = useState<{ id: string; point: Point } | null>(null)
@@ -313,6 +320,6 @@ export function WorkflowBoard({ binding, change, selection, run }: {
       </footer>
     </section>
     <WorkflowAgent binding={binding} open={selection.agentOpen} setOpen={selection.setAgentOpen}
-      selected={current?.id ?? ''} clearSelection={() => select('')} />
+      selected={current?.id ?? ''} selectedShot={shot} clearSelection={() => select('')} />
   </>
 }

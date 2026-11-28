@@ -549,3 +549,10 @@ export function findBannedTerms(text: string, surface: CopySurface = 'chrome'): 
   }
   return hits
 }
+
+export const STEP_OUTPUT_COPY = {
+  label: '产出',
+  styleBible: (text: string) => `风格基调：${text}`,
+  stitched: (count: number, seconds: number, id: string) => `已合成 ${count} 段，约 ${seconds} 秒，成片 ${id}。`,
+  assets: '已登记素材，供后续步骤引用。',
+} as const

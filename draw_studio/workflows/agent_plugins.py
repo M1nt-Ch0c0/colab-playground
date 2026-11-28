@@ -17,7 +17,6 @@ from tempfile import NamedTemporaryFile
 
 from deepseek_harness_runtime import resolve_bundled_launch_args
 
-from .agent_tools import TOOL_LABELS
 from .harness_errors import HarnessError
 
 PACKAGE = "studio-shot-timing"
@@ -134,6 +133,8 @@ def _ensure_active(home):
 
 
 def inventory(root):
+    from .agent_tools import TOOL_LABELS
+
     home = profile_home(root)
     current = _read_active(home) or _legacy(home)
     return {"builtin_tools": TOOL_LABELS, "plugin": {

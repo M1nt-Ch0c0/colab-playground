@@ -1,11 +1,18 @@
 """Tool edits use the same workflow model as the browser without changing a stored run."""
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from draw_studio.workflows.agent_tools import EditorTools, editor_revision
+from draw_studio.workflows.agent_plugins import inventory
+from draw_studio.workflows.agent_tools import TOOLS, EditorTools, editor_revision
 from draw_studio.workflows.definitions import normalize_workflow_def
 from draw_studio.workflows.harness_errors import ERROR_DEFAULTS, HARNESS_ERROR_CODES, HarnessError
+from tests.harness_fixture import local_runtime
+from tests.http_fixture import png
 
 
 def step(id, type, **config):
@@ -207,3 +214,138 @@ class HarnessToolTests(unittest.TestCase):
         self.assertEqual(error.event(), {"type": "error", "code": "revision_conflict", "message": error.message})
         self.assertEqual(HarnessError("model_error").status, 502)
         self.assertEqual(HarnessError("turn_timeout").status, 504)
+
+    def test_m2_registry_is_static_and_creative_only(self):
+        expected = (
+            "studio_read_context", "studio_get_catalog", "studio_list_templates", "studio_manage_template", "studio_list_runs",
+            "studio_create_draft", "studio_read_workflow", "studio_list_nodes", "studio_edit_workflow", "studio_validate_workflow",
+            "studio_manage_run_assets", "studio_read_shots", "studio_rewrite_prompt", "studio_apply_shot_edits", "studio_undo_change",
+            "studio_request_run", "studio_run_status", "studio_find_assets", "studio_inspect_asset",
+        )
+        self.assertEqual(tuple(TOOLS), expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            labels = inventory(Path(tmp))["builtin_tools"]
+        self.assertEqual(tuple(labels), expected)
+        copy_source = (Path(__file__).resolve().parents[1] / "web/src/features/workflow/agentCopy.ts").read_text()
+        for name, label in labels.items():
+            self.assertIn(f"{name}: '{label}'", copy_source)
+
+        tools = editor(step("script", "llm_script"))
+        for name in ("studio_colab", "studio_hf_token", "studio_idle_timeout", "studio_proxy", "studio_llm_provider", "studio_purge"):
+            self.assert_code("invalid_argument", tools.call, name, {})
+        self.assertNotIn("idle", tools.call("studio_get_catalog", {"section": "limits"}))
+        self.assert_code("invalid_argument", tools.call, "studio_get_catalog", {"section": "providers"})
+        self.assert_code("invalid_argument", tools.call, "studio_list_runs", {"limit": True})
+        self.assert_code("invalid_argument", tools.call, "studio_read_context", {"include_api_key": True})
+        self.assert_code("invalid_argument", tools.call, "studio_find_assets", {"starred": 1})
+        self.assert_code("invalid_argument", tools.call, "studio_find_assets", {"offset": -1})
+        self.assert_code("invalid_argument", tools.call, "studio_find_assets", {"limit": 25})
+        self.assert_code("invalid_argument", tools.call, "studio_inspect_asset", {"round_id": 7})
+        self.assert_code("invalid_argument", tools.call, "studio_run_status", {"op": "cancel"})
+        self.assert_code("invalid_argument", tools.call, "studio_create_draft", {"definition": {"steps": [step("refs", "asset_input", hf_token="no")]}})
+
+    def test_context_preflight_templates_and_draft_idempotency(self):
+        with tempfile.TemporaryDirectory() as tmp, local_runtime(Path(tmp)) as runtime:
+            definition = {"name": "Cut", "variables": {"tone": "blue"}, "steps": [
+                step("refs", "asset_input", asset_files=["missing.png"]),
+                step("script", "llm_script", instruction="{{vars.palette}}"),
+                step("prompts", "h3_prompt", scenes_from="script", video_from="missing"),
+                step("clips", "video_gen", scenes_from="script", prompts_from="prompts", extra_ref_sources=["refs"]),
+            ]}
+            run = runtime.workflows.create_run({"workflow": definition, "topic": "Moon"})
+            tools = EditorTools(runtime, run, run_id=run["id"], selected="script", selected_shot="sh_abcdef123456")
+            context = tools.call("studio_read_context", {})
+            self.assertEqual((context["workspace"], context["run_id"], context["selected_step"], context["selected_shot"]),
+                             ("workflow", run["id"], "script", "sh_abcdef123456"))
+            self.assertEqual(context["revision"], editor_revision(run))
+            self.assertEqual(context["references"], {"image_count": 0, "first": False, "last": False, "video": False})
+            preflight = tools.call("studio_validate_workflow", {})
+            self.assertFalse(preflight["valid"])
+            self.assertEqual(preflight["affected_steps"], ["refs", "script", "prompts", "clips"])
+            self.assertIn({"code": "upstream_invalid", "step_id": "prompts", "field": "video_from", "source": "missing"}, preflight["issues"])
+            self.assertIn({"code": "variable_missing", "step_id": "script", "variable": "palette"}, preflight["issues"])
+            self.assertIn({"code": "media_invalid", "step_id": "refs", "field": "asset_files"}, preflight["issues"])
+            self.assertEqual(runtime.workflows.get_run(run["id"])["status"], "draft")
+            self.assert_code("invalid_argument", tools.call, "studio_manage_template", {"op": "delete", "template_id": "builtin:story-short"})
+
+            definition["steps"][2]["config"]["video_from"] = ""
+            runtime.workflows.update_run_config(run["id"], {"workflow": definition, "topic": "Last light"})
+            self.assertEqual(tools.call("studio_read_workflow", {})["topic"], "Last light")
+            tools = EditorTools(runtime, runtime.workflows.get_run(run["id"]), run_id=run["id"], selected="script")
+            saved = tools.call("studio_manage_template", {"op": "save", "name": "Saved cut"})
+            template_id = saved["template_id"]
+            self.assertEqual(runtime.workflows.get_workflow(template_id)["steps"][0]["config"]["asset_files"], [])
+            self.assertIn({"id": template_id, "name": "Saved cut", "description": "", "builtin": False, "step_count": 4},
+                          tools.call("studio_list_templates", {}))
+            args = {"template_id": template_id, "request_id": "f" * 32}
+            draft = tools.call("studio_create_draft", args)
+            self.assertEqual(tools.call("studio_create_draft", args), draft)
+            self.assertEqual((draft["run_id"], draft["status"]), ("wr_" + "f" * 32, "draft"))
+            self.assertEqual(sum(item["id"] == draft["run_id"] for item in tools.call("studio_list_runs", {})), 1)
+            self.assertEqual(tools.call("studio_manage_template", {"op": "delete", "template_id": template_id}), {"deleted": template_id})
+
+    def test_run_assets_gallery_whitelist_and_incremental_logs(self):
+        with tempfile.TemporaryDirectory() as tmp, local_runtime(Path(tmp)) as runtime:
+            wf = {"name": "Cut", "steps": [step("refs", "asset_input")]}
+            run = runtime.workflows.create_run({"workflow": wf})
+            rid = run["id"]
+            uploaded = runtime.workflows.upload_asset(rid, png(), step_id="refs")
+            original = runtime.workflows.get_run(rid)
+            tools = EditorTools(runtime, original, run_id=rid, selected="refs", revision=editor_revision(original))
+            first, second = "007", "008"
+            for gallery_id in (first, second):
+                (runtime.store.rounds / (gallery_id + ".png")).write_bytes(png((24, 12)))
+                (runtime.store.rounds / (gallery_id + ".json")).write_text(json.dumps({"prompt": "Evening light", "steps": 30,
+                    "starred": True, "source_rounds": ["003", 4], "api_key": "SECRET", "cookie": "SECRET"}))
+            self.assertEqual(tools.call("studio_find_assets", {"query": "evening", "kind": "image", "starred": True,
+                                                                 "offset": 1, "limit": 1})[0]["id"], first)
+            asset = tools.call("studio_inspect_asset", {"round_id": first})
+            self.assertEqual((asset["id"], asset["width"], asset["height"], asset["steps"], asset["source_rounds"]),
+                             (first, 24, 12, 30, ["003"]))
+            self.assertNotIn("SECRET", json.dumps(asset))
+            self.assert_code("media_invalid", tools.call, "studio_manage_run_assets", {"op": "bind_rounds", "round_ids": ["009"]})
+            tool = "studio_manage_run_assets"
+            self.assertEqual(tools.call(tool, {"op": "bind_rounds", "round_ids": [first, first]})["round_ids"], [first])
+            record = runtime.workflows.get_run(rid)
+            self.assertEqual(tools.revision, editor_revision(record))
+            self.assertEqual(tools.editor, tools.original)
+            self.assertEqual(tools.call(tool, {"op": "list"})["assets"][0]["filename"], uploaded["filename"])
+            self.assertEqual(tools.call(tool, {"op": "remove", "round_ids": [first]})["round_ids"], [])
+            self.assertEqual(tools.call(tool, {"op": "remove", "filename": uploaded["filename"]}), {"assets": []})
+            self.assertIsNotNone(runtime.store.media_path(first))
+            self.assert_code("not_found", tools.call, tool, {"op": "remove", "filename": "../007.png"})
+
+            engine = runtime.workflows
+            with engine.shot_run(rid, write=True) as current, patch.object(engine, "log"):
+                current["status"] = "paused"
+                for n in range(250):
+                    engine._append_log_locked(current, f"Step {n}")
+                engine._write_run_locked(current)
+            status = tools.call("studio_run_status", {"op": "watch", "log_offset": 249})
+            self.assertEqual(status["next_log_offset"], 251)
+            self.assertTrue(status["logs"][0].endswith("Step 248"))
+            self.assert_code("invalid_argument", tools.call, "studio_run_status", {"op": "cancel"})
+            canceled = tools.call("studio_run_status", {"op": "cancel", "run_id": rid})
+            self.assertEqual(canceled["status"], "canceled")
+            after = tools.call("studio_run_status", {"op": "watch", "log_offset": status["next_log_offset"]})
+            self.assertEqual(len(after["logs"]), 1)
+
+    def test_composer_proposal_and_shot_parameter_boundaries(self):
+        with tempfile.TemporaryDirectory() as tmp, local_runtime(Path(tmp)) as runtime:
+            snapshot = {"workflow": {"name": "Cut", "steps": []}, "topic": ""}
+            composer = {"prompt": "A street flooded with cool light", "model": "image-model", "num_frames": 129}
+            tools = EditorTools(runtime, snapshot, workspace="video", composer=composer)
+            self.assertEqual(tools.call("studio_read_context", {})["composer"], composer)
+            provider = SimpleNamespace(id="fixture", key="secret")
+            with patch.object(runtime.studio.llm, "resolve", return_value=(provider, "test")), \
+                 patch.object(runtime.studio, "write_prompt_rich", return_value={"prompt": "New shot"}) as writer:
+                proposal = tools.call("studio_rewrite_prompt", {"instruction": "Warmer light"})
+            self.assertEqual((proposal["kind"], proposal["before"][0]["n"], proposal["after"][0]["text"]), ("composer", 0, "New shot"))
+            self.assertEqual(writer.call_args.kwargs["mode"], "video")
+            self.assertEqual(runtime.harness_store.get_proposal(proposal["proposal_id"]), proposal)
+            self.assert_code("approval_required", tools.call, "studio_apply_shot_edits", {"proposal_id": proposal["proposal_id"]})
+            other = EditorTools(runtime, snapshot)
+            self.assert_code("not_found", other.call, "studio_apply_shot_edits", {"proposal_id": proposal["proposal_id"]})
+            self.assert_code("invalid_argument", tools.call, "studio_rewrite_prompt", {"target": "composer", "instruction": "x", "field": "video_prompt"})
+            edit = {"shot_id": "sh_abcdef123456", "field": "keyframe_prompt", "generation": True, "expected_version": 1, "value": "x"}
+            self.assert_code("invalid_argument", tools.call, "studio_apply_shot_edits", {"run_id": "wr_other", "step_id": "script", "edits": [edit]})

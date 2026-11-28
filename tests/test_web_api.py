@@ -15,7 +15,7 @@ import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -234,6 +234,121 @@ class WebTests(unittest.TestCase):
             self.assertNotIn(agent_plugins.TOOL, backend.tools[-1])
             self.assertTrue(self.req("POST", api_plugin, json={"action": "enable"}).json()["plugin"]["enabled"])
             self.assertFalse(self.req("POST", api_plugin, json={"action": "remove"}).json()["plugin"]["installed"])
+            data = self.req("GET", prefix + "/telemetry").json()
+            self.assertEqual(data["by_tool"][agent_plugins.TOOL]["total"], 2)
+            self.assertEqual(data["by_tool"]["plugin"]["success_rate"], 1)
+
+    def test_inline_shot_proposal_apply_reject_undo_and_telemetry(self):
+        prefix = "/api/workflows/agent"
+        wf = {"name": "Evening cut", "steps": [{"id": "script", "type": "llm_script"}, {"id": "h3", "type": "h3_prompt"}]}
+        run = self.req("POST", "/api/workflows/runs", json={"workflow": wf}, expected=201).json()["run"]
+        path = "/api/workflows/runs/" + run["id"]
+        self.req("POST", path + "/steps/script/output", json={"output": {"scenes": [{"title": "Arrival", "keyframe_prompt": "Blue at dusk"}]}})
+        original = "A unique long user prompt about the camera rising beside the sea."
+        self.req("POST", path + "/steps/h3/output", json={"output": {"items": [{"title": "Arrival", "video_prompt": original}]}})
+        rid = self.req("POST", "/api/rounds/import?kind=image&name=Keyframe.png", data=png()).json()["id"]
+        shots = self.req("GET", path + "/shots").json()["shots"]
+        self.assertEqual([shot["step_id"] for shot in shots], ["script", "h3"])
+        shot = shots[1]
+        self.assertRegex(shot["shot_id"], r"^sh_[a-f0-9]{12}$")
+        self.assertEqual(self.req("GET", path + "/shots?step_id=h3").json(), {"shots": [shot]})
+        self.assertEqual(self.req("GET", path + "/shots?step_id=absent", expected=404).json()["code"], "not_found")
+        self.assertEqual(self.req("GET", prefix + "/telemetry", auth=False, expected=401).json()["code"], "invalid_argument")
+
+        rewrite = path + "/steps/h3/shots/rewrite"
+        instruction = "Keep the camera movement, switch to golden light."
+        body = {"shot_ids": [shot["shot_id"]], "instruction": instruction, "reference_round_ids": [rid]}
+        error = self.req("POST", rewrite, json=body, expected=400).json()
+        self.assertEqual(error["code"], "model_unconfigured")
+        self.assertEqual(self.req("POST", rewrite, json={**body, "shot_ids": [False]}, expected=400).json()["code"], "invalid_argument")
+        with gateway() as (base, key, calls):
+            self.s.studio.llm.save(kind="openai", name="Fixture", base_url_value=base + "/open/v1", api_key=key, models=["open-model"])
+            proposal = self.req("POST", rewrite, json=body).json()
+            self.assertEqual(proposal["kind"], "shots")
+            self.assertEqual(proposal["references_used"][0]["id"], rid)
+            self.req("GET", "/" + proposal["references_used"][0]["thumb"])
+            self.assertIn(instruction, json.dumps(calls[-1][2], ensure_ascii=False))
+            self.assertIn("image_url", json.dumps(calls[-1][2]))
+            self.assertEqual(proposal["before"][0]["text"], original)
+            candidate = proposal["after"][0]["text"]
+            self.assertEqual(candidate, "open result")
+            self.assertEqual(proposal["readset"][0], {"shot_id": shot["shot_id"], "field": "video_prompt", "generation": 1, "expected_version": 1})
+            self.assertEqual(proposal["writeset"][0]["value"], candidate)
+            self.assertEqual(self.req("GET", path + "/shots?step_id=h3").json()["shots"][0], shot)
+            action = prefix + "/proposals/" + proposal["proposal_id"]
+            adopted = self.req("POST", action + "/apply", json={"atomicity": "all"}).json()
+            self.assertEqual(adopted["step_output"]["items"][0]["video_prompt"], candidate)
+            self.assertEqual(adopted["applied"][0]["version"], 2)
+            self.assertEqual(self.req("POST", action + "/apply", json={}).json(), adopted)
+            undo = prefix + "/undo/" + adopted["undo_id"]
+            restored = self.req("POST", undo, json={}).json()
+            self.assertEqual(restored["run_updated"]["changes"][0]["version"], 3)
+            self.assertEqual(restored["step_output"]["items"][0]["video_prompt"], original)
+            self.assertEqual(restored["proposal"]["status"], "undone")
+            self.assertEqual(self.req("POST", undo, json={}, expected=409).json()["code"], "shot_conflict")
+            other = self.req("POST", rewrite, json=body).json()
+            reject = prefix + "/proposals/" + other["proposal_id"] + "/reject"
+            self.assertEqual(self.req("POST", reject, json={}).json()["status"], "rejected")
+            self.assertEqual(self.req("POST", reject, json={}).json()["status"], "rejected")
+            self.assertEqual(self.req("POST", reject.replace("/reject", "/apply"), json={}, expected=409).json()["code"], "shot_conflict")
+
+        telemetry = self.req("GET", prefix + "/telemetry").json()
+        self.assertEqual(telemetry["total"], 3)
+        self.assertAlmostEqual(telemetry["success_rate"], 2 / 3)
+        self.assertEqual(telemetry["by_error"], {"model_unconfigured": 1})
+        self.assertEqual(telemetry["proposal_outcomes"], {"undone": 1, "rejected": 1})
+        self.assertEqual(telemetry["proposal_adoption_rate"], .5)
+        self.assertGreater(telemetry["p95_ms"], 0)
+        with self.s.harness_store.transaction() as db:
+            metrics = json.dumps([dict(row) for row in db.execute("SELECT * FROM tool_telemetry")])
+        for confidential in (key, "fixture-token", original, instruction, candidate, "data:image", "api_key", "cookie"):
+            self.assertNotIn(confidential, metrics)
+
+    def test_agent_shot_cards_history_updates_and_sdk_cache_stats(self):
+        prefix = "/api/workflows/agent"
+        wf = {"name": "Cut", "steps": [{"id": "script", "type": "llm_script"}]}
+        run = self.s.workflows.create_run({"workflow": wf})
+        self.s.workflows.update_step_output(run["id"], "script", {"scenes": [{"title": "Close-up", "keyframe_prompt": "Original"}]})
+        shot = self.req("GET", f"/api/workflows/runs/{run['id']}/shots").json()["shots"][0]
+
+        def turn(name, args):
+            response = self.req("POST", prefix + "/turn", json={"message": "USE_CREATIVE_TOOL " + json.dumps([name, args]),
+                                "run_id": run["id"], "selected_step": "script", "selected_shot": shot["shot_id"],
+                                "workflow": run["workflow"], "topic": run["topic"]})
+            events = [json.loads(line) for line in response.iter_lines()]
+            self.assertEqual(events[-1]["type"], "done", events)
+            events_for_tool = [item for item in events if item["type"] == "tool"]
+            self.assertEqual([(item["name"], item["ok"]) for item in events_for_tool], [(name, None), (name, True)])
+            if "op" in args:
+                self.assertEqual([item["op"] for item in events_for_tool], [args["op"]] * 2)
+            self.assertTrue(all(not item["type"].startswith("_") for item in events))
+            return events[-1]
+
+        with stateful_model(self.root) as (base, backend):
+            self.s.studio.llm.save(kind="openai", name="test", base_url_value=base, api_key="fixture-model-secret", models=["test"])
+            rewrite = turn("studio_rewrite_prompt", {"instruction": "Evening light"})
+            self.assertEqual(rewrite["run_updated"], [])
+            proposal, = rewrite["proposals"]
+            self.assertEqual((proposal["status"], proposal["before"][0]["shot_id"]), ("pending", shot["shot_id"]))
+            adopted = turn("studio_apply_shot_edits", {"proposal_id": proposal["proposal_id"]})
+            self.assertEqual(adopted["run_updated"][0]["changes"][0]["value"], proposal["after"][0]["text"])
+            undo, = adopted["proposals"]
+            self.assertEqual(undo["status"], "applied")
+            rolled_back = turn("studio_undo_change", {"undo_id": undo["undo_id"]})
+            self.assertEqual(rolled_back["run_updated"][0]["changes"][0]["value"], "Original")
+            self.assertEqual(rolled_back["proposals"][0]["status"], "undone")
+            turn("studio_run_status", {"op": "watch"})
+            self.assertCountEqual(backend.tools[0], [*TOOLS, "test_counter"])
+            submitted = [names for names in backend.tools if names]
+            self.assertTrue(all(names == submitted[0] for names in submitted))
+
+        rows = self.req("GET", prefix + "/conversations/" + run["id"]).json()["exchanges"]
+        self.assertEqual([row["proposals"][0]["status"] for row in rows[:3]], ["undone"] * 3)
+        self.assertEqual(rows[-1]["tools"][0]["op"], "watch")
+        telemetry = self.req("GET", prefix + "/telemetry").json()
+        self.assertEqual(telemetry["total"], 4)
+        self.assertEqual(telemetry["proposal_outcomes"], {"undone": 1})
+        self.assertEqual((telemetry["cache_hit_tokens"], telemetry["cache_miss_tokens"]), (64, 48))
 
     def test_login_assets_and_private_api(self):
         index = self.req("GET", "/", auth=False)
@@ -789,7 +904,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(registry.path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(registry.path.parent.stat().st_mode), 0o700)
             # Simulate the previous schema without the preference column.
-            with sqlite3.connect(registry.path) as db:
+            with closing(sqlite3.connect(registry.path)) as db, db:
                 db.execute("ALTER TABLE providers DROP COLUMN enhanced_rewrite")
                 db.execute("UPDATE providers SET legacy=1")
             registry = Providers(self.root)

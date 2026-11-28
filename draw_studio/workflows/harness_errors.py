@@ -1,6 +1,7 @@
 """Error contract shared by the workflow agent's HTTP, tool and stream adapters."""
 from __future__ import annotations
 
+import re
 from typing import Literal, get_args
 
 from pydantic import BaseModel
@@ -60,4 +61,6 @@ class HarnessError(Exception):
 
 
 def is_agent_path(path: str) -> bool:
-    return path.startswith("/api/workflows/agent/")
+    return path.startswith("/api/workflows/agent/") or bool(re.fullmatch(
+        r"/api/workflows/runs/[^/]+/(?:shots|steps/[^/]+/shots/rewrite)", path.rstrip("/"),
+    ))

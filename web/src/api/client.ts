@@ -4,7 +4,8 @@ import type {
   AssetUpload, CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, LinkSpec, ProxyProfileBody, ProxyState, ProxyTest,
   References, RewriteBody, RoundsResponse, Round, Status, Storage, StudioPreset, TrashResponse, WfDef, WfRun, WorkflowsResponse,
   LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult, AgentErrorCode, AgentEvent,
-  AgentPlugins, AgentPluginAction, AgentTurnBody, SavedAgentExchange,
+  AgentPlugins, AgentPluginAction, AgentTurnBody, SavedAgentExchange, AgentTelemetry,
+  Proposal, ProposalAction, RewriteInput, Shot, ShotEdit, ShotWriteResult,
 } from './types'
 
 export class ApiError extends Error {
@@ -193,6 +194,13 @@ export const api = {
     stopTurn: (key: string, turn_id: string) => post<{ stopped: boolean }>(`api/workflows/agent/conversations/${enc(key)}/stop`, { turn_id }),
     plugins: () => get<AgentPlugins>('api/workflows/agent/plugins'),
     changePlugin: (id: string, action: AgentPluginAction) => post<AgentPlugins>(`api/workflows/agent/plugins/${enc(id)}`, { action }),
+    shots: (id: string, step?: string) => get<{ shots: Shot[] }>(`api/workflows/runs/${enc(id)}/shots${step ? '?step_id=' + enc(step) : ''}`),
+    rewriteShots: (id: string, step: string, body: RewriteInput) =>
+      post<Proposal>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/shots/rewrite`, body),
+    applyProposal: (id: string, body: ProposalAction) => post<ShotWriteResult>(`api/workflows/agent/proposals/${enc(id)}/apply`, body),
+    rejectProposal: (id: string) => post<Proposal>(`api/workflows/agent/proposals/${enc(id)}/reject`),
+    undoShots: (id: string) => post<ShotWriteResult>(`api/workflows/agent/undo/${enc(id)}`),
+    telemetry: () => get<AgentTelemetry>('api/workflows/agent/telemetry'),
     list: () => get<WorkflowsResponse>('api/workflows'),
     saveTemplate: (wf: Partial<WfDef>) => post<{ workflow: WfDef; custom: WfDef[] }>('api/workflows', wf),
     deleteTemplate: (id: string) => del<{ custom: WfDef[] }>(`api/workflows/${enc(id)}`),
@@ -205,6 +213,8 @@ export const api = {
     cancel: (id: string) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/cancel`, {}),
     retry: (id: string, step: string, single_step = true) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/retry`, { single_step }),
     saveOutput: (id: string, step: string, output: Record<string, unknown>) => post<{ run: WfRun }>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/output`, { output }),
+    saveShotEdits: (id: string, step: string, shot_edits: ShotEdit[]) =>
+      post<ShotWriteResult>(`api/workflows/runs/${enc(id)}/steps/${enc(step)}/output`, { shot_edits }),
     uploadAsset: (id: string, file: Blob, step_id: string) => request<AssetUpload>('POST', `api/workflows/runs/${enc(id)}/assets?step_id=${enc(step_id)}&label=upload`, file),
     deleteAsset: (id: string, f: string) => del(`api/workflows/runs/${enc(id)}/assets/${enc(f)}`),
   },

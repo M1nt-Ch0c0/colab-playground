@@ -3,13 +3,15 @@ import { animate, AnimatePresence, motion, useMotionValue, useReducedMotion } fr
 import { useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { api, ApiError } from '../../api/client'
-import type { AgentPlugins as Inventory, AgentRunRequest, AgentTool, EditorSnapshot, RunStatus, SavedAgentExchange } from '../../api/types'
+import type { AgentPlugins as Inventory, AgentRunRequest, AgentTool, EditorSnapshot, Proposal, RunShotUpdate, RunStatus, SavedAgentExchange } from '../../api/types'
 import { clamp, requestId } from '../../lib/util'
 import { useStore } from '../../store/store'
-import { expand, fade, instant, quick, spring, springSmall } from '../../ui/motion'
+import { fade, instant, quick, spring, springSmall } from '../../ui/motion'
 import { Seg } from '../../ui/Overlay'
 import { AgentPlugins } from './AgentPlugins'
 import { AGENT_COPY as C, ERROR_ACTION_LABELS, errorCopy, toolLabel, type ErrorAction, type HarnessErrorCode } from './agentCopy'
+import { ConflictBar } from './ConflictBar'
+import { WorkflowProposal } from './ProposalCard'
 
 export interface AgentBinding {
   editor: EditorSnapshot
@@ -20,6 +22,7 @@ export interface AgentBinding {
   beforeSend?: () => Promise<boolean>
   apply: (next: EditorSnapshot, revision: string | null) => Promise<EditorSnapshot>
   refresh?: () => Promise<void>
+  onShotUpdate?: (update: RunShotUpdate, output?: Record<string, unknown>) => void
   openRun: (id: string) => void
   run: (request: AgentRunRequest) => void
 }
@@ -42,15 +45,25 @@ const screenDock = (): Dock => innerWidth <= 760 ? 'sheet' : innerWidth < 1280 ?
 const version = ({ workflow, topic }: EditorSnapshot) =>
   JSON.stringify([topic, workflow.name, workflow.description, workflow.default_topic, workflow.variables ?? {}, workflow.steps])
 
+function savedProposals(saved: Proposal[] | undefined, local: Proposal[] | undefined) {
+  if (!local) return saved
+  return local.map(proposal => {
+    const match = saved?.find(item => item.proposal_id === proposal.proposal_id)
+    if (!match || proposal.status === 'undone' || (match.status === 'pending' && proposal.status !== 'pending')) return proposal
+    return match
+  })
+}
+
 function mergeHistory(saved: SavedAgentExchange[], current: Exchange[], completedBeforeFetch: Set<string>): Exchange[] {
   const local = new Map(current.map(row => [row.id, row]))
   const ordered = saved.map(row => {
     const own = local.get(row.id)
     local.delete(row.id)
-    if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) return own
+    const proposals = savedProposals(row.proposals, own?.proposals)
+    if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) return { ...own, proposals }
     return {
       ...row, tools: row.tools.filter(tool => typeof tool.name === 'string'),
-      applied: own?.applied, action: own?.action, version: own?.version,
+      applied: own?.applied, action: own?.action, version: own?.version, proposals,
     }
   })
   return [...ordered, ...[...local.values()].filter(row => row.state !== 'done' || !completedBeforeFetch.has(row.id))]
@@ -72,8 +85,7 @@ function ToolBadges({ tools, fresh }: { tools: AgentTool[]; fresh: boolean }) {
   }
   return <div className="agent-tools">
     {(expanded ? badges : badges.slice(0, 4)).map(({ name, op, ok, call_id, count }, index) => {
-      const label = toolLabel(name, typeof op === 'string' ? op : undefined)
-      const text = typeof label === 'string' ? label : toolLabel(name)
+      const text = toolLabel(name, typeof op === 'string' ? op : undefined)
       return <motion.span key={call_id ?? index} className="tag agent-tool"
         initial={reduce || !fresh ? false : { opacity: 0, scale: .85, x: -4 }}
         animate={{ opacity: 1, scale: 1, x: 0 }} transition={reduce ? instant : { ...springSmall, delay: Math.min(index, 4) * .04 }}>
@@ -96,23 +108,9 @@ function ToolBadges({ tools, fresh }: { tools: AgentTool[]; fresh: boolean }) {
   </div>
 }
 
-function StaleNotice({ resend, dismiss, disabled }: { resend: () => void; dismiss: () => void; disabled: boolean }) {
-  const reduce = useReducedMotion()
-  return <motion.div className="conflict-bar" role="status"
-    initial={reduce ? false : { opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-    exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }} transition={reduce ? instant : expand}>
-    <motion.div className="warnbox" initial={reduce ? false : { y: -4 }} animate={{ y: 0 }} transition={reduce ? instant : expand}>
-      <CircleAlert size={14} /><span className="grow">{chat.stale.text}</span>
-      <div className="agent-links">
-        <button className="btn sm primary" disabled={disabled} onClick={resend}>{chat.stale.resend}</button>
-        <button className="btn sm ghost" onClick={dismiss}>{chat.stale.dismiss}</button>
-      </div>
-    </motion.div>
-  </motion.div>
-}
-
-export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen }: {
-  binding: AgentBinding; selected: string; clearSelection: () => void; open: boolean; setOpen: (open: boolean) => void
+export function WorkflowAgent({ binding, selected, selectedShot, clearSelection, open, setOpen }: {
+  binding: AgentBinding; selected: string; selectedShot?: { id: string; n: number };
+  clearSelection: () => void; open: boolean; setOpen: (open: boolean) => void
 }) {
   const reduce = useReducedMotion()
   const [exchanges, setExchanges] = useState<Exchange[]>([])
@@ -323,6 +321,13 @@ export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen
     setExchanges(rows => rows.map(row => row.id === id ? { ...row, ...patch } : row))
   }
 
+  function updateProposal(exchangeId: string, previousId: string, proposal?: Proposal) {
+    setExchanges(rows => rows.map(row => {
+      if (!row.proposals || (row.id !== exchangeId && proposal?.proposal_id !== previousId)) return row
+      return { ...row, proposals: row.proposals.flatMap(item => item.proposal_id !== previousId ? [item] : proposal ? [proposal] : []) }
+    }))
+  }
+
   function fill(text: string) {
     if (latest.current.locked) return
     setInput(text)
@@ -349,7 +354,8 @@ export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen
       if (base.locked) throw new ApiError(409, '', 'busy')
       original = version(base.editor)
       const done = await api.wf.agentTurn({
-        ...base.editor, selected_step: selected, run_id: base.runId, draft_id: base.draftId, turn_id: id, message,
+        ...base.editor, selected_step: selected, selected_shot: selectedShot?.id,
+        run_id: base.runId, draft_id: base.draftId, turn_id: id, message,
         reload_plugins: restartWithPlugins || reloadPlugins.current,
       }, controller.signal, event => {
         if (event.type === 'started') active.started = true
@@ -365,22 +371,33 @@ export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen
         }
       })
       controller.signal.throwIfAborted()
+      const proposals = done.proposals ?? []
+      for (const proposal of proposals) updateProposal(id, proposal.proposal_id, proposal)
+      const updates = done.run_updated ?? []
+      for (const update of updates) latest.current.onShotUpdate?.(update)
+      amend(id, { answer: done.message, proposals })
+      if (done.refresh_library) void useStore.getState().loadWf()
+      const refresh = async () => { if (done.refresh_run) await latest.current.refresh?.().catch(() => {}) }
       let next = base.editor
       if (done.editor || done.run_request) {
         const current = latest.current
         if (current.locked || version(current.editor) !== original || current.status !== base.status) {
+          await refresh()
           amend(id, { state: 'stale' })
           return
         }
         if (done.editor) next = await current.apply(done.editor, done.base_revision)
       }
+      if (!done.editor) await refresh()
       const stepChanged = next.workflow.steps.find(item => item.type === 'llm_script' &&
         base.editor.workflow.steps.some(previous => previous.id === item.id && previous.config.scene_count !== item.config.scene_count))
       const previous = base.editor.workflow.steps.find(item => item.id === stepChanged?.id)
+      const numbers = [...new Set(updates.filter(update => update.run_id === base.runId)
+        .flatMap(update => update.changes.map(change => change.n)))].sort((a, b) => a - b)
       const applied = previous && stepChanged
         ? chat.applied.sceneCount(previous.config.scene_count, stepChanged.config.scene_count)
-        : done.editor ? chat.applied.workflow : undefined
-      amend(id, { state: 'done', answer: done.message, applied, action: done.run_request, version: version(next) })
+        : done.editor ? chat.applied.workflow : numbers.length ? chat.applied.shots(numbers) : undefined
+      amend(id, { state: 'done', applied, action: done.run_request, version: version(next) })
     } catch (failure) {
       const error = failure instanceof ApiError ? failure : undefined
       if (controller.signal.aborted || error?.code === 'turn_stopped') amend(id, { state: 'stopped' })
@@ -461,6 +478,7 @@ export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen
           <div className="agent-context" aria-label={chat.context.aria}>
             <Workflow size={14} /><span data-user-content>{binding.editor.workflow.name}</span>
             {step && <><ChevronRight size={12} /><b data-user-content>{step.name.replace(/^\d+[.、]\s*/, '')}</b>
+              {selectedShot && <><ChevronRight size={12} /><span>{chat.context.shot(selectedShot.n)}</span></>}
               <button className="iconbtn sm" aria-label={chat.context.clear} onClick={clearSelection}><X size={13} /></button>
             </>}
           </div>
@@ -495,10 +513,16 @@ export function WorkflowAgent({ binding, selected, clearSelection, open, setOpen
                     animate={{ opacity: 1, scale: 1 }} transition={reduce ? instant : { ...springSmall, delay: .05 }}>
                     <Check size={12} />{item.applied}
                   </motion.span>}
+                  {item.proposals?.slice(-2).map(proposal => <WorkflowProposal key={proposal.proposal_id} proposal={proposal}
+                    variant="panel" animateEntry={!!item.fresh} disabled={locked || busy || binding.status === 'running'}
+                    beforeWrite={() => latest.current.beforeSend?.() ?? Promise.resolve(true)}
+                    onUpdate={(update, output) => latest.current.onShotUpdate?.(update, output)}
+                    onChange={next => updateProposal(item.id, proposal.proposal_id, next)}
+                    onDismiss={() => updateProposal(item.id, proposal.proposal_id)} />)}
                   <AnimatePresence initial={false}>
-                    {item.state === 'stale' && <StaleNotice key="stale" disabled={locked || busy}
-                      resend={() => { amend(item.id, { state: 'done' }); void send(item.user) }}
-                      dismiss={() => amend(item.id, { state: 'done' })} />}
+                    {item.state === 'stale' && <ConflictBar key="stale" conflict={{ kind: 'stale' }} disabled={locked || busy}
+                      onRegenerate={() => { amend(item.id, { state: 'done' }); void send(item.user) }}
+                      onKeep={() => amend(item.id, { state: 'done' })} />}
                   </AnimatePresence>
                   {item.state === 'error' && <div className="agent-error" role="alert">
                     <CircleAlert size={14} /><span>{item.error?.text ?? info?.text}</span>

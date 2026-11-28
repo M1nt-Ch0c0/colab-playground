@@ -1,5 +1,6 @@
 """Deterministic streaming model and a real dsh plugin for session-lifetime tests."""
 import json
+import os
 import threading
 import uuid
 from contextlib import contextmanager
@@ -7,7 +8,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from draw_studio.runtime import Runtime
 from draw_studio.workflows import copilot
+
+
+@contextmanager
+def local_runtime(directory):
+    secret = directory / "secret.env"
+    secret.write_text("password=fixture-password\ntoken=fixture-token\n", encoding="utf-8")
+    with patch.dict(os.environ, {"QP_SECRET": str(secret)}):
+        runtime = Runtime.open(directory)
+    try:
+        yield runtime
+    finally:
+        runtime.shutdown()
 
 
 @contextmanager
@@ -47,10 +61,20 @@ export function apply(ctx) {
             rows = payload["messages"]
             state.requests.append(rows)
             state.tools.append([tool["function"]["name"] for tool in payload.get("tools", [])])
-            last = rows[-1]
-            content = last.get("content", "")
-            if isinstance(content, list):
-                content = "".join(part.get("text", "") for part in content)
+            if not payload.get("stream"):
+                raw = json.dumps({"choices": [{"message": {"content": "The camera tracks low through warm evening light."}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            def text_of(message):
+                text = message.get("content") or ""
+                return "".join(part.get("text", "") for part in text) if isinstance(text, list) else text
+
+            last = next(row for row in reversed(rows) if not text_of(row).startswith("<system-reminder>"))
+            content = text_of(last)
             if "MODEL_FAIL" in content:
                 self.send_response(400)
                 self.end_headers()
@@ -65,8 +89,14 @@ export function apply(ctx) {
                 state.release.wait(12)
                 delta, reason = {"role": "assistant", "content": "late"}, "stop"
             else:
-                tool = "studio_shot_timing" if "USE_TIMING" in content else "test_counter"
-                args = '{}' if tool == "studio_shot_timing" else '{"op":"inspect"}'
+                if "USE_CREATIVE_TOOL " in content:
+                    encoded = content.split("USE_CREATIVE_TOOL ", 1)[1]
+                    (tool, arguments), _ = json.JSONDecoder().raw_decode(encoded)
+                    args = json.dumps(arguments)
+                elif "USE_TIMING" in content:
+                    tool, args = "studio_shot_timing", '{}'
+                else:
+                    tool, args = "test_counter", '{"op":"inspect"}'
                 delta = {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_" + uuid.uuid4().hex,
                          "type": "function", "function": {"name": tool, "arguments": args}}]}
                 reason = "tool_calls"
@@ -75,6 +105,12 @@ export function apply(ctx) {
                     chunk = {"id": "chat-test", "model": payload["model"], "object": "chat.completion.chunk",
                              "created": 1, "choices": [{"index": 0, "delta": fragment, "finish_reason": finish}]}
                     self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+                usage_chunk = {**chunk, "choices": [], "usage": {
+                    "prompt_tokens": 14, "completion_tokens": 3, "total_tokens": 17,
+                    "prompt_cache_hit_tokens": 8, "prompt_cache_miss_tokens": 6,
+                    "prompt_tokens_details": {"cached_tokens": 8},
+                }}
+                self.wfile.write(b"data: " + json.dumps(usage_chunk).encode() + b"\n\n")
                 self.wfile.write(b"data: [DONE]\n\n")
             except (BrokenPipeError, ConnectionResetError):
                 pass

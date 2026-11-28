@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -19,8 +20,12 @@ import requests
 
 from draw_studio.workflows import agent_plugins as plugins, copilot
 from draw_studio.workflows.agent_bridge import ToolBridge
+from draw_studio.workflows.agent_tools import TOOLS
 from draw_studio.workflows.harness_errors import HarnessError
-from tests.harness_fixture import stateful_model
+from draw_studio.workflows.harness_store import TELEMETRY_MAX, TELEMETRY_TTL, UNDO_TTL
+from draw_studio.workflows.harness_telemetry import TurnTelemetry
+from draw_studio.workflows.shot_service import RewriteInput, apply_shot_edits, read_shots, rewrite_prompt, undo_change
+from tests.harness_fixture import local_runtime, stateful_model
 from tests.test_harness_tools import editor, step
 
 KEY = "wr_" + "a" * 32
@@ -63,6 +68,14 @@ class HarnessRuntimeTests(unittest.TestCase):
             except HarnessError as error:
                 answer = error
         return answer, updates, conversation.bridge.interrupt.call_count
+
+    def test_fixed_tool_registration_order_and_system_voice(self):
+        config = copilot._patch(provider(), "model", (128000, 8192, 4096))[-1]["insert"][0]["config"]
+        self.assertEqual([tool["name"] for tool in config["tools"]], list(TOOLS))
+        spec = (Path(__file__).resolve().parents[1] / "docs/harness/ui-motion-spec.md").read_text(encoding="utf-8")
+        voice, examples = spec.split("### 4.5", 1)[1].split("```text\n", 1)[1].split("```", 1)
+        table = examples[examples.index("| 用户"):].split("\n\n", 1)[0]
+        self.assertTrue(copilot.SYSTEM.endswith(voice + "\n" + table + "\n"))
 
     def test_cancel_waits_for_the_current_receipt(self):
         cancel = threading.Event()
@@ -441,3 +454,213 @@ class HarnessRuntimeTests(unittest.TestCase):
             finally:
                 release.set()
             self.assertTrue(pending.result(2)["plugin"]["installed"])
+
+
+class ShotPersistenceTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        self.runtime = self.enterContext(local_runtime(self.root))
+        self.engine = self.runtime.workflows
+        self.store = self.runtime.harness_store
+        self.run = self.engine.create_run({"workflow": {"name": "Cut", "steps": [step("script", "llm_script")]}})
+        self.run_id = self.run["id"]
+        self.scenes = [{"index": n, "title": f"Shot {n}", "keyframe_prompt": f"Original frame {n}",
+                        "video_prompt": f"Original movement {n}"} for n in range(1, 6)]
+
+    def seed(self):
+        self.engine.update_step_output(self.run_id, "script", {"scenes": self.scenes})
+        return self.shots()
+
+    def shots(self):
+        return read_shots(self.runtime, self.run_id, "script")
+
+    def proposal(self, shots, *, instruction="Warm light", text="Candidate"):
+        with patch.object(self.runtime.studio.llm, "resolve", return_value=(provider(), "fixture-model")), \
+             patch.object(self.runtime.studio, "write_prompt_rich", return_value={"prompt": text}):
+            return rewrite_prompt(self.runtime, RewriteInput(shot_ids=[shot["shot_id"] for shot in shots], instruction=instruction),
+                                  scope=self.run_id, run_id=self.run_id, step_id="script")
+
+    def adopt(self, proposal, **options):
+        return apply_shot_edits(self.runtime, proposal_id=proposal["proposal_id"], **options)
+
+    def edit(self, shot, field, value):
+        return {"shot_id": shot["shot_id"], "generation": shot["generation"], "field": field,
+                "expected_version": shot["field_versions"][field], "value": value}
+
+    def patch_fields(self, *edits, **options):
+        return apply_shot_edits(self.runtime, run_id=self.run_id, step_id="script", patches=list(edits), **options)
+
+    def test_legacy_ids_sync_to_sqlite_and_survive_restart(self):
+        legacy = self.run
+        legacy["step_states"]["script"]["output"] = {"scenes": self.scenes}
+        path = self.engine._run_file(self.run_id)
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        shots = self.shots()
+        self.assertEqual([shot["seq"] for shot in shots], [1, 2, 3, 4, 5])
+        self.assertEqual(len({shot["shot_id"] for shot in shots}), 5)
+        for shot in shots:
+            self.assertRegex(shot["shot_id"], r"^sh_[a-f0-9]{12}$")
+            self.assertEqual(shot["generation"], 1)
+            self.assertEqual(set(shot["field_versions"].values()), {1})
+        raw = json.loads(path.read_text(encoding="utf-8"))["step_states"]["script"]["output"]["scenes"]
+        self.assertEqual([row["shot_id"] for row in raw], [shot["shot_id"] for shot in shots])
+        self.assertEqual(self.store.path, self.root / "private/workflow-harness/state.sqlite3")
+        self.assertEqual(stat.S_IMODE(self.store.path.parent.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(self.store.path.stat().st_mode), 0o600)
+        with self.store.transaction() as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            self.assertEqual({row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")},
+                             {"shots", "proposals", "undo_records", "tool_telemetry"})
+            self.assertEqual([row[0] for row in db.execute("SELECT shot_id FROM shots ORDER BY seq")], [shot["shot_id"] for shot in shots])
+        proposal = self.proposal(shots[:1])
+        self.runtime.shutdown()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            self.store.db.execute("SELECT 1")
+        with local_runtime(self.root) as reopened:
+            self.assertEqual(read_shots(reopened, self.run_id), shots)
+            result = apply_shot_edits(reopened, proposal_id=proposal["proposal_id"])
+            self.assertEqual(result["applied"][0]["version"], 2)
+            self.assertEqual(undo_change(reopened, result["undo_id"])["applied"][0]["value"], "Original frame 1")
+
+    def test_concurrent_rewrites_of_shots_three_and_five_merge(self):
+        shots = self.seed()
+        both = threading.Barrier(2)
+
+        def write(brief, **_):
+            both.wait(3)
+            index = 3 if "Original frame 3" in brief else 5
+            return {"prompt": f"Rewritten frame {index}"}
+
+        def rewrite(shot):
+            return rewrite_prompt(self.runtime, RewriteInput(shot_ids=[shot["shot_id"]], instruction="Low camera"),
+                                  scope=self.run_id, run_id=self.run_id, step_id="script")
+
+        with ThreadPoolExecutor(2) as pool, patch.object(self.runtime.studio.llm, "resolve", return_value=(provider(), "test")), \
+             patch.object(self.runtime.studio, "write_prompt_rich", side_effect=write):
+            third, fifth = [job.result(5) for job in (pool.submit(rewrite, shots[2]), pool.submit(rewrite, shots[4]))]
+            writes = [job.result(5) for job in (pool.submit(self.adopt, third), pool.submit(self.adopt, fifth))]
+        self.assertEqual([item["applied"][0]["n"] for item in writes], [3, 5])
+        result = self.shots()
+        for old, current in zip(shots, result, strict=True):
+            n = current["seq"]
+            self.assertEqual(current["shot_id"], old["shot_id"])
+            self.assertEqual(current["fields"]["keyframe_prompt"], f"Rewritten frame {n}" if n in (3, 5) else f"Original frame {n}")
+            self.assertEqual(current["field_versions"]["keyframe_prompt"], 2 if n in (3, 5) else 1)
+            self.assertEqual(current["field_versions"]["video_prompt"], 1)
+
+    def test_atomic_conflicts_skip_whole_shots_in_partial_mode(self):
+        first, second, *_ = self.seed()
+        proposal = self.proposal([first, second])
+        self.patch_fields(self.edit(first, "keyframe_prompt", "Manual cut"))
+        with self.assertRaises(HarnessError) as all_error:
+            self.adopt(proposal, atomicity="all")
+        conflicts = all_error.exception.details["conflicts"]
+        self.assertEqual(all_error.exception.code, "shot_conflict")
+        self.assertEqual(conflicts, [{"shot_id": first["shot_id"], "field": "keyframe_prompt", "expected_version": 1,
+                                      "current_version": 2, "expected_generation": 1, "current_generation": 1, "n": 1}])
+        self.assertEqual(self.shots()[1]["fields"]["keyframe_prompt"], "Original frame 2")
+        adopted = self.adopt(proposal, atomicity="per_shot")
+        self.assertEqual(adopted["conflicts"], conflicts)
+        self.assertEqual([item["n"] for item in adopted["applied"]], [2])
+        self.assertEqual(adopted["step_output"]["scenes"][0]["keyframe_prompt"], "Manual cut")
+        self.assertEqual(self.adopt(proposal)["undo_id"], adopted["undo_id"])
+
+        result = self.patch_fields(self.edit(first, "keyframe_prompt", "Stale"), self.edit(first, "video_prompt", "Skipped"),
+                                   self.edit(second, "video_prompt", "New movement"), atomicity="per_shot")
+        self.assertEqual([item["n"] for item in result["applied"]], [2])
+        self.assertEqual(self.shots()[0]["fields"]["video_prompt"], "Original movement 1")
+        result = self.patch_fields(self.edit(first, "video_prompt", "A turn inside the same shot"))
+        self.assertEqual(result["applied"][0]["version"], 2)
+
+    def test_engine_rerun_increments_generation_and_rejects_old_proposal(self):
+        first, *_ = self.seed()
+        self.patch_fields(self.edit(first, "video_prompt", "Hand edit"))
+        proposal = self.proposal([first])
+        with patch.object(self.engine, "_run_step", return_value={"scenes": self.scenes}):
+            with self.engine._lock:
+                self.engine.start_run(self.run_id, from_step_id="script", single_step=True)
+                thread = self.engine._active_thread
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        current = self.shots()[0]
+        self.assertEqual(current["generation"], 2)
+        self.assertNotEqual(current["shot_id"], first["shot_id"])
+        self.assertEqual(set(current["field_versions"].values()), {1})
+        with self.assertRaises(HarnessError) as caught:
+            self.adopt(proposal)
+        self.assertEqual(caught.exception.code, "shot_conflict")
+        self.assertEqual(caught.exception.details["conflicts"][0]["shot_id"], first["shot_id"])
+        self.assertIsNone(caught.exception.details["conflicts"][0]["current_version"])
+        self.assertEqual(self.shots()[0], current)
+
+    def test_undo_rejects_consumed_expired_and_edited_versions(self):
+        initial, *_ = self.seed()
+        proposal = self.proposal([initial])
+        adopted = self.adopt(proposal)
+        undo_id = adopted["undo_id"]
+        reversed = undo_change(self.runtime, undo_id)
+        self.assertEqual((reversed["applied"][0]["value"], reversed["applied"][0]["version"]), ("Original frame 1", 3))
+        with self.assertRaises(HarnessError) as consumed:
+            undo_change(self.runtime, undo_id)
+        self.assertEqual((consumed.exception.code, consumed.exception.details["status"]), ("shot_conflict", "expired"))
+
+        updated = self.patch_fields(self.edit(self.shots()[0], "keyframe_prompt", "New frame"))
+        self.patch_fields(self.edit(self.shots()[0], "keyframe_prompt", "One more change"), record_undo=False)
+        with self.assertRaises(HarnessError) as blocked:
+            undo_change(self.runtime, updated["undo_id"])
+        self.assertEqual(blocked.exception.code, "shot_conflict")
+        conflict, = blocked.exception.details["conflicts"]
+        self.assertEqual((conflict["expected_version"], conflict["current_version"]), (4, 5))
+
+        updated = self.patch_fields(self.edit(self.shots()[0], "keyframe_prompt", "Another frame"))
+        with self.store.transaction() as db:
+            db.execute("UPDATE undo_records SET created_at = ? WHERE undo_id = ?", (int(time.time()) - UNDO_TTL - 1, updated["undo_id"]))
+        with self.assertRaises(HarnessError) as expired:
+            undo_change(self.runtime, updated["undo_id"])
+        self.assertEqual((expired.exception.code, expired.exception.details["status"]), ("shot_conflict", "expired"))
+        self.assertEqual(self.shots()[0]["fields"]["keyframe_prompt"], "Another frame")
+
+    def test_committed_write_and_undo_survive_a_failed_json_mirror(self):
+        initial, *_ = self.seed()
+        proposal = self.proposal([initial])
+        with patch.object(self.engine, "_write_run_locked", side_effect=OSError):
+            adopted = self.adopt(proposal)
+        self.assertEqual(self.shots()[0]["fields"]["keyframe_prompt"], "Candidate")
+        self.assertEqual(self.store.get_proposal(proposal["proposal_id"])["status"], "applied")
+        self.assertEqual(undo_change(self.runtime, adopted["undo_id"])["applied"][0]["value"], "Original frame 1")
+
+    def test_telemetry_metadata_retry_percentiles_redaction_and_retention(self):
+        turn = TurnTelemetry(self.runtime, "turn-a", self.run_id, "shared-cookie-string", secrets=("shared-cookie-string",))
+        info = {"type": "tool", "name": "studio_run_status", "op": "watch", "args": {
+            "api_key": "MY-API-KEY", "token": "MY-TOKEN", "cookie": "MY-COOKIE", "prompt": "Full shot description", "image": b"media-bytes",
+        }}
+        with patch("draw_studio.workflows.harness_telemetry.time.monotonic", side_effect=[0, .01, 1, 1.05, 2, 2.1]):
+            turn.observe({**info, "call_id": "one", "ok": None})
+            turn.observe({**info, "call_id": "one", "ok": False, "code": "invalid_argument"})
+            turn.observe({**info, "call_id": "two", "ok": None})
+            turn.observe({**info, "call_id": "two", "ok": True})
+            turn.observe({**info, "call_id": "three", "name": "plugin-MY-COOKIE", "op": "MY-TOKEN", "ok": None})
+            turn.observe({**info, "call_id": "three", "ok": True})
+        turn.observe({"type": "_usage", "hit": 32, "miss": 10})
+        turn.finish()
+        summary = self.store.telemetry()
+        self.assertEqual((summary["total"], summary["p50_ms"], summary["p95_ms"], summary["retries"]), (3, 50, 100, 1))
+        self.assertEqual(summary["by_error"], {"invalid_argument": 1})
+        self.assertEqual(summary["by_tool"]["plugin"]["total"], 1)
+        self.assertEqual((summary["cache_hit_tokens"], summary["cache_miss_tokens"]), (32, 10))
+        with self.store.transaction() as db:
+            metrics = json.dumps([dict(row) for row in db.execute("SELECT * FROM tool_telemetry")])
+            for text in ("MY-TOKEN", "MY-COOKIE", "MY-API-KEY", "Full shot description", "media-bytes", "shared-cookie-string"):
+                self.assertNotIn(text, metrics)
+            now = int(time.time())
+            db.execute("UPDATE tool_telemetry SET created_at=? WHERE call_seq=1", (now - TELEMETRY_TTL - 1,))
+        self.store.prune_telemetry()
+        self.assertEqual(self.store.telemetry()["total"], 2)
+        with self.store.transaction() as db:
+            db.executemany("""INSERT INTO tool_telemetry (turn_id, conversation_key, call_seq, model, tool_name, op, ok,
+                            retry_in_turn, latency_ms, created_at) VALUES ('cap', '', ?, '', 'studio_read_context', NULL, 1, 0, 0, ?)""",
+                           ((i, now) for i in range(TELEMETRY_MAX + 3)))
+        self.store.prune_telemetry()
+        with self.store.transaction() as db:
+            row = db.execute("SELECT COUNT(*) AS kept, MIN(call_seq) AS first FROM tool_telemetry").fetchone()
+            self.assertEqual((row["kept"], row["first"]), (TELEMETRY_MAX, 3))

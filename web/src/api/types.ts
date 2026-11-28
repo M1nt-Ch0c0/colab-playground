@@ -174,8 +174,18 @@ export type AgentTurnBody = Omit<Wire['AgentTurn'], 'workflow'> & EditorSnapshot
 export type AgentPlugins = Wire['AgentInventory']
 export type AgentPluginAction = Wire['PluginAction']['action']
 export type AgentErrorCode = Wire['HarnessError']['code']
+export type Shot = Wire['Shot']
+export type ShotEdit = Wire['ShotEdit']
+export type ShotField = ShotEdit['field']
+export type ShotConflict = Wire['ShotConflict']
+export type ShotWriteResult = Wire['ShotWriteResult']
+export type RunShotUpdate = Wire['RunShotUpdate']
+export type Proposal = Wire['Proposal']
+export type ProposalAction = Wire['ProposalAction']
+export type RewriteInput = Wire['RewriteInput']
+export type AgentTelemetry = Wire['Telemetry']
 export interface AgentTool {
-  name: string; op?: unknown; ok: boolean | null; call_id?: string
+  name: string; op?: unknown; ok: boolean | null; call_id?: string; code?: AgentErrorCode
 }
 export type SavedAgentExchange = Omit<Wire['AgentExchange'], 'tools'> & { tools: AgentTool[] }
 export type AgentEvent =
@@ -184,7 +194,8 @@ export type AgentEvent =
   | ({ type: 'tool' } & AgentTool)
   | { type: 'heartbeat' }
   | { type: 'error'; code: AgentErrorCode; message: string }
-  | { type: 'done'; message: string; editor: EditorSnapshot | null; run_request: AgentRunRequest | null; base_revision: string | null }
+  | { type: 'done'; message: string; editor: EditorSnapshot | null; run_request: AgentRunRequest | null; base_revision: string | null;
+      proposals?: Proposal[]; run_updated?: RunShotUpdate[]; refresh_run?: boolean; refresh_library?: boolean }
 export interface StepState { status: StepStatus; started_at: number | null; finished_at: number | null; progress: string; output: Record<string, any>; error: string }
 export interface WfRun {
   id: string; topic: string; workflow: WfDef; status: RunStatus; current_step_id: string | null

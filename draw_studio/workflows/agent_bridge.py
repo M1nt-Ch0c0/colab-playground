@@ -66,13 +66,23 @@ class ToolBridge:
             raise HarnessError("invalid_argument")
         call_id = secrets.token_hex(8)
         emit(tool_event(name, args, call_id, None))
-        ok = False
+        ok, code, proposal_id = False, "internal_error", None
         try:
             value = editor.call(name, args)
+            if name == "studio_rewrite_prompt":
+                proposal_id = value["proposal_id"]
             ok = True
             return value
+        except HarnessError as exc:
+            code = exc.code
+            raise
         finally:
-            emit(tool_event(name, args, call_id, ok))
+            result = tool_event(name, args, call_id, ok)
+            if not ok:
+                result["code"] = code
+            if proposal_id:
+                result["_proposal_id"] = proposal_id
+            emit(result)
 
     def interrupt(self) -> StopState:
         if not self.control_port:
