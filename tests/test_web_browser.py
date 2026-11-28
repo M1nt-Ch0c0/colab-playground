@@ -175,6 +175,23 @@ class BrowserTest(unittest.TestCase):
                 wait.until(lambda _: grab.called)
                 self.assertEqual(grab.call_args.kwargs["gpu_pool"], ["H100", "A100", "G4"])
 
+    def test_old_storage_keys_migrate_before_first_render(self):
+        with signed_in_browser() as (_, driver, url):
+            wait = WebDriverWait(driver, 10)
+            driver.execute_script("""localStorage.clear();
+                localStorage.setItem('cs.draft', JSON.stringify({prompt: '旧版草稿'}));
+                localStorage.setItem('cs.theme', JSON.stringify('dark'));""")
+            driver.get(url)
+            wait.until(lambda d: d.find_element(By.CSS_SELECTOR, 'textarea[rows="4"]').get_property("value") == "旧版草稿")
+            self.assertEqual(driver.execute_script("return document.documentElement.dataset.theme"), "dark")
+            self.assertEqual(driver.execute_script("return localStorage.getItem('cs.draft')"), '{"prompt":"旧版草稿"}')
+
+            # 旧版页面用自己的主题 key，不能改写工作台的设置。
+            driver.get(url + "/legacy")
+            wait.until(EC.element_to_be_clickable((By.ID, "themeBtn")))
+            self.assertEqual(driver.execute_script("return localStorage.getItem('colabreel.theme')"), '"dark"')
+            self.assertEqual(driver.execute_script("return localStorage.getItem('colabreel.legacy.theme')"), "light")
+
     def test_theme_toggle_uses_the_displayed_scheme(self):
         with signed_in_browser() as (_, driver, url):
             wait = WebDriverWait(driver, 10)

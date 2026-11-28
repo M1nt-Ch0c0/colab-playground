@@ -16,7 +16,7 @@ LOGIN_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · ColabReel</title>
 <link rel="icon" type="image/svg+xml" href="__BRAND_ICON__">
-<script>(function(){try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){document.documentElement.dataset.theme='light';}})();</script>
+<script>(function(){try{var t=localStorage.getItem('colabreel.legacy.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.legacy.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){document.documentElement.dataset.theme='light';}})();</script>
 <style>
   :root{color-scheme:dark;--bg:#07080d;--card:rgba(20,22,34,.78);--line:rgba(255,255,255,.1);--text:#eceef6;--muted:#8b91a7;--in:rgba(0,0,0,.35);--sh:0 30px 80px rgba(0,0,0,.45);--err:#fca5a5}
   :root[data-theme="light"]{color-scheme:light;--bg:#f4f6fb;--card:rgba(255,255,255,.92);--line:rgba(15,23,42,.1);--text:#0f172a;--muted:#64748b;--in:#f8fafc;--sh:0 24px 60px rgba(15,23,42,.1);--err:#dc2626}
@@ -3476,7 +3476,8 @@ function bind(){
   $('#settingsBtn').onclick = $('#colabChip').onclick = openSettings;
   $('#settingsBtn').disabled = false;
   $('#logBtn').onclick = () => toggleLogs();
-  const THEME_KEY = 'colabreel.theme';
+  // React 工作台的 colabreel.theme 存 JSON，且支持 system，旧版页面单独存。
+  const THEME_KEY = 'colabreel.legacy.theme';
   const applyTheme = (t) => {
     const mode = t === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = mode;
@@ -3845,7 +3846,7 @@ PAGE_HTML = (
     "<!doctype html>\n<html lang=\"zh\" data-theme=\"light\">\n<head>\n<meta charset=\"utf-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
     "<title>ColabReel · 生图 · 生视频 · 长视频工作流</title>\n"
-    "<script>(function(){try{var t=localStorage.getItem('colabreel.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){}})();</script>\n"
+    "<script>(function(){try{var t=localStorage.getItem('colabreel.legacy.theme');if(t==null){var o=localStorage.getItem('colab-studio.theme');if(o!=null){localStorage.setItem('colabreel.legacy.theme',o);t=o}}document.documentElement.dataset.theme=t||'light';}catch(e){}})();</script>\n"
     f'<link rel="icon" type="image/svg+xml" href="{_BRAND_ICON_URL}">\n'
     "<style>" + _CSS + "</style>\n</head>\n<body>\n" + _BODY.replace("__BRAND_ICON__", _BRAND_ICON_URL) + "\n<script>" + _JS + "</script>\n</body>\n</html>\n"
 )

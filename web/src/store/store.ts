@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import type {
   ComfyConfig, Config, EditMask, GeneratePayload, LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
 } from '../api/types'
-import { LS_KEYS, lsGet, lsSet, now, setClockSkew } from '../lib/util'
+import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, setClockSkew } from '../lib/util'
 
 export interface ToastItem { id: number; text: string; kind: 'ok' | 'err' | ''; undo?: { label: string; fn: () => void } }
 export type Workspace = 'image' | 'video' | 'workflow'
@@ -115,6 +115,9 @@ function shouldNotifyError(st: Status, previous: Status | null) {
   }
   return true
 }
+
+// 初始状态在模块加载时读取 localStorage，必须先把旧 key 搬过来。
+migrateLocalStorage()
 
 export const useStore = create<Store>((set, get) => ({
   booted: false, bootError: '', statusError: '',
