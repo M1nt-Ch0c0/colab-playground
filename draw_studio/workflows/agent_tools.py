@@ -804,7 +804,11 @@ class EditorTools:
         if target == "composer":
             if self.workspace not in ("image", "video") or self.composer is None or {"run_id", "step_id"} & args.keys():
                 raise HarnessError("invalid_argument")
-            kwargs = {"composer": {**self.composer, "mode": self.workspace}}
+            staged = self.composer_patch["changes"] if self.composer_patch and self.composer_patch.get("workspace") == self.workspace else {}
+            merged = creative.merge_spec(self.composer, staged, {"mode": self.workspace})
+            if "mask_id" in staged and staged["mask_id"] is None:
+                merged.pop("mask_id", None)
+            kwargs = {"composer": merged}
         elif target == "shots":
             kwargs = {"run_id": self._target_run(args), "step_id": self._target_step(args, required=True)}
             if self.selected_shot and "shot_ids" not in data and kwargs["step_id"] == self.selected and kwargs["run_id"] == self.run_id:

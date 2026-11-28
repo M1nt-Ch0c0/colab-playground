@@ -258,6 +258,19 @@ def presets(runtime, args):
     raise HarnessError("invalid_argument")
 
 
+def merge_spec(*layers):
+    merged = {}
+    for layer in layers:
+        if not layer:
+            continue
+        for key, value in layer.items():
+            if key == "comfy" and isinstance(value, dict) and isinstance(merged.get("comfy"), dict):
+                merged["comfy"] = {**merged["comfy"], **{k: v for k, v in value.items() if v is not None}}
+            else:
+                merged[key] = value
+    return merged
+
+
 def generation(editor, args):
     op = args["op"]
     if op not in ("edit_composer", "prepare", "submit_image", "submit_video"):
@@ -284,7 +297,7 @@ def generation(editor, args):
         if mask_id := changes.get("mask_id"):
             service.get_mask(mask_id)
         # Reuse the generation validator for supported enums/models. Preserve empty draft prompts.
-        view = base | (editor.composer_patch or {}).get("changes", {}) | changes
+        view = merge_spec(base, (editor.composer_patch or {}).get("changes"), changes)
         if clear_mask:
             view.pop("mask_id", None)
         normalized = _normalize(view | {"mode": mode, "prompt": view.get("prompt") or "Draft"}, transient=True)
@@ -294,13 +307,13 @@ def generation(editor, args):
         emitted = {**changes, **({"mask_id": None} if clear_mask else {})}
         patch = {"workspace": mode, "base_revision": context.get("revision"), "changes": emitted}
         if editor.composer_patch:
-            patch["changes"] = editor.composer_patch["changes"] | emitted
+            patch["changes"] = merge_spec(editor.composer_patch["changes"], emitted)
         editor.composer_patch = patch
         return {"composer_patch": patch}
 
     active = editor.composer_patch["changes"] if editor.composer_patch else {}
-    draft = (base | active) if editor.workspace == mode else {}
-    raw = draft | changes | {"mode": mode}
+    draft = merge_spec(base, active) if editor.workspace == mode else {}
+    raw = merge_spec(draft, changes, {"mode": mode})
     if (clear_mask or ("mask_id" not in changes and (
             active.get("mask_id") is None and "mask_id" in active
             or changes.get("chain") is True

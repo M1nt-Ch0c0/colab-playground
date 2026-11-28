@@ -984,3 +984,100 @@ class OperationTests(unittest.TestCase):
         self.assertNotIn(KEY, sessions.entries)
         self.assertFalse(conv.directory.exists())
         conv.dispose.assert_called_once()
+
+    def test_partial_comfy_spec_preserves_existing_and_staged_fields(self):
+        comfy = {
+            "template": "qwen-image-2.1",
+            "diffusion": "https://huggingface.co/owner/repo/resolve/main/diff.safetensors",
+            "text_encoder": "https://huggingface.co/owner/repo/resolve/main/te.safetensors",
+            "vae": "https://huggingface.co/owner/repo/resolve/main/vae.safetensors",
+            "sampler": "euler",
+            "scheduler": "simple",
+        }
+        composer = {"mode": "image", "engine": "comfyui", "prompt": "Neon rain", "comfy": comfy, "revision": "a" * 32}
+        tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                            scope=self.scope, workspace="image", composer=composer)
+        first = tools.call("studio_generation", {"op": "edit_composer", "spec": {"comfy": {"sampler": "heun"}}})
+        second = tools.call("studio_generation", {"op": "edit_composer", "spec": {"comfy": {"scheduler": "karras"}}})
+        self.assertEqual(first["composer_patch"]["changes"]["comfy"], {"sampler": "heun"})
+        self.assertEqual(second["composer_patch"]["changes"]["comfy"], {"sampler": "heun", "scheduler": "karras"})
+        prep = tools.call("studio_generation", {"op": "prepare", "spec": {"comfy": {"denoise": 0.75}}})
+        self.assertEqual(prep["parameters"]["comfy"]["diffusion"]["basename"], "diff.safetensors")
+        self.assertEqual(prep["parameters"]["comfy"]["sampler"], "heun")
+        self.assertEqual(prep["parameters"]["comfy"]["scheduler"], "karras")
+        self.assertEqual(prep["parameters"]["comfy"]["denoise"], 0.75)
+        op = tools.call("studio_generation", {"op": "submit_image", "idempotency_key": "comfy-partial",
+                                              "spec": {"comfy": {"sampler": "dpmpp_2m"}}})["operation"]
+        self.assertEqual(op["model"], "diff.safetensors")
+
+    def test_composer_rewrite_includes_active_refs_mask_chain_and_fl2va_roles(self):
+        from draw_studio.workflows.operation_service import MaskInput
+        from tests.http_fixture import png
+
+        uploaded_first = png((32, 24), "navy")
+        uploaded_last = png((32, 24), "gold")
+        self.studio.set_ref("first", uploaded_first, "upload")
+        self.studio.set_ref("last", uploaded_last, "upload")
+        provider = SimpleNamespace(id="fixture", key="secret")
+
+        # 1. Uploaded image ref with has_image=True.
+        tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                            scope=self.scope, workspace="image",
+                            composer={"mode": "image", "prompt": "Portrait", "has_image": True, "revision": "a" * 32})
+        with patch.object(self.studio.llm, "resolve", return_value=(provider, "demo")), \
+             patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "Refined"}) as writer:
+            prop = tools.call("studio_rewrite_prompt", {"instruction": "Match lighting"})
+        kwargs = writer.call_args.kwargs
+        self.assertTrue(kwargs["editing"])
+        self.assertEqual(kwargs["override_images"], [("图1", uploaded_first)])
+        self.assertEqual(len(prop["references_used"]), 1)
+
+        # 2. Mask source image.
+        rid, mask_bytes = self.image_asset("teal")
+        mask = self.ops.create_mask(MaskInput(source_id=rid, strokes=[{"points": [[.2, .4], [.3, .5]], "size": .08}]))
+        mask_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                                 scope=self.scope, workspace="image",
+                                 composer={"mode": "image", "prompt": "Swap coat", "has_image": True, "mask_id": mask["mask_id"]})
+        with patch.object(self.studio.llm, "resolve", return_value=(provider, "demo")), \
+             patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "Masked"}) as writer:
+            mask_tools.call("studio_rewrite_prompt", {"instruction": "Red wool coat"})
+        self.assertEqual(writer.call_args.kwargs["override_images"], [("局部改图原图", mask_bytes)])
+        self.assertTrue(writer.call_args.kwargs["editing"])
+
+        # 3. Chain latest image.
+        chain_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                                  scope=self.scope, workspace="image",
+                                  composer={"mode": "image", "prompt": "Next frame", "chain": True})
+        with patch.object(self.studio.llm, "resolve", return_value=(provider, "demo")), \
+             patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "Chained"}) as writer:
+            chain_tools.call("studio_rewrite_prompt", {"instruction": "Pan left"})
+        self.assertEqual(writer.call_args.kwargs["override_images"], [("图1（最新生成作品）", mask_bytes)])
+        self.assertTrue(writer.call_args.kwargs["chain"])
+
+        # 4. FL2VA first + last frame roles, and L2VA tail-only role.
+        fl_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "视频"}},
+                               scope=self.scope, workspace="video",
+                               composer={"mode": "video", "workflow": "fl2va", "prompt": "Dawn to dusk",
+                                         "has_image": True, "has_last_image": True})
+        with patch.object(self.studio.llm, "resolve", return_value=(provider, "demo")), \
+             patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "FL2VA"}) as writer:
+            fl_tools.call("studio_rewrite_prompt", {"instruction": "Smooth pan"})
+        self.assertEqual(writer.call_args.kwargs["override_images"], [
+            ("<Picture 1> (First Frame at 0.00s)", uploaded_first),
+            ("<Picture 2> (Last Frame at end)", uploaded_last),
+        ])
+        self.assertTrue(writer.call_args.kwargs["has_last_image"])
+        self.assertTrue(writer.call_args.kwargs["has_image"])
+
+        tail_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "视频"}},
+                                 scope=self.scope, workspace="video",
+                                 composer={"mode": "video", "workflow": "fl2va", "prompt": "Arrive at dusk",
+                                           "has_image": False, "has_last_image": True})
+        with patch.object(self.studio.llm, "resolve", return_value=(provider, "demo")), \
+             patch.object(self.studio, "write_prompt_rich", return_value={"prompt": "L2VA"}) as writer:
+            tail_tools.call("studio_rewrite_prompt", {"instruction": "Slow reveal"})
+        self.assertEqual(writer.call_args.kwargs["override_images"], [
+            ("<Picture 1> (Last Frame at end)", uploaded_last),
+        ])
+        self.assertTrue(writer.call_args.kwargs["has_last_image"])
+        self.assertFalse(writer.call_args.kwargs["has_image"])

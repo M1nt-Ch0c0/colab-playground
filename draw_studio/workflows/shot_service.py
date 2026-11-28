@@ -241,6 +241,131 @@ def _reference(runtime, rid, *, required=False):
     return None
 
 
+def _slot_reference(runtime, path, *, ref_id, source="", updated_at=0, slot=None):
+    if not path:
+        return None
+    try:
+        if not 0 < path.stat().st_size <= LIMITS["upload_max_mb"] * 1048576:
+            return None
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if isinstance(source, str) and source.startswith("round:"):
+        rid = source.removeprefix("round:")
+        if Store.valid_id(rid) and (asset := runtime.store.get(rid)):
+            return ({"id": rid, "thumb": f"api/rounds/{rid}" + ("/thumb" if asset.get("has_thumb") else ""),
+                     "label": str(asset.get("prompt") or "")[:80]}, data)
+    stamp = int(updated_at or 0)
+    thumb = f"api/reference?slot={slot}&t={stamp}" if slot else f"api/reference?id={ref_id}&t={stamp}"
+    return ({"id": slot or ref_id, "thumb": thumb, "label": ""}, data)
+
+
+def _composer_images(runtime, options, mode, explicit):
+    attached, used_refs = [], {}
+    limit = LIMITS["refs_max"]
+
+    def read_active_items(max_items):
+        rows = []
+        with runtime.studio._lock:
+            report = runtime.studio.refs_report()
+            for entry in (report.get("items") or ())[:max_items]:
+                resolved = _slot_reference(runtime, runtime.studio.ref_item_file(entry["id"]),
+                                           ref_id=entry["id"], source=entry.get("source", ""),
+                                           updated_at=entry.get("updated_at", 0))
+                if resolved:
+                    rows.append(resolved)
+        return rows
+
+    def read_last_slot():
+        with runtime.studio._lock:
+            info = runtime.studio.refs_report().get("last") or {}
+            if not info.get("set"):
+                return None
+            return _slot_reference(runtime, runtime.studio.ref_file("last"), ref_id="last",
+                                   source=info.get("source", ""), updated_at=info.get("updated_at", 0), slot="last")
+
+    if mode == "image":
+        if explicit:
+            for rid, (item, data) in list(explicit.items())[:limit]:
+                used_refs[rid] = item
+                attached.append((f"图{len(attached) + 1}", data))
+            return attached, used_refs, {"editing": True, "chain": False, "has_image": True, "has_last_image": False}
+        if mask_id := options.get("mask_id"):
+            try:
+                mask = runtime.operations.get_mask(mask_id)
+            except HarnessError:
+                mask = None
+            if mask and (ref := _reference(runtime, mask["source_id"])):
+                item, data = ref
+                used_refs[mask["source_id"]] = item
+                attached.append(("局部改图原图", data))
+                return attached, used_refs, {"editing": True, "chain": False, "has_image": True, "has_last_image": False}
+        if options.get("chain"):
+            latest = runtime.store.latest("image")
+            if latest and (ref := _reference(runtime, latest["id"])):
+                item, data = ref
+                used_refs[latest["id"]] = item
+                attached.append(("图1（最新生成作品）", data))
+                return attached, used_refs, {"editing": True, "chain": True, "has_image": True, "has_last_image": False}
+            return attached, used_refs, {"editing": False, "chain": True, "has_image": False, "has_last_image": False}
+        if options.get("has_image"):
+            for item, data in read_active_items(limit):
+                used_refs[item["id"]] = item
+                attached.append((f"图{len(attached) + 1}", data))
+        return attached, used_refs, {"editing": bool(attached), "chain": False, "has_image": bool(attached), "has_last_image": False}
+
+    workflow = options.get("workflow") if options.get("workflow") in {row["id"] for row in VIDEO_WORKFLOWS} else "t2va"
+    if workflow == "fl2va":
+        has_first = has_last = False
+        explicit_items = list(explicit.items())
+        last_rid = options.get("last_frame_round_id")
+        want_first = bool(explicit_items) if "has_image" not in options else bool(options.get("has_image")) or bool(explicit_items)
+        if options.get("has_image") is False and options.get("has_last_image") and not explicit_items:
+            want_first = False
+        if want_first:
+            first_ref = None
+            if explicit_items:
+                rid, first_ref = explicit_items[0]
+                used_refs[rid] = first_ref[0]
+            elif items := read_active_items(1):
+                first_ref = items[0]
+                used_refs[first_ref[0]["id"]] = first_ref[0]
+            if first_ref:
+                attached.append(("<Picture 1> (First Frame at 0.00s)", first_ref[1]))
+                has_first = True
+        last_ref = None
+        if Store.valid_id(last_rid) and (ref := _reference(runtime, last_rid)):
+            last_ref = ref
+            used_refs[last_rid] = ref[0]
+        elif len(explicit_items) >= 2:
+            rid2, ref2 = explicit_items[1]
+            last_ref = ref2
+            used_refs[rid2] = ref2[0]
+        elif options.get("has_last_image") and (ref := read_last_slot()):
+            last_ref = ref
+            used_refs[ref[0]["id"]] = ref[0]
+        if last_ref:
+            attached.append((f"<Picture {len(attached) + 1}> (Last Frame at end)", last_ref[1]))
+            has_last = True
+        return attached, used_refs, {"editing": False, "chain": False, "has_image": has_first, "has_last_image": has_last}
+
+    if workflow == "ref2va":
+        if explicit:
+            for rid, (item, data) in list(explicit.items())[:limit]:
+                used_refs[rid] = item
+                attached.append((f"<Picture {len(attached) + 1}>", data))
+        elif options.get("has_image"):
+            for item, data in read_active_items(limit):
+                used_refs[item["id"]] = item
+                attached.append((f"<Picture {len(attached) + 1}>", data))
+        return attached, used_refs, {"editing": False, "chain": False, "has_image": bool(attached), "has_last_image": False}
+
+    for rid, (item, data) in list(explicit.items())[:limit]:
+        used_refs[rid] = item
+        attached.append((f"<Picture {len(attached) + 1}>", data))
+    return attached, used_refs, {"editing": False, "chain": False, "has_image": bool(attached), "has_last_image": False}
+
+
 def _writer(runtime, text, mode, *, options, image_data, provider, model):
     frames = options.get("num_frames", 124)
     safe_frames = frames if type(frames) is int else 124
@@ -248,10 +373,17 @@ def _writer(runtime, text, mode, *, options, image_data, provider, model):
     if video_mode not in {row["id"] for row in VIDEO_WORKFLOWS}:
         video_mode = "t2va"
     video_task = options.get("video_task")
+    override = [
+        item if isinstance(item, tuple) else (f"图{number}" if mode == "image" else f"<Picture {number}>", item)
+        for number, item in enumerate(image_data, 1)
+    ]
     try:
         result = runtime.studio.write_prompt_rich(
-            text, mode=mode, workflow=video_mode, num_frames=safe_frames, ref_count=len(image_data),
-            override_images=[(f"<Picture {number}>", data) for number, data in enumerate(image_data, 1)],
+            text, mode=mode, editing=bool(options.get("editing", mode == "image" and bool(override))),
+            workflow=video_mode, num_frames=safe_frames, ref_count=len(override),
+            chain=bool(options.get("chain")),
+            has_image=bool(options.get("has_image", bool(override))),
+            override_images=override,
             provider_id=provider.id, model=model,
             video_task=video_task if isinstance(video_task, str) and video_task in VIDEO_TASKS else None,
             has_last_image=bool(options.get("has_last_image")),
@@ -309,27 +441,40 @@ def rewrite_prompt(runtime, request: RewriteInput, *, scope, run_id=None, step_i
             raise HarnessError("turn_stopped")
         sid, n = shot["shot_id"], shot["seq"]
         original = shot["fields"].get(field, "")
-        reference_ids = list(explicit)
-        keyframe = shot.get("keyframe_round_id")
-        tail = options.get("last_frame_round_id") if options.get("workflow") == "fl2va" and field == "video_prompt" else None
-        if keyframe:
-            reference_ids.insert(0, keyframe)
-        if Store.valid_id(tail):
-            reference_ids.append(tail)
-        references = []
-        used = set()
-        for rid in list(dict.fromkeys(reference_ids))[:LIMITS["refs_max"]]:
-            reference = explicit.get(rid) or _reference(runtime, rid)
-            if reference:
-                item, data = reference
-                refs.setdefault(rid, item)
-                used.add(rid)
-                references.append(data)
+        mode = "video" if field == "video_prompt" or composer and composer.get("mode") == "video" else "image"
+        if composer is not None:
+            references, used_refs, flags = _composer_images(runtime, options, mode, explicit)
+            for key, item in used_refs.items():
+                refs.setdefault(key, item)
+            writer_options = {**options, **flags}
+        else:
+            reference_ids = list(explicit)
+            keyframe = shot.get("keyframe_round_id")
+            tail = options.get("last_frame_round_id") if options.get("workflow") == "fl2va" and field == "video_prompt" else None
+            if keyframe:
+                reference_ids.insert(0, keyframe)
+            if Store.valid_id(tail):
+                reference_ids.append(tail)
+            references = []
+            used = set()
+            for rid in list(dict.fromkeys(reference_ids))[:LIMITS["refs_max"]]:
+                reference = explicit.get(rid) or _reference(runtime, rid)
+                if reference:
+                    item, data = reference
+                    refs.setdefault(rid, item)
+                    used.add(rid)
+                    if mode == "video" and options.get("workflow") == "fl2va":
+                        label = (f"<Picture {len(references) + 1}> (Last Frame at end)" if rid == tail
+                                 else "<Picture 1> (First Frame at 0.00s)" if not references
+                                 else f"<Picture {len(references) + 1}>")
+                        references.append((label, data))
+                    else:
+                        references.append(data)
+            writer_options = {**options, "has_last_image": tail in used}
         brief = f"修改要求：{instruction}\n现有提示词：\n{original}"
         if title := shot.get("title"):
             brief = f"镜头：{title}\n{brief}"
-        mode = "video" if field == "video_prompt" or composer and composer.get("mode") == "video" else "image"
-        value = _writer(runtime, brief, mode, options={**options, "has_last_image": tail in used},
+        value = _writer(runtime, brief, mode, options=writer_options,
                         image_data=references, provider=provider, model=model)
         before.append({"shot_id": sid, "n": n, "text": original})
         after.append({"shot_id": sid, "n": n, "text": value})
