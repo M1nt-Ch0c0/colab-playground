@@ -22,6 +22,43 @@ export interface components {
             /** Assets */
             assets: components["schemas"]["AssetInfo"][];
         };
+        /** ClipRequest */
+        ClipRequest: {
+            /** Start S */
+            start_s: number;
+            /** End S */
+            end_s: number;
+            /**
+             * Mute
+             * @default false
+             */
+            mute?: boolean;
+        };
+        /** CropRequest */
+        CropRequest: {
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+        };
+        /** FrameRequest */
+        FrameRequest: {
+            /**
+             * Position
+             * @default first
+             * @enum {string}
+             */
+            position?: "first" | "last" | "time";
+            /**
+             * Time S
+             * @default 0
+             */
+            time_s?: number;
+        };
         /** LlmState */
         LlmState: {
             /** Providers */
@@ -194,10 +231,19 @@ export interface components {
              */
             chain?: boolean;
             /**
+             * Has Image
+             * @default true
+             */
+            has_image?: boolean;
+            /**
              * Has Last Image
              * @default false
              */
             has_last_image?: boolean;
+            /** Video Task */
+            video_task?: ("edit" | "continue" | "motion") | null;
+            /** Edit Source Id */
+            edit_source_id?: string | null;
             /** Provider Id */
             provider_id?: string | null;
             /** Model */

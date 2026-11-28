@@ -114,6 +114,13 @@ def clear_queue(s: State):
     return {"ok": True, "removed": s.studio.clear_queue()}
 
 
+@router.post("/queue/{job_id}/retry", status_code=202)
+def retry_job(job_id: str, s: State):
+    if not s.colab.has_credentials():
+        raise ValueError("请先在设置中授权 Google Colab")
+    return {"id": s.studio.retry_job(job_id)}
+
+
 @router.delete("/queue/{job_id}")
 @router.post("/queue/{job_id}/cancel")
 def unqueue(job_id: str, s: State):

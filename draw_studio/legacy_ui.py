@@ -643,6 +643,10 @@ _BODY = r"""
         <div id="workflowWrap" class="hide">
           <label class="f">视频工作流</label>
           <div class="chips" id="workflowChips"></div>
+          <div id="videoTaskWrap" class="hide">
+            <label class="f" for="videoTask">参考用途</label>
+            <select id="videoTask" data-p><option value="">参考图</option><option value="edit">翻修原片</option><option value="continue">续拍下一段</option><option value="motion">白模 + 人设</option></select>
+          </div>
         </div>
         <div id="framesWrap" class="hide">
           <label class="f">时长</label>
@@ -652,6 +656,12 @@ _BODY = r"""
 
       <section class="block" id="refBlock">
         <div class="bh"><i data-i="image"></i><span id="refTitle">参考图</span><span class="hint" id="refHint">点击 / 拖入 / 粘贴</span></div>
+        <div id="videoRefWrap" class="hide">
+          <label class="f" for="videoRefInput">参考视频（MP4，2–15 秒，最大 64 MB）</label>
+          <video id="videoRefPreview" class="hide" style="width:100%;max-height:180px" controls playsinline preload="metadata"></video>
+          <div class="row"><input type="file" id="videoRefInput" accept="video/mp4,.mp4"><button id="videoRefClear" class="btn sm ghost hide">移除视频</button></div>
+          <label class="switch hide" id="videoImagesToggle"><input type="checkbox" id="videoUseImages" data-p><span class="tg"></span>附加参考图</label>
+        </div>
         <div id="multiRefWrap">
           <div class="ref-grid" id="refGrid"></div>
           <div class="ref-bar hide" id="refBar">
@@ -811,6 +821,10 @@ _BODY = r"""
           <button class="btn sm" id="aRef" title="设为参考图 / 首帧"><i data-i="image"></i><span class="lbl">设为参考</span></button>
           <button class="btn sm hide" id="aLast" title="设为尾帧"><i data-i="film"></i><span class="lbl">设为尾帧</span></button>
           <button class="btn sm" id="aToVideo" title="以此图为首帧生成视频"><i data-i="video"></i><span class="lbl">做成视频</span></button>
+          <button class="btn sm hide" id="aEditVideo" title="以这段视频为参考继续创作"><i data-i="film"></i><span class="lbl">翻修视频</span></button>
+          <button class="btn sm hide" id="aContinueVideo" title="从这段视频的结尾续拍"><i data-i="video"></i><span class="lbl">续拍下一段</span></button>
+          <a class="btn sm" id="aMediaTool" title="在新版工作台打开素材编辑器"></a>
+          <a class="btn sm hide" id="aCrop">裁图</a>
           <button class="btn sm" id="aCompare" title="与其他图片左右滑块对比"><i data-i="compare"></i><span class="lbl">A/B对比</span></button>
           <button class="btn sm" id="aReuse" title="把这次的参数填回左侧"><i data-i="reuse"></i><span class="lbl">复用参数</span></button>
           <a class="btn sm" id="aDown" title="下载 (D)"><i data-i="download"></i><span class="lbl">下载</span></a>
@@ -838,6 +852,8 @@ _BODY = r"""
           <div class="chips" id="filterChips"></div>
           <div class="grow"></div>
           <div class="search"><i data-i="search"></i><input type="search" id="gSearch" placeholder="搜索提示词 / 编号"></div>
+          <button class="btn sm" id="importMediaBtn">导入素材</button>
+          <input hidden type="file" id="importMedia" accept="image/png,image/jpeg,image/webp,video/mp4,.mp4">
           <button class="btn sm" id="selBtn"><i data-i="select"></i>多选</button>
           <button class="btn sm" id="cleanBtn"><i data-i="broom"></i>清理旧作品</button>
           <button class="btn sm" id="trashBtn" style="position:relative"><i data-i="trash"></i>回收站<span class="badge hide" id="trashBadge"></span></button>
@@ -1117,6 +1133,7 @@ function applyStudioPreset(pid){
   if (!p) return;
   if (p.mode && p.mode !== S.mode) setMode(p.mode);
   if (p.mode === 'video'){
+    $('#videoTask').value = p.video_task || '';
     if (p.workflow){ S.workflow = p.workflow; renderWorkflowChips(); }
     if (p.num_frames){ S.frames = p.num_frames; renderFrameChips(); }
     const om = p.offload_mode || (p.auto_offload === false ? 'none' : 'auto');
@@ -1499,9 +1516,10 @@ function updateRewriteBadge(){
   if (S.mode === 'video'){
     const sec = (S.frames / 24).toFixed(1);
     if (S.workflow === 'ref2va'){
-      el.textContent = `H3 六段式 (Ref2VA · ${sec}s` + (items.length ? ` · 看 ${items.length} 张参考图)` : ')');
+      const useImages = !['edit', 'continue'].includes(currentVideoTask()) || $('#videoUseImages').checked;
+      el.textContent = `H3 六段式 (Ref2VA · ${sec}s` + (items.length && useImages ? ` · 看 ${items.length} 张参考图)` : ')');
     } else if (S.workflow === 'fl2va'){
-      const sub = items.length && hasLast ? 'FL2VA · 看首尾帧' : (items.length ? 'I2VA · 看首帧' : 'FL2VA');
+      const sub = items.length && hasLast ? 'FL2VA · 看首尾帧' : (items.length ? 'I2VA · 看首帧' : hasLast ? 'L2VA · 看尾帧' : 'FL2VA');
       el.textContent = `H3 三段式 (${sub} · ${sec}s)`;
     } else {
       el.textContent = `H3 三段式 (T2VA · ${sec}s)`;
@@ -1511,6 +1529,9 @@ function updateRewriteBadge(){
     else if ($('#useRef').checked && items.length) el.textContent = `多模态看图改写（看 ${items.length} 张参考图）`;
     else el.textContent = '文生图提示词改写';
   }
+}
+function currentVideoTask(){
+  return S.mode === 'video' && S.workflow === 'ref2va' ? $('#videoTask').value : '';
 }
 function updateModeUI(){
   const v = S.mode === 'video';
@@ -1522,20 +1543,27 @@ function updateModeUI(){
   $('#imgRefOpts').classList.toggle('hide', v);
   $('#negWrap').classList.toggle('hide', v);
   const wf = S.workflow;
+  const task = currentVideoTask();
+  const optionalImages = task === 'edit' || task === 'continue';
+  $('#videoTaskWrap').classList.toggle('hide', !v || wf !== 'ref2va');
+  $('#videoRefWrap').classList.toggle('hide', !task);
+  $('#videoImagesToggle').classList.toggle('hide', !optionalImages);
   const multi = isMultiRefMode();
   $('#refBlock').classList.toggle('hide', v && wf === 't2va');
-  $('#multiRefWrap').classList.toggle('hide', !multi);
+  $('#multiRefWrap').classList.toggle('hide', !multi || (optionalImages && !$('#videoUseImages').checked));
   $('#drops').classList.toggle('hide', multi);
   $('#dropLast').classList.toggle('hide', !(v && wf === 'fl2va'));
   $('#drops').classList.toggle('two', v && wf === 'fl2va');
-  $('#refTitle').textContent = v ? (wf === 'fl2va' ? '首帧 / 尾帧' : '参考图') : '参考图';
-  $('#refHint').textContent = '点击 / 拖入 / 粘贴';
+  $('#refTitle').textContent = task === 'motion' ? '白模视频与人设图' : task ? '参考视频' : v && wf === 'fl2va' ? '首帧 / 尾帧' : '参考图';
+  $('#refHint').textContent = task ? '' : '点击 / 拖入 / 粘贴';
   $('#firstTtl').textContent = v ? (wf === 'fl2va' ? '首帧' : '参考图') : '参考图';
   $('#firstTtl').classList.toggle('hide', !(v && wf === 'fl2va'));
   const maxR = (S.refs && S.refs.max) || (S.cfg && S.cfg.limits && S.cfg.limits.refs_max) || 6;
   $('#refHelp').textContent = v
-    ? (wf === 'fl2va' ? '首帧必填，尾帧可选；AI 改写会自动查看首尾帧。' : `最多可传 ${maxR} 张参考图，AI 改写会自动看图生成 6 段式 Ref2VA 提示词。`)
+    ? (wf === 'fl2va' ? '可只用首帧、只用尾帧，或同时设置两帧。' : `最多可传 ${maxR} 张参考图，AI 改写会自动看图生成 6 段式 Ref2VA 提示词。`)
     : `最多可传 ${maxR} 张参考图；勾选「用参考图改图」后 AI 改写会自动看图。`;
+  if (task) $('#refHelp').textContent = task === 'motion' ? '白模视频提供动作和运镜，第一张人设图提供角色外观。' :
+    (task === 'continue' ? '从原片结尾续拍，新片段单独保存。可添加参考图。' : '请在提示词里写明要改动的内容。可添加参考图。');
   renderModelOptions();
   $('#goText').textContent = v ? '生成视频' : '开始生成';
   $('#stepsHint').textContent = v ? '（Turbo LoRA 可设 4–8；写实 LoRA 建议 18 步）' : (S.engine === 'comfyui' ? '（精细 28–35 步 / Turbo LoRA 8 步）' : '');
@@ -1547,6 +1575,15 @@ function updateModeUI(){
 /* ── references ── */
 function renderRefs(refs){
   S.refs = refs || {};
+  const clip = S.refs.video;
+  const preview = $('#videoRefPreview');
+  const src = clip ? 'api/video-reference?id=' + encodeURIComponent(clip.id) : '';
+  if (src !== (preview.getAttribute('src') || '')){
+    if (src) preview.src = src;
+    else { preview.removeAttribute('src'); preview.load(); }
+  }
+  preview.classList.toggle('hide', !clip);
+  $('#videoRefClear').classList.toggle('hide', !clip);
   for (const slot of ['first','last']){
     const r = S.refs[slot] || {}; const el = $(slot==='first' ? '#dropFirst' : '#dropLast');
     el.classList.toggle('set', !!r.set);
@@ -1653,7 +1690,8 @@ async function rewrite(){
       editing,
       chain,
       has_last_image,
-      ref_count,
+      video_task: currentVideoTask() || undefined,
+      ref_count: ['edit', 'continue'].includes(currentVideoTask()) && !$('#videoUseImages').checked ? 0 : ref_count,
     });
     $('#prompt').value = r.prompt; updateCount(); saveSoon();
     $('#rewriteHint').textContent = `✓ ${r.format || '已写入下方提示词'}`;
@@ -1679,7 +1717,12 @@ function buildPayload(){
   if (v){
     const om = ($('#offloadMode') && $('#offloadMode').value) || 'auto';
     p.workflow = S.workflow; p.num_frames = S.frames; p.offload_mode = om; p.auto_offload = om !== 'none';
-    p.has_image = S.workflow !== 't2va'; p.has_last_image = S.workflow === 'fl2va' && !!(S.refs.last && S.refs.last.set);
+    p.has_last_image = S.workflow === 'fl2va' && !!S.refs.last?.set;
+    p.has_image = S.workflow !== 't2va' && (!p.has_last_image || !!S.refs.first?.set);
+    if (currentVideoTask()){
+      p.video_task = currentVideoTask(); p.video_reference_id = S.refs.video?.id;
+      p.has_image = p.video_task === 'motion' || ($('#videoUseImages').checked && !!S.refs.first?.set);
+    }
   } else {
     p.engine = S.engine;
     p.chain = $('#chain').checked; p.has_image = $('#useRef').checked && !p.chain;
@@ -1711,6 +1754,7 @@ async function generate(){
     return;
   }
   const p = buildPayload();
+  if (p.video_task && (S.videoRefBusy || !p.video_reference_id)){ toast('请先选好参考视频', 'err'); return; }
   if (!p.prompt){ toast('请先填写提示词', 'err'); $('#prompt').focus(); return; }
   if (p.mode === 'image' && p.engine === 'comfyui'){
     if (!p.comfy.diffusion){ toast('请填写扩散模型链接（或先点选上方内置推荐组合）', 'err'); $('#comfyDiff').focus(); return; }
@@ -1860,11 +1904,14 @@ function renderProgress(st){
 }
 function renderQueue(st){
   const q = st.queue || [];
-  $('#queueBox').classList.toggle('hide', !q.length);
+  const failed = (st.history || []).filter(j => j.retryable);
+  $('#queueBox').classList.toggle('hide', !q.length && !failed.length);
+  $('#queueClear').classList.toggle('hide', !q.length);
   $('#queueCount').textContent = q.length ? ` · ${q.length} 个等待中` : '';
   $('#queueList').innerHTML = q.map((j, i) => `<div class="qrow"><span class="n">${i+1}</span>${I(j.mode==='video'?'video':'image')}
     <span class="p">${esc(j.prompt)}</span><span class="dim">${j.width}×${j.height} · seed ${j.seed}</span>
-    <button class="iconbtn" data-unq="${j.id}" title="移出队列">${I('x')}</button></div>`).join('');
+    <button class="iconbtn" data-unq="${j.id}" title="移出队列">${I('x')}</button></div>`).join('')
+    + failed.map(j => `<div class="qrow"><span class="p">${esc(j.prompt)}</span><span class="dim">${esc(j.error)}</span><button class="btn sm" data-retry="${esc(j.id)}">重试</button></div>`).join('');
 }
 
 /* ── logs ── */
@@ -2032,6 +2079,13 @@ function renderStage(){
   $('#aRef').classList.toggle('hide', it.kind !== 'image');
   $('#aLast').classList.toggle('hide', !(it.kind === 'image' && S.mode === 'video' && S.workflow === 'fl2va'));
   $('#aToVideo').classList.toggle('hide', it.kind !== 'image');
+  $('#aEditVideo').classList.toggle('hide', it.kind !== 'video');
+  $('#aContinueVideo').classList.toggle('hide', it.kind !== 'video');
+  $('#aMediaTool').textContent = it.kind === 'video' ? '取帧与裁段' : '局部改图';
+  $('#aMediaTool').href = `./?tool=${it.kind === 'video' ? 'clip' : 'mask'}&round=${it.id}`;
+  $('#aCrop').classList.toggle('hide', it.kind !== 'image');
+  $('#aCrop').href = `./?tool=crop&round=${it.id}`;
+  $('#aReuse').classList.toggle('hide', ['import', 'frame', 'clip', 'crop', 'masked_edit'].includes(it.media_operation) || it.workflow === 'stitch');
   const aCmp = $('#aCompare');
   if (aCmp) aCmp.classList.toggle('hide', it.kind !== 'image' || S.gallery.filter(x => x.kind === 'image').length < 2);
   $('#aDown').href = `api/rounds/${it.id}?download=1`;
@@ -2048,10 +2102,11 @@ function renderStage(){
   }
   add('工作流', it.workflow); add('尺寸', it.width && `${it.width}×${it.height}`); add('步数', it.steps); add('CFG', it.cfg);
   add('种子', it.seed); add('帧数', it.num_frames); add('GPU', it.gpu);
+  if (it.media_duration_s != null) add('片长', Number(it.media_duration_s.toFixed(2)) + ' 秒');
   if (it.boot_s != null && it.infer_s != null){
     add('冷启 / 推理', `${dur(it.boot_s)} / ${dur(it.infer_s)}`);
   } else {
-    add('用时', it.duration_s && dur(it.duration_s));
+    if (it.workflow !== 'stitch' && it.duration_s != null) add('生成用时', dur(it.duration_s));
   }
   if (it.workflow_run_id) add('流水线', it.workflow_run_id);
   if (it.chain_from) add('接着改自', '#' + +it.chain_from);
@@ -2118,6 +2173,8 @@ function reuse(it){
     }
   }
   if (it.kind === 'video'){
+    $('#videoTask').value = m.video_task || '';
+    $('#videoUseImages').checked = !!m.has_image;
     if (m.workflow){ S.workflow = m.workflow; renderWorkflowChips(); }
     if (m.num_frames){ S.frames = m.num_frames; renderFrameChips(); }
     if ($('#offloadMode')) $('#offloadMode').value = m.offload_mode || (m.auto_offload === false ? 'none' : 'auto');
@@ -2479,6 +2536,28 @@ function renderStepConfigHTML(step, idx, steps, run){
   const cfg = step.config || {};
   const dis = run.status === 'running' ? 'disabled' : '';
   const sid = esc(step.id);
+  const videoInputs = () => {
+    const gallerySelect = (kind, key, label) => {
+      const items = S.gallery.filter(r => r.kind === kind);
+      const selected = cfg[key] || '';
+      return `<label class="f">${label}<select data-wfc="${sid}:${key}" ${dis}>
+        <option value="">（无 / 沿用上游）</option>
+        ${selected && !items.some(r => r.id === selected) ? `<option selected value="${esc(selected)}">#${esc(selected)} · 已移除</option>` : ''}
+        ${items.map(r => `<option value="${esc(r.id)}" ${r.id === selected ? 'selected' : ''}>#${+r.id} · ${esc(r.prompt.slice(0, 40))}</option>`).join('')}</select></label>`;
+    };
+    if (cfg.workflow === 'fl2va') return gallerySelect('image', 'last_frame_round_id', '尾帧');
+    if (cfg.workflow !== 'ref2va') return '';
+    const refs = new Set(cfg.extra_ref_sources || []);
+    const sources = steps.slice(0, idx).filter(s => ['asset_input','web_asset_fetch','image_gen'].includes(s.type));
+    const upstream = steps.slice(0, idx).some(s => ['video_gen', 'video_stitch'].includes(s.type)) || cfg.video_from;
+    return `<div class="g2">${upstream ? `<label class="f">上游参考视频<select data-wfc="${sid}:video_from" ${dis}>
+      ${upstreamOptions(steps, idx, ['video_gen', 'video_stitch'], cfg.video_from)}</select></label>` : ''}
+      ${cfg.video_from ? '' : gallerySelect('video', 'video_round_id', '参考视频')}
+      ${cfg.video_round_id || cfg.video_from ? `<label class="f">参考视频用途<select data-wfc="${sid}:video_task" ${dis}>
+        ${[['edit','翻修原片'],['continue','续拍下一段'],['motion','白模 + 人设']].map(([k,l]) => `<option value="${k}" ${k === (cfg.video_task || 'edit') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
+      </div>${sources.length ? '<label class="f">上游参考图（按选择顺序）</label>' : ''}
+      <div class="chips">${sources.map(s => `<label class="pchip ${refs.has(s.id)?'on':''}"><input type="checkbox" data-wfref="${sid}:${esc(s.id)}" ${refs.has(s.id)?'checked':''} ${dis}>${esc(s.name)}</label>`).join('')}</div>`;
+  };
   if (step.type === 'asset_input'){
     const files = cfg.asset_files || [];
     const rids = cfg.round_ids || [];
@@ -2549,13 +2628,13 @@ function renderStepConfigHTML(step, idx, steps, run){
         <div><label class="f" style="margin-top:0">分镜来源</label><select data-wfc="${sid}:scenes_from" ${dis}>${upstreamOptions(steps, idx, ['llm_script'], cfg.scenes_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">H3 模式</label><select data-wfc="${sid}:workflow" ${dis}>
-          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧</option>
-          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 参考图</option>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧 / 尾帧</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 图片 / 视频参考</option>
           <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va · 文生</option>
         </select></div>
       </div>
-      <div class="g2">
-        <div><label class="f" style="margin-top:0">单镜帧数</label><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}></div>
+      ${videoInputs()}<div class="g2">
+        <div><label class="f" style="margin-top:0">单镜帧数</label><input type="number" min="120" max="${S.cfg?.limits?.frames_max || 345}" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}></div>
         <div><label class="f" style="margin-top:0">补充要求</label><input type="text" data-wfc="${sid}:instruction" value="${esc(cfg.instruction || '')}" ${dis}></div>
       </div>`;
   }
@@ -2565,17 +2644,17 @@ function renderStepConfigHTML(step, idx, steps, run){
         <div><label class="f" style="margin-top:0">关键帧来源</label><select data-wfc="${sid}:keyframe_from" ${dis}>${upstreamOptions(steps, idx, ['image_gen'], cfg.keyframe_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">提示词来源</label><select data-wfc="${sid}:prompts_from" ${dis}>${upstreamOptions(steps, idx, ['h3_prompt','llm_script'], cfg.prompts_from || '')}</select></div>
         <div><label class="f" style="margin-top:0">H3 模式</label><select data-wfc="${sid}:workflow" ${dis}>
-          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧</option>
-          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 参考图</option>
+          <option value="fl2va" ${cfg.workflow==='fl2va'?'selected':''}>fl2va · 首帧 / 尾帧</option>
+          <option value="ref2va" ${cfg.workflow==='ref2va'?'selected':''}>ref2va · 图片 / 视频参考</option>
           <option value="t2va" ${cfg.workflow==='t2va'?'selected':''}>t2va · 文生</option>
         </select></div>
       </div>
       <div class="g3" style="margin-top:6px">
         <div><label class="f" style="margin-top:0">宽 × 高</label><div class="row"><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:width:int" value="${cfg.width ?? 1280}" ${dis}><input type="number" step="64" min="512" max="1536" data-wfc="${sid}:height:int" value="${cfg.height ?? 768}" ${dis}></div></div>
-        <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="360" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
+        <div><label class="f" style="margin-top:0">帧数 / 步数</label><div class="row"><input type="number" min="120" max="${S.cfg?.limits?.frames_max || 345}" data-wfc="${sid}:num_frames:int" value="${cfg.num_frames ?? 124}" ${dis}><input type="number" min="2" max="60" data-wfc="${sid}:steps:int" value="${cfg.steps ?? 30}" ${dis}></div></div>
         <div><label class="f" style="margin-top:0">首选 GPU</label><select data-wfc="${sid}:gpu" ${dis}>${(S.cfg.gpus||[]).map(g=>`<option value="${g.id}" ${(cfg.gpu||'H100')===g.id?'selected':''}>${esc(g.label || g.id)}</option>`).join('')}</select></div>
       </div>
-      <div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载</label>
+      ${videoInputs()}<div style="margin-top:6px"><label class="f" style="margin-top:0">显存卸载</label>
         <select data-wfc="${sid}:offload_mode" ${dis}>
           <option value="auto" ${(cfg.offload_mode||'auto')==='auto'?'selected':''}>自动</option>
           <option value="component" ${cfg.offload_mode==='component'?'selected':''}>组件级 · H100 / G4</option>
@@ -2988,6 +3067,29 @@ function openSettings(){
 
 /* ── wiring ── */
 function bind(){
+  $('#videoTask').onchange = () => { updateModeUI(); saveSoon(); };
+  $('#videoUseImages').onchange = () => { updateModeUI(); saveSoon(); };
+  const changeVideo = async (request, task) => {
+    if (S.videoRefBusy) return;
+    S.videoRefBusy = true;
+    try {
+      const r = await request();
+      if (task) {
+        setMode('video'); S.workflow = 'ref2va'; $('#videoTask').value = task; $('#videoUseImages').checked = false;
+        renderWorkflowChips(); updateModeUI(); saveSoon();
+      }
+      renderRefs(r.references);
+    } catch(e){ toast(e.message, 'err'); }
+    finally { S.videoRefBusy = false; }
+  };
+  $('#videoRefInput').onchange = e => {
+    const file = e.target.files[0]; e.target.value = '';
+    if (file) changeVideo(() => api('api/video-reference', {method:'POST', body:file}));
+  };
+  $('#videoRefClear').onclick = () => S.refs.video && changeVideo(() => api('api/video-reference?id=' + encodeURIComponent(S.refs.video.id), {method:'DELETE'}));
+  const useGalleryVideo = task => S.viewing && changeVideo(() => post('api/rounds/' + S.viewing + '/use', {slot:'video'}), task);
+  $('#aEditVideo').onclick = () => useGalleryVideo('edit');
+  $('#aContinueVideo').onclick = () => useGalleryVideo('continue');
   $('#wsImage').onclick = () => setWorkspace('image');
   $('#wsVideo').onclick = () => setWorkspace('video');
   $('#wsWorkflow').onclick = () => setWorkspace('workflow');
@@ -3216,9 +3318,10 @@ function bind(){
       const [sid, srcId] = refSpec.split(':');
       const st = S.wfRun.workflow.steps.find(s => s.id === sid);
       if (st){
-        const list = new Set(st.config.ref_sources || []);
+        const key = st.type === 'image_gen' ? 'ref_sources' : 'extra_ref_sources';
+        const list = new Set(st.config[key] || []);
         if (e.target.checked) list.add(srcId); else list.delete(srcId);
-        st.config.ref_sources = [...list];
+        st.config[key] = [...list];
         saveWorkflowRunSoon(); renderWorkflowCanvas();
       }
       return;
@@ -3234,6 +3337,8 @@ function bind(){
         st.config[key] = val;
         if (key === 'gpu') st.config.gpu_pool = [val];
         saveWorkflowRunSoon();
+        if (key === 'video_from') st.config.video_round_id = '';
+        if (key === 'workflow' || key === 'video_round_id' || key === 'video_from') renderWorkflowCanvas();
       }
     }
   });
@@ -3618,10 +3723,28 @@ function bind(){
   $('#aCopy').onclick = () => { const it = current(); it && navigator.clipboard.writeText(it.prompt).then(() => toast('提示词已复制', 'ok')); };
   $('#galleryHead').onclick = () => setGalleryOpen(!S.galleryOpen);
   $('#emptyOpenGallery').onclick = () => { setGalleryOpen(true); $('#galleryCard').scrollIntoView({behavior:'smooth', block:'start'}); };
-  $('#queueList').onclick = async e => { const b = e.target.closest('[data-unq]'); if (!b) return; try { await api('api/queue/' + b.dataset.unq, {method:'DELETE'}); refresh(); } catch(err){ toast(err.message, 'err'); } };
+  $('#queueList').onclick = async e => {
+    const b = e.target.closest('[data-unq],[data-retry]'); if (!b) return; b.disabled = true;
+    try {
+      if (b.dataset.retry) await post('api/queue/' + b.dataset.retry + '/retry');
+      else await api('api/queue/' + b.dataset.unq, {method:'DELETE'});
+      await refresh();
+    } catch(err){ b.disabled = false; toast(err.message, 'err'); }
+  };
   $('#queueClear').onclick = async () => { await post('api/queue/clear'); refresh(); };
 
   // gallery
+  $('#importMediaBtn').onclick = () => $('#importMedia').click();
+  $('#importMedia').onchange = async e => {
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+    const kind = file.type === 'video/mp4' || file.name.toLowerCase().endsWith('.mp4') ? 'video' : 'image';
+    $('#importMediaBtn').disabled = true;
+    try {
+      const r = await api(`api/rounds/import?kind=${kind}&name=${encodeURIComponent(file.name)}`, {body:file});
+      await loadGallery(); view(r.id, false);
+    } catch(err){ toast(err.message, 'err'); }
+    finally { $('#importMediaBtn').disabled = false; }
+  };
   $('#grid').addEventListener('click', onTileClick);
   $('#grid').addEventListener('dblclick', e => { const t = e.target.closest('.tile'); if (t && !S.selecting) openLightbox(t.dataset.id); });
   $('#grid').addEventListener('dragstart', e => { const t = e.target.closest('.tile'); if (t) e.dataTransfer.setData('text/x-round', t.dataset.id); });

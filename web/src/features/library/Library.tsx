@@ -1,7 +1,7 @@
 // 作品库：宽屏时常驻右侧，窄屏时作为抽屉打开。按日期分组，支持筛选、搜索、多选和拖拽到参考图。
 import { motion } from 'motion/react'
-import { CheckSquare, Film, Search, Sparkles, Star, Trash2, Wind } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { CheckSquare, Film, Search, Sparkles, Star, Trash2, Upload, Wind, X } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
 import { api, media } from '../../api/client'
 import type { Round } from '../../api/types'
 import { cx, dateLabel, fmtBytes, rid } from '../../lib/util'
@@ -21,6 +21,29 @@ export function Library({ inSheet }: { inSheet?: boolean }) {
   const open = useStore(s => s.openSheet)
   const close = useStore(s => s.closeSheet)
   const [page, setPage] = useState(PAGE)
+  const input = useRef<HTMLInputElement>(null)
+  const [importing, setImporting] = useState(false)
+  const showRound = (id: string) => {
+    setViewing(id)
+    if (inSheet) close()
+    else if (matchMedia('(max-width: 1180px)').matches) useStore.getState().setLibraryOpen(false)
+    if (matchMedia('(max-width: 760px)').matches) requestAnimationFrame(() => document.querySelector('.stage')?.scrollIntoView())
+  }
+  const importFile = async (file: File) => {
+    const s = useStore.getState()
+    const kind = file.type === 'video/mp4' || /\.mp4$/i.test(file.name) ? 'video' : 'image'
+    const max = kind === 'video' ? s.cfg?.limits.video_upload_max_mb || 64 : s.cfg?.limits.upload_max_mb || 12
+    if (file.size > max * 1048576) { s.toast(`文件超过 ${max} MB`, 'err'); return }
+    setImporting(true)
+    try {
+      const r = await api.importMedia(file, kind)
+      await s.loadRounds()
+      useStore.setState({ galleryFilter: { kind: '', q: '', starred: false } })
+      showRound(r.id)
+      s.toast(`已导入 ${rid(r.id)}`, 'ok')
+    } catch (e) { s.toast(e instanceof Error ? e.message : '导入失败', 'err') }
+    finally { setImporting(false) }
+  }
 
   const setFilter = (p: Partial<typeof filter>) => { useStore.setState({ galleryFilter: { ...filter, ...p } }); setPage(PAGE) }
   const items = useMemo(() => {
@@ -44,8 +67,7 @@ export function Library({ inSheet }: { inSheet?: boolean }) {
 
   const onTile = (r: Round, e: React.MouseEvent) => {
     if (selecting || e.metaKey || e.ctrlKey) { if (!selecting) useStore.setState({ selecting: true }); toggle(r.id); return }
-    setViewing(r.id)
-    if (inSheet) close()
+    showRound(r.id)
   }
 
   return (
@@ -56,8 +78,13 @@ export function Library({ inSheet }: { inSheet?: boolean }) {
         <button className={cx('iconbtn sm', selecting && 'on')} title="多选" onClick={() => useStore.setState({ selecting: !selecting, selected: [] })}><CheckSquare size={15} /></button>
         <button className="iconbtn sm" title="清理旧作品" onClick={() => open('cleanup')}><Wind size={15} /></button>
         <button className="iconbtn sm" title="回收站" onClick={() => open('trash')}><Trash2 size={15} /></button>
+        {!inSheet && <button className="iconbtn sm dock-close" aria-label="收起作品库" onClick={() => useStore.getState().setLibraryOpen(false)}><X size={15} /></button>}
       </div>
-      <div className="lib-search"><Search size={14} /><input type="search" value={filter.q} placeholder="搜索提示词、模型或编号" onChange={e => setFilter({ q: e.target.value })} /></div>
+      <div className="lib-import-row">
+        <div className="lib-search"><Search size={14} /><input type="search" value={filter.q} placeholder="搜索提示词、模型或编号" onChange={e => setFilter({ q: e.target.value })} /></div>
+        <button className="btn sm" title="导入图片或视频" aria-label="导入图片或视频" disabled={importing} onClick={() => input.current?.click()}>{importing ? <span className="spinner" /> : <Upload size={14} />}导入</button>
+        <input ref={input} type="file" aria-label="选择本地素材" accept="image/png,image/jpeg,image/webp,video/mp4,.mp4" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void importFile(file) }} />
+      </div>
       <div className="chips lib-filters">
         <button className={cx('chip', !filter.kind && !filter.starred && 'on')} onClick={() => setFilter({ kind: '', starred: false })}>全部 {stats.all}</button>
         <button className={cx('chip', filter.kind === 'image' && 'on')} onClick={() => setFilter({ kind: 'image', starred: false })}>图片 {stats.image}</button>
@@ -80,7 +107,7 @@ export function Library({ inSheet }: { inSheet?: boolean }) {
                   style={{ aspectRatio: `${r.width || 1} / ${r.height || 1}` }} title={r.prompt}>
                   <img src={media.thumb(r)} alt="" loading="lazy" />
                   <span className="tile-id">{rid(r.id)}</span>
-                  {r.kind === 'video' && <span className="tile-kind"><Film size={11} />{r.duration_s ? `${r.duration_s}s` : ''}</span>}
+                  {r.kind === 'video' && <span className="tile-kind"><Film size={11} />{r.media_duration_s != null ? `${+r.media_duration_s.toFixed(2)}s` : ''}</span>}
                   {r.starred && <span className="tile-star"><Star size={11} fill="currentColor" /></span>}
                   {selecting && <span className={cx('tile-check', selected.includes(r.id) && 'on')} />}
                 </motion.button>

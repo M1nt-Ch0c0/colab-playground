@@ -2,6 +2,7 @@
 import io
 import json
 import socket
+import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -37,6 +38,15 @@ def png(size=(900, 600), color="navy"):
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, "PNG")
     return buf.getvalue()
+
+
+def mp4(path, duration=2, audio=False):
+    inputs = ["-f", "lavfi", "-i", "testsrc2=size=64x48:rate=30"]
+    if audio:
+        inputs += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100"]
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *inputs, "-t", str(duration),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True)
+    return path
 
 
 @contextmanager

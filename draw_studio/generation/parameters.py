@@ -11,6 +11,8 @@ from .catalog import (
     COMFY_CLIP_TYPES, COMFY_SAMPLERS, COMFY_SCHEDULERS, COMFY_TEMPLATES,
     DEFAULTS, GPUS, IMAGE_MODELS, LIMITS, VIDEO_WORKFLOWS,
 )
+from .video_reference import VIDEO_TASKS
+from .masked_edit import normalize_mask
 
 
 REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
@@ -449,6 +451,41 @@ def normalize_job(body: dict) -> dict:
     }
     if idle_minutes is not None:
         job["idle_minutes"] = idle_minutes
+    if body.get("edit_mask") is not None:
+        if mode != "image" or as_bool(body.get("chain", False), "chain"):
+            raise ValueError("局部改图需要指定一张图片作品")
+        job["edit_mask"] = normalize_mask(body["edit_mask"])
+        job["has_image"] = True
+    video_id = body.get("video_reference_id")
+    video_round = body.get("video_round_id")
+    if video_id or video_round or body.get("video_task"):
+        if mode != "video" or body.get("workflow") != "ref2va":
+            raise ValueError("参考视频需要选择「图片 / 视频参考」工作流")
+        if video_round:
+            if video_id or not isinstance(video_round, str) or not re.fullmatch(r"\d{3,7}", video_round):
+                raise ValueError("请指定一个有效的视频作品编号")
+            job["video_round_id"] = video_round
+        elif isinstance(video_id, str) and re.fullmatch(r"v[0-9a-f]{32}", video_id):
+            job["video_reference_id"] = video_id
+        else:
+            raise ValueError("请先上传或选择参考视频")
+        task = str(body.get("video_task") or "edit")
+        if task not in VIDEO_TASKS:
+            raise ValueError("不支持的视频参考用途")
+        job["video_task"] = task
+    if "reference_round_ids" in body:
+        ids = body["reference_round_ids"]
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= LIMITS["refs_max"]
+                or not all(isinstance(i, str) and re.fullmatch(r"\d{3,7}", i) for i in ids)):
+            raise ValueError("参考图需要 1–6 个有效的图片作品编号")
+        if job.get("edit_mask") or as_bool(body.get("chain", False), "chain") or (mode == "video" and body.get("workflow") not in ("fl2va", "ref2va")):
+            raise ValueError("当前模式不接受指定的参考图列表")
+        job.update(reference_round_ids=list(ids), has_image=True)
+    if body.get("last_frame_round_id"):
+        last_id = body["last_frame_round_id"]
+        if mode != "video" or body.get("workflow") != "fl2va" or not isinstance(last_id, str) or not re.fullmatch(r"\d{3,7}", last_id):
+            raise ValueError("指定尾帧需要首尾帧工作流和一个图片作品编号")
+        job["last_frame_round_id"] = last_id
     if mode == "video":
         wf = str(body.get("workflow") or "t2va")
         job["workflow"] = wf if wf in {w["id"] for w in VIDEO_WORKFLOWS} else "t2va"
@@ -460,8 +497,12 @@ def normalize_job(body: dict) -> dict:
         offload_mode = normalize_video_offload_mode(body.get("offload_mode"), body.get("auto_offload", True))
         job["offload_mode"] = offload_mode
         job["auto_offload"] = offload_mode != "none"
-        job["has_last_image"] = as_bool(body.get("has_last_image", False), "has_last_image") and job["workflow"] == "fl2va"
-        if job["workflow"] != "t2va":
+        job["has_last_image"] = bool(job.get("last_frame_round_id")) or (as_bool(body.get("has_last_image", False), "has_last_image") and job["workflow"] == "fl2va")
+        if job["workflow"] == "fl2va":
+            # Older callers omit has_image when they intend to use the current first-frame slot.
+            if not job["has_last_image"] or ("has_image" not in body and not job.get("last_frame_round_id")):
+                job["has_image"] = True
+        elif job["workflow"] == "ref2va" and (not job.get("video_task") or job["video_task"] == "motion"):
             job["has_image"] = True
     else:
         raw_engine = str(body.get("engine") or "").strip().lower()

@@ -2,6 +2,7 @@ import type { components } from './schema'
 
 type Wire = components['schemas']
 export type AssetUpload = Wire['AssetUpload']
+export type CropBox = Wire['CropRequest']
 
 // 与 docs/API.md 及 draw_studio 的生成、工作流、作品库接口 的返回结构一一对应。
 // 后端适配时只需保证字段一致，组件层不直接接触 fetch。
@@ -9,6 +10,9 @@ export type AssetUpload = Wire['AssetUpload']
 export type Mode = 'image' | 'video'
 export type Engine = 'diffusers' | 'comfyui'
 export type VideoWorkflow = 't2va' | 'fl2va' | 'ref2va'
+export type VideoTask = 'edit' | 'continue' | 'motion'
+export interface BrushStroke { size: number; points: [number, number][] }
+export interface EditMask { source_id: string; strokes: BrushStroke[] }
 export type OffloadMode = 'auto' | 'component' | 'group' | 'none'
 export type Phase = 'idle' | 'starting' | 'ready' | 'generating' | 'stopping' | 'error'
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled'
@@ -36,6 +40,7 @@ export interface ComfyPreset extends ComfyConfig {
 export interface StudioPreset {
   id: string; name: string; builtin?: boolean; mode: Mode; gpu?: string
   width: number; height: number; steps: number; cfg: number; loras?: Lora[]
+  video_task?: VideoTask
   engine?: Engine; comfy?: GeneratePayload['comfy']; model?: string; workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean
 }
 
@@ -46,7 +51,7 @@ export interface Limits {
   loras_max: number; lora_scale_max: number; refs_max: number
   idle_minutes_min: number; idle_minutes_max: number
   poll_rounds_min: number; poll_rounds_max: number
-  prompt_max: number; negative_max: number; upload_max_mb: number; queue_max: number
+  prompt_max: number; negative_max: number; upload_max_mb: number; video_upload_max_mb: number; queue_max: number
 }
 
 export interface StepCatalogItem { type: StepType; label: string; icon: string; category: string; hint: string; default_config: Record<string, unknown> }
@@ -76,6 +81,7 @@ export interface Job {
   width: number; height: number; steps: number; seed: number; prompt: string
   created_at: number; started_at: number | null; finished_at: number | null
   stage: JobStage; progress: Progress | null; round_id: string | null; error: string
+  retryable?: boolean; retried_as?: string | null
 }
 
 export interface ColabSession { name: string; gpu: string; shape: string; endpoint: string }
@@ -92,7 +98,8 @@ export type ProxyState = Wire['ProxyState']
 
 export interface RefItem { id: string; bytes: number; source: string; updated_at: number }
 export interface RefSlot { set: boolean; bytes: number; source: string; updated_at: number }
-export interface References { first: RefSlot; last: RefSlot; items: RefItem[]; max: number }
+export interface VideoReference { id: string; bytes: number; source: string; duration_s: number }
+export interface References { first: RefSlot; last: RefSlot; items: RefItem[]; max: number; video: VideoReference | null }
 
 export interface WorkflowActive {
   id: string; workflow_id: string; workflow_name: string; topic: string; status: RunStatus
@@ -114,6 +121,8 @@ export interface Round {
   negative?: string; workflow?: string | null; gpu?: string; width?: number; height?: number
   steps?: number; cfg?: number; seed?: number; num_frames?: number | null; loras?: Lora[]
   has_image?: boolean; chain?: boolean; duration_s?: number; job_id?: string; idea?: string
+  video_task?: VideoTask; video_reference_source?: string
+  media_duration_s?: number; media_operation?: string; edit_source_id?: string; source_rounds?: string[]
   engine?: Engine; comfy?: Partial<ComfyConfig<SavedModelLink>> | null; offload_mode?: OffloadMode
   deleted_at?: number; purge_at?: number
 }
@@ -139,6 +148,8 @@ export interface GeneratePayload {
   comfy?: ComfyConfig
   custom_transformer_repo?: string; custom_transformer_file?: string
   workflow?: VideoWorkflow; num_frames?: number; offload_mode?: OffloadMode; auto_offload?: boolean; has_last_image?: boolean
+  video_reference_id?: string; video_task?: VideoTask
+  edit_mask?: EditMask; reference_round_ids?: string[]; last_frame_round_id?: string; video_round_id?: string
 }
 export type RewriteBody = Wire['Rewrite']
 export type RewriteResult = Wire['RewriteResult']
