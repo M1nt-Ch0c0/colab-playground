@@ -347,7 +347,15 @@ function RunCanvas({ run }: { run: WfRun }) {
     setSteps([...run.workflow.steps, { id, type, name: `${run.workflow.steps.length + 1}. ${cat.label}`, enabled: true, pause_after: false, config: structuredClone(cat.default_config) }])
   }
   const saveTpl = async (name: string) => {
-    try { await api.wf.saveTemplate({ name, description: run.workflow.description, steps: templateSteps(run.workflow.steps) }); toast('已存为模板', 'ok'); loadWf() }
+    try {
+      await api.wf.saveTemplate({
+        name,
+        description: run.workflow.description,
+        steps: templateSteps(run.workflow.steps),
+        ...(run.workflow.variables ? { variables: run.workflow.variables } : {}),
+      })
+      toast('已存为模板', 'ok'); loadWf()
+    }
     catch (e) { toast(e instanceof Error ? e.message : '保存失败', 'err') }
     setSavingTpl(false)
   }
