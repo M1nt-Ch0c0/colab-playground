@@ -30,7 +30,8 @@ def chrome():
     options = webdriver.ChromeOptions()
     for option in ("--headless", "--no-sandbox", "--disable-dev-shm-usage", "--window-size=1440,1000"):
         options.add_argument(option)
-    binary = shutil.which("chromium") or shutil.which("google-chrome")
+    # The hosted Ubuntu runner's Chromium lacks the H.264/AAC codecs used by the MP4 tests.
+    binary = shutil.which("google-chrome") or shutil.which("chromium")
     if binary:
         options.binary_location = binary
     return webdriver.Chrome(options=options, service=Service(shutil.which("chromedriver")))
