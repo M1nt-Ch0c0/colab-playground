@@ -199,9 +199,11 @@ export type SavedAgentExchange = Omit<Wire['AgentExchange'], 'tools'> & { tools:
 export type AgentEvent =
   | { type: 'started'; model: string }
   | { type: 'session'; state: 'new' | 'reused' | 'resumed'; process_id: number }
-  | ({ type: 'tool'; operations?: Operation[]; composer_patch?: ComposerPatch } & AgentTool)
+  | ({ type: 'tool'; operations?: Operation[]; composer_patch?: ComposerPatch; run_updated?: RunShotUpdate[];
+      refresh_run?: boolean; refresh_library?: boolean } & AgentTool)
   | { type: 'heartbeat' }
-  | { type: 'error'; code: AgentErrorCode; message: string }
+  | { type: 'error'; code: AgentErrorCode; message: string; run_updated?: RunShotUpdate[];
+      refresh_run?: boolean; refresh_library?: boolean }
   | { type: 'done'; message: string; editor: EditorSnapshot | null; run_request: AgentRunRequest | null; base_revision: string | null;
       proposals?: Proposal[]; run_updated?: RunShotUpdate[]; refresh_run?: boolean; refresh_library?: boolean;
       operations?: Operation[]; composer_patch?: ComposerPatch | null; mask_editor?: MaskEditorHint | null }

@@ -1213,3 +1213,59 @@ class OperationTests(unittest.TestCase):
         self.assertIsNotNone(self.runtime.workflows.get_run(rid))
         self.assertTrue(self.runtime.workflows.delete_run(rid))
         self.assertIsNone(self.runtime.workflows.get_run(rid))
+
+    def test_committed_shot_updates_emitted_on_tool_and_error_events(self):
+        run = self.runtime.workflows.create_run({"topic": "sync", "workflow": {"name": "Sync", "steps": [
+            {"id": "script", "type": "llm_script"},
+        ]}})
+        rid = run["id"]
+        self.runtime.workflows.update_step_output(rid, "script", {"scenes": [{"title": "S1", "keyframe_prompt": "v1"}]})
+        shot = read_shots(self.runtime, rid, "script")[0]
+
+        # 1. ToolBridge emits run_updated & refresh_run immediately on tool completion.
+        ed = EditorTools(self.runtime, {"topic": run["topic"], "workflow": run["workflow"]},
+                         run_id=rid, selected="script", scope=rid, workspace="workflow")
+        bridge = ToolBridge()
+        emitted = []
+        with bridge.bind(ed, emitted.append, threading.Event()):
+            bridge.handle("/tool", {"name": "studio_apply_shot_edits", "args": {"edits": [{
+                "shot_id": shot["shot_id"], "field": "keyframe_prompt",
+                "generation": shot["generation"], "expected_version": shot["field_versions"]["keyframe_prompt"],
+                "value": "v2",
+            }]}})
+        done_tool = next(ev for ev in emitted if ev["type"] == "tool" and ev["ok"] is True)
+        self.assertEqual(done_tool["run_updated"][0]["changes"][0]["value"], "v2")
+        self.assertTrue(done_tool["refresh_run"])
+
+        # 2. turn_events preserves committed run_updated & refresh_run on the error event if the turn later times out.
+        shot2 = read_shots(self.runtime, rid, "script")[0]
+        ed2 = EditorTools(self.runtime, {"topic": run["topic"], "workflow": run["workflow"]},
+                          run_id=rid, selected="script", scope=rid, workspace="workflow")
+
+        class TimeoutAfterWriteSlot:
+            def run(self, editor_arg, provider, model, prompt, history, publish, cancel, *, reload_plugins=False):
+                editor_arg.call("studio_apply_shot_edits", {"edits": [{
+                    "shot_id": shot2["shot_id"], "field": "keyframe_prompt",
+                    "generation": shot2["generation"], "expected_version": shot2["field_versions"]["keyframe_prompt"],
+                    "value": "v3",
+                }]})
+                raise TimeoutError("model hung")
+
+        @contextmanager
+        def fake_lease(*args, **kwargs):
+            yield TimeoutAfterWriteSlot()
+
+        provider = SimpleNamespace(id="p1", kind="openai", base="http://127.0.0.1:9/v1", key="k")
+
+        async def collect():
+            out = []
+            async for ev in copilot.turn_events(ed2, provider, "demo", "edit", None, rid, "t1"):
+                out.append(ev)
+            return out
+
+        with patch.object(self.runtime.harness_sessions, "lease", side_effect=fake_lease):
+            events = asyncio.run(collect())
+        err = next(ev for ev in events if ev["type"] == "error")
+        self.assertEqual(err["code"], "turn_timeout")
+        self.assertEqual(err["run_updated"][0]["changes"][0]["value"], "v3")
+        self.assertTrue(err["refresh_run"])

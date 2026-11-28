@@ -1084,6 +1084,56 @@ class BrowserTest(unittest.TestCase):
                 self.assertEqual(seen_composers[-1]["workflow"], "ref2va")
                 self.assertFalse(seen_composers[-1]["has_image"])
 
+    def test_committed_shot_edit_syncs_on_failed_turn_without_conflict(self):
+        from draw_studio.workflows.shot_service import apply_shot_edits, read_shots
+
+        with signed_in_browser() as (rt, driver, url):
+            engine = rt.workflows
+            run = engine.create_run({"topic": "sync", "workflow": {"name": "同步测试", "steps": [
+                {"id": "script", "name": "分镜脚本", "type": "llm_script", "pause_after": True},
+                {"id": "generate", "name": "生图", "type": "image_gen", "config": {"scenes_from": "script", "ref_sources": []}},
+            ]}})
+            rid = run["id"]
+            with patch.object(engine, "_run_step", return_value={"scenes": [{"title": "S1", "keyframe_prompt": "old prompt"}]}):
+                engine.start_run(rid)
+                WebDriverWait(driver, 10).until(lambda _: engine.get_run(rid)["status"] == "paused")
+
+            async def fail_after_commit(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                shot = read_shots(rt, rid, "script")[0]
+                res = apply_shot_edits(rt, run_id=rid, step_id="script", patches=[{
+                    "shot_id": shot["shot_id"], "field": "keyframe_prompt",
+                    "generation": shot["generation"], "expected_version": shot["field_versions"]["keyframe_prompt"],
+                    "value": "agent committed",
+                }], scope=rid)
+                yield {"type": "started", "model": model}
+                yield {"type": "tool", "name": "studio_apply_shot_edits", "call_id": "c1", "ok": True,
+                       "run_updated": [res["run_updated"]], "refresh_run": True}
+                yield {"type": "error", "code": "model_error", "message": "failed",
+                       "run_updated": [res["run_updated"]], "refresh_run": True}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fail_after_commit):
+                driver.get(f"{url}/?workflow={rid}")
+                wait = WebDriverWait(driver, 12)
+                row = wait.until(EC.presence_of_element_located((By.XPATH, "//li[.//b[normalize-space(.)='分镜脚本']]")))
+                row.find_element(By.CSS_SELECTOR, ".step-h").click()
+                field = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]')))
+                self.assertEqual(field.get_property("value"), "old prompt")
+
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("改一下第一镜")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-error")))
+                wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]').get_property("value") == "agent committed")
+
+                # Subsequent manual edit must save cleanly with updated field_versions (zero conflict).
+                field = driver.find_element(By.CSS_SELECTOR, 'textarea[aria-label="关键帧提示词"]')
+                field.send_keys(SHORTCUT, "a", Keys.NULL, "human follow-up")
+                driver.find_element(By.CSS_SELECTOR, ".run-head textarea").click()
+                wait.until(lambda _: engine.get_run(rid)["step_states"]["script"]["output"]["scenes"][0]["keyframe_prompt"] == "human follow-up")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

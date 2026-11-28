@@ -460,6 +460,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     if (consumeDraft) setInput('')
     setExchanges(rows => [...rows, { id, user: message, answer: '', state: 'working', tools: [], fresh: true }])
     let original: string | undefined
+    let needsRunRefresh = false
+    let needsLibraryRefresh = false
     try {
       if (latest.current.beforeSend && !(await latest.current.beforeSend())) {
         amend(id, { state: 'error', error: { code: 'busy', unsaved: true } })
@@ -480,12 +482,24 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       }, controller.signal, event => {
         if (event.type === 'started') active.started = true
         if (event.type === 'session' && key) syncedPluginRev.set(key, pluginRev)
+        if (event.type === 'error') {
+          if (event.run_updated?.length) for (const update of event.run_updated) latest.current.onShotUpdate?.(update)
+          if (event.refresh_run) needsRunRefresh = true
+          if (event.refresh_library) needsLibraryRefresh = true
+        }
         if (event.type === 'tool') {
           if (event.operations?.length) {
             rememberOperations(event.operations)
             amend(id, { operation_id: event.operations.at(-1)?.operation_id })
           }
-          const { type: _, operations: _operations, composer_patch: _patch, ...tool } = event
+          if (event.run_updated?.length) for (const update of event.run_updated) latest.current.onShotUpdate?.(update)
+          if (event.refresh_run) needsRunRefresh = true
+          if (event.refresh_library) needsLibraryRefresh = true
+          const {
+            type: _, operations: _operations, composer_patch: _patch,
+            run_updated: _runUpdated, refresh_run: _refreshRun, refresh_library: _refreshLibrary,
+            ...tool
+          } = event
           setExchanges(rows => rows.map(row => {
             if (row.id !== id) return row
             const index = tool.call_id ? row.tools.findIndex(item => item.call_id === tool.call_id) : -1
@@ -549,10 +563,16 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       amend(id, { state: 'done', applied, action: done.run_request, version: version(next) })
     } catch (failure) {
       const error = failure instanceof ApiError ? failure : undefined
+      if (needsLibraryRefresh) {
+        void useStore.getState().loadWf()
+        void useStore.getState().loadRounds()
+        void useStore.getState().refresh()
+      }
+      if (needsRunRefresh) await latest.current.refresh?.().catch(() => {})
       if (controller.signal.aborted || error?.code === 'turn_stopped') amend(id, { state: 'stopped' })
       else if (error?.code === 'revision_conflict') {
         const current = latest.current
-        if (original === version(current.editor)) await current.refresh?.().catch(() => {})
+        if (!needsRunRefresh && original === version(current.editor)) await current.refresh?.().catch(() => {})
         amend(id, { state: 'stale' })
       } else {
         const runId = error?.details?.run_id

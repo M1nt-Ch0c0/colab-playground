@@ -56,7 +56,10 @@ const enc = encodeURIComponent
 async function agentTurn(body: AgentTurnBody, signal: AbortSignal, receive: (event: AgentEvent) => void) {
   const path = 'api/workflows/agent/turn'
   function consume(event: AgentEvent) {
-    if (event.type === 'error') throw new ApiError(200, event.message, event.code)
+    if (event.type === 'error') {
+      receive(event)
+      throw new ApiError(200, event.message, event.code)
+    }
     receive(event)
     if (event.type === 'done') return event
   }

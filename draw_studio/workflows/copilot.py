@@ -598,6 +598,13 @@ async def turn_events(editor, provider, model, prompt, base_revision, conversati
         except Exception as exc:
             runtime.log(f"助手未完成 ({type(exc).__name__})")
             result = HarnessError("internal_error").event()
+        if result.get("type") == "error":
+            if editor.run_updates:
+                result["run_updated"] = editor.run_updates
+            if editor.refresh_run:
+                result["refresh_run"] = True
+            if editor.refresh_library:
+                result["refresh_library"] = True
         metrics.finish(result.get("code"))
         emit(result)
 

@@ -67,6 +67,9 @@ class ToolBridge:
         call_id = secrets.token_hex(8)
         emit(tool_event(name, args, call_id, None))
         ok, code, proposal_id, updates = False, "internal_error", None, {}
+        prev_updates = len(editor.run_updates)
+        prev_refresh_run = editor.refresh_run
+        prev_refresh_library = editor.refresh_library
         try:
             value = editor.call(name, args)
             if name == "studio_rewrite_prompt":
@@ -76,6 +79,12 @@ class ToolBridge:
                     updates["operations"] = [value["operation"]]
             if name == "studio_generation" and "composer_patch" in value:
                 updates["composer_patch"] = value["composer_patch"]
+            if len(editor.run_updates) > prev_updates:
+                updates["run_updated"] = editor.run_updates[prev_updates:]
+            if editor.refresh_run and not prev_refresh_run:
+                updates["refresh_run"] = True
+            if editor.refresh_library and not prev_refresh_library:
+                updates["refresh_library"] = True
             ok = True
             return value
         except HarnessError as exc:
