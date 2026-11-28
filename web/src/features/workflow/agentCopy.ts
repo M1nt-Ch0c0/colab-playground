@@ -333,15 +333,31 @@ export const AGENT_COPY = {
       clear: '改为整个工作流',
       shot: shotLabel,
     },
+    workspace: {
+      image: '生图',
+      video: '视频',
+    },
     empty: {
       workflow: '想怎么改这条工作流？',
       step: '这一步想怎么改？',
+      image: '想怎么调整这张图？',
+      video: '想怎么调整这段视频？',
     },
     suggestions: {
       workflow: [
         { label: '检查缺少的输入', prompt: '检查工作流里缺少哪些上游输入' },
         { label: '加一个风格变量', prompt: '添加文本变量 style，值为胶片质感，并在分镜指令里引用它' },
         { label: '搭一条三镜头短片', prompt: '搭一条三镜头短片流程：分镜、关键帧、视频、剪辑' },
+      ] satisfies readonly Suggestion[],
+      image: [
+        { label: '润色提示词', prompt: '润色当前提示词，补全构图和光影细节' },
+        { label: '调整画幅尺寸', prompt: '把当前画幅改成 16:9 横图' },
+        { label: '挑一张参考图', prompt: '从作品库里找最近的图片作为参考' },
+      ] satisfies readonly Suggestion[],
+      video: [
+        { label: '润色视频提示词', prompt: '润色当前视频提示词，补全运镜和声音细节' },
+        { label: '调整视频帧数', prompt: '把当前视频改成约 7 秒的帧数' },
+        { label: '查看参考素材', prompt: '查看当前参考图和参考视频设置' },
       ] satisfies readonly Suggestion[],
       step: { label: '检查这一步的输入', prompt: '检查这个节点的输入和参数' } satisfies Suggestion,
       sceneCount: (n: number): Suggestion => ({ label: `改成 ${n} 个镜头`, prompt: `把这个分镜改成 ${n} 个镜头` }),

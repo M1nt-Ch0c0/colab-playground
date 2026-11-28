@@ -128,14 +128,15 @@ class HarnessToolTests(unittest.TestCase):
             ("image_gen", "cfg", float("nan")), ("image_gen", "cfg", float("inf")),
             ("image_gen", "cfg", False), ("image_gen", "cfg", 13), ("image_gen", "width", 511),
             ("image_gen", "height", True), ("image_gen", "steps", 61), ("image_gen", "max_scenes", 0),
-            ("image_gen", "gpu_pool", [123]), ("image_gen", "gpu_pool", ["imaginary"]),
+            ("image_gen", "gpu", "H100"), ("image_gen", "gpu_pool", ["A100", "H100"]),
+            ("image_gen", "poll_rounds", 2), ("image_gen", "poll_all_proxies", True),
             ("image_gen", "ref_sources", [None]), ("image_gen", "ref_sources", [""]),
             ("image_gen", "loras", [True]), ("image_gen", "loras", [{}]),
             ("image_gen", "loras", [{"repo_id": "owner/repo", "scale": True}]),
             ("image_gen", "loras", [{"repo_id": "owner/repo", "scale": float("inf")}]),
             ("image_gen", "loras", [{"repo_id": "owner/repo", "scale": 3}]),
             ("image_gen", "loras", [{"repo_id": "owner/repo"}] * 5),
-            ("video_gen", "num_frames", 346), ("video_gen", "poll_rounds", 11),
+            ("video_gen", "num_frames", 346), ("video_gen", "poll_rounds", 1),
             ("video_stitch", "fps", 11), ("video_stitch", "target_height", 9000),
             ("video_stitch", "fade_s", float("-inf")), ("video_stitch", "fade_s", .05),
             ("asset_input", "round_ids", [22]), ("video_stitch", "clip_round_ids", ["clip"]),
@@ -154,9 +155,20 @@ class HarnessToolTests(unittest.TestCase):
                                                                          position={"x": True, "y": 1}))
         self.edit(tools, operation("update_step", step_id="refs", config={"round_ids": ["001", "000008"]}),
                   operation("add_step", step_id="image", step_type="image_gen",
-                            config={"gpu_pool": ["A100", "h100"], "loras": [{"repo_id": "owner/repo", "scale": 1.2}]}))
+                            config={"loras": [{"repo_id": "owner/repo", "scale": 1.2}]}))
         self.assertEqual(self.config(tools, "refs")["round_ids"], ["001", "000008"])
-        self.assertEqual(self.config(tools, "image")["gpu_pool"], ["A100", "H100"])
+        self.assertEqual(self.config(tools, "image")["loras"][0]["repo_id"], "owner/repo")
+        for node in tools.call("studio_get_catalog", {"section": "nodes"}):
+            self.assertFalse({"gpu", "gpu_pool", "poll_rounds", "poll_all_proxies", "auto_fallback"} & node["default_config"].keys())
+        self.assertNotIn("gpu", tools.call("studio_list_nodes", {"step_type": "image_gen"})["default_config"])
+
+    def test_composer_workspace_blocks_workflow_tools(self):
+        tools = EditorTools(editor().runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                            scope="cr_" + "a" * 32, workspace="image", composer={"mode": "image", "prompt": "cat"})
+        self.assert_code("invalid_argument", tools.call, "studio_read_workflow", {})
+        self.assert_code("invalid_argument", tools.call, "studio_validate_workflow", {})
+        self.assert_code("invalid_argument", tools.call, "studio_request_run", {})
+        self.assert_code("invalid_argument", self.edit, tools, operation("add_step", step_id="s", step_type="llm_script"))
 
     def test_legacy_bad_reference_can_be_edited_but_not_supplied_again(self):
         tools = editor(step("image", "image_gen", ref_sources=["missing"]))

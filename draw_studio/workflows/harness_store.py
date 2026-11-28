@@ -282,6 +282,13 @@ class HarnessStore:
             db.execute("DELETE FROM tool_telemetry WHERE id IN (SELECT id FROM tool_telemetry ORDER BY id DESC LIMIT -1 OFFSET ?)",
                        (TELEMETRY_MAX,))
 
+    def prune_expired(self):
+        now = int(time.time())
+        with self.transaction() as db:
+            db.execute("DELETE FROM masks WHERE expires_at <= ?", (now,))
+            db.execute("DELETE FROM undo_records WHERE created_at < ?", (now - UNDO_TTL,))
+            db.execute("DELETE FROM proposals WHERE expires_at < ? AND status != 'applied'", (now - 7 * 86400,))
+
     def telemetry(self):
         with self.transaction() as db:
             rows = db.execute("""SELECT tool_name, ok, error_code, retry_in_turn, latency_ms, cache_hit_tokens,

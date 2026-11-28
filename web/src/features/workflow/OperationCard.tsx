@@ -1,6 +1,6 @@
 import { CircleAlert, Film, ImageIcon, RotateCcw } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
 import type { Operation, OperationItem } from '../../api/types'
 import { useStore } from '../../store/store'
@@ -24,8 +24,10 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
   const [computeBlocked, setComputeBlocked] = useState(false)
   const seenFailed = useRef(new Map<string, OperationItem>())
   const authed = useStore(s => s.status?.colab.authed)
-  const linked = useStore(s => s.status?.colab.sessions.length)
-  const needsCompute = state === 'awaiting_approval' && ((authed === false || operation.needs_compute) || computeBlocked && !linked)
+  const needsCompute = state === 'awaiting_approval' && (authed === false || operation.needs_compute || (computeBlocked && authed !== true))
+  useEffect(() => {
+    if (computeBlocked && authed === true && !operation.needs_compute) setComputeBlocked(false)
+  }, [computeBlocked, authed, operation.needs_compute])
   const locked = disabled || !!busy
   const media = operation.results.length ? operation.results : operation.references
   const failures = items.filter(item => item.state === 'failed')
@@ -57,7 +59,7 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
       void store.refresh()
     } catch (error) {
       const code = error instanceof ApiError ? error.code : undefined
-      if (action === 'approve' && code === 'colab_unauthed') setComputeBlocked(true)
+      if (action === 'approve' && code === 'colab_unauthed') { setComputeBlocked(true); void store.refresh() }
       else store.toast(errorCopy(code).text, 'err')
     } finally { setBusy(undefined) }
   }

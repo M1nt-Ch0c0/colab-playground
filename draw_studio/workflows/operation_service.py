@@ -16,7 +16,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..errors import StateConflict
-from ..generation.catalog import IMAGE_MODELS, LIMITS
+from ..generation.catalog import GPUS, IMAGE_MODELS, LIMITS
 from ..generation.video_reference import probe_reference_video
 from ..media import image_thumbnail
 from .agent_plugins import private_dir
@@ -318,7 +318,32 @@ class Operations:
         updated = max(r["updated_at"] for r in items)
         db.execute("""UPDATE operations SET state=?,executor_ids_json=?,result_json=?,error_code=?,updated_at=?
                       WHERE operation_id=?""", (state, dump(jobs), dump(output), error, updated, op["operation_id"]))
+        if state in {"done", "canceled"}:
+            self._cleanup_frozen_binaries(op["operation_id"])
         return dict(op, state=state, updated_at=updated)
+
+    def _cleanup_frozen_binaries(self, operation_id):
+        folder = self.inputs / operation_id
+        if not folder.is_dir():
+            return
+        for path in folder.iterdir():
+            if path.suffix in (".bin", ".mp4"):
+                path.unlink(missing_ok=True)
+
+    def _held_gpus(self):
+        valid = {gpu["id"] for gpu in GPUS}
+        held = []
+        report = self.studio.colab.status_report(blocking=False) if hasattr(self.studio.colab, "status_report") else {}
+        for session in (report.get("sessions") if isinstance(report, dict) else None) or ():
+            gpu = str(session.get("gpu") or "").split()[0].upper()
+            if gpu in valid and gpu not in held:
+                held.append(gpu)
+        if not held and (active := str(getattr(self.studio, "active_gpu", "") or "")):
+            for part in active.split(","):
+                gpu = part.strip().split()[0].upper() if part.strip() else ""
+                if gpu in valid and gpu not in held:
+                    held.append(gpu)
+        return held
 
     def record_terminal(self, job):
         state = JOB_STATES.get(job.get("status"))
@@ -347,7 +372,7 @@ class Operations:
                 continue
             job = self.studio.find_job(item["job_id"])
             state = JOB_STATES.get(job["status"], "unknown") if job else "unknown"
-            if not job:
+            if not job or (state == "failed" and not job.get("round_id") and "服务重启" in (job.get("error") or "")):
                 recovered = self._gallery_result(item["job_id"])
                 if recovered:
                     job, state = {"round_id": recovered["id"]}, "done"
@@ -433,7 +458,11 @@ class Operations:
                     raise FileNotFoundError
             except OSError as exc:
                 raise HarnessError("media_invalid") from exc
-            jobs = [("j" + secrets.token_hex(12), dict(json.loads(item["frozen_input_json"]), operation_id=operation_id)) for item in targets]
+            held = self._held_gpus()
+            gpu_override = {"gpu": held[0], "gpu_pool": held} if held else {}
+            jobs = [("j" + secrets.token_hex(12),
+                     dict(json.loads(item["frozen_input_json"]), operation_id=operation_id, **gpu_override))
+                    for item in targets]
             # Commit the reserved IDs before crossing into the durable queue. An ambiguous
             # restart reconciles those IDs and leaves unverified items unknown.
             with self.store.transaction() as db:

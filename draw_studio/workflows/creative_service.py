@@ -262,7 +262,9 @@ def generation(editor, args):
     op = args["op"]
     if op not in ("edit_composer", "prepare", "submit_image", "submit_video"):
         raise HarnessError("invalid_argument")
-    changes = GenerationSpec.model_validate(args.get("spec", {})).model_dump(exclude_none=True)
+    raw_spec = args.get("spec", {})
+    clear_mask = isinstance(raw_spec, dict) and "mask_id" in raw_spec and raw_spec["mask_id"] is None
+    changes = GenerationSpec.model_validate(raw_spec).model_dump(exclude_none=True)
     context = editor.composer or {}
     base = {k: v for k, v in context.items() if k != "revision"}
     mode = changes.get("mode") or (editor.workspace if editor.workspace in ("image", "video") else "image")
@@ -270,11 +272,12 @@ def generation(editor, args):
         mode = op.removeprefix("submit_")
         if changes.get("mode", mode) != mode:
             raise HarnessError("invalid_argument")
-    if changes.keys() & (VIDEO_FIELDS if mode == "image" else IMAGE_FIELDS):
+    checked_fields = set(changes) | ({"mask_id"} if clear_mask else set())
+    if checked_fields & (VIDEO_FIELDS if mode == "image" else IMAGE_FIELDS):
         raise HarnessError("invalid_argument")
     service = editor.runtime.operations
     if op == "edit_composer":
-        if editor.workspace not in ("image", "video") or mode != editor.workspace or "idempotency_key" in args or not changes:
+        if editor.workspace not in ("image", "video") or mode != editor.workspace or "idempotency_key" in args or not (changes or clear_mask):
             raise HarnessError("invalid_argument")
         if changes.keys() & REFERENCE_FIELDS:
             raise HarnessError("invalid_argument")
@@ -282,19 +285,30 @@ def generation(editor, args):
             service.get_mask(mask_id)
         # Reuse the generation validator for supported enums/models. Preserve empty draft prompts.
         view = base | (editor.composer_patch or {}).get("changes", {}) | changes
+        if clear_mask:
+            view.pop("mask_id", None)
         normalized = _normalize(view | {"mode": mode, "prompt": view.get("prompt") or "Draft"}, transient=True)
         for key in ("width", "height", "steps", "cfg", "num_frames"):
             if key in changes and key in normalized:
                 changes[key] = normalized[key]
-        patch = {"workspace": mode, "base_revision": context.get("revision"), "changes": changes}
+        emitted = {**changes, **({"mask_id": None} if clear_mask else {})}
+        patch = {"workspace": mode, "base_revision": context.get("revision"), "changes": emitted}
         if editor.composer_patch:
-            patch["changes"] = editor.composer_patch["changes"] | changes
+            patch["changes"] = editor.composer_patch["changes"] | emitted
         editor.composer_patch = patch
         return {"composer_patch": patch}
 
     active = editor.composer_patch["changes"] if editor.composer_patch else {}
     draft = (base | active) if editor.workspace == mode else {}
     raw = draft | changes | {"mode": mode}
+    if (clear_mask or ("mask_id" not in changes and (
+            active.get("mask_id") is None and "mask_id" in active
+            or changes.get("chain") is True
+            or "reference_round_ids" in changes
+            or changes.get("has_image") is False))):
+        raw.pop("mask_id", None)
+    if "chain" not in changes and (changes.get("mask_id") or "reference_round_ids" in changes):
+        raw.pop("chain", None)
     if "video_round_id" in changes and "video_reference_id" not in changes:
         raw.pop("video_reference_id", None)
     if changes.keys() & {"video_round_id", "video_reference_id"}:

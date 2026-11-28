@@ -317,17 +317,19 @@ def rewrite_prompt(runtime, request: RewriteInput, *, scope, run_id=None, step_i
         if Store.valid_id(tail):
             reference_ids.append(tail)
         references = []
+        used = set()
         for rid in list(dict.fromkeys(reference_ids))[:LIMITS["refs_max"]]:
             reference = explicit.get(rid) or _reference(runtime, rid)
             if reference:
                 item, data = reference
                 refs.setdefault(rid, item)
+                used.add(rid)
                 references.append(data)
         brief = f"修改要求：{instruction}\n现有提示词：\n{original}"
         if title := shot.get("title"):
             brief = f"镜头：{title}\n{brief}"
         mode = "video" if field == "video_prompt" or composer and composer.get("mode") == "video" else "image"
-        value = _writer(runtime, brief, mode, options={**options, "has_last_image": tail in refs},
+        value = _writer(runtime, brief, mode, options={**options, "has_last_image": tail in used},
                         image_data=references, provider=provider, model=model)
         before.append({"shot_id": sid, "n": n, "text": original})
         after.append({"shot_id": sid, "n": n, "text": value})

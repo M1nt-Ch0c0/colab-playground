@@ -619,11 +619,11 @@ function submitMockOperation(op: Operation, items: OperationItem[], retry: boole
     }, retry ? 480 : 850 + (item.seq - 1) * 1050)
   }
   updateMockOperation(op)
-  return ok(op)
+  return ok(structuredClone({ ...op, needs_compute: !S.colab.authed }))
 }
 
 function mockOperationRoute(method: string, id: string | undefined, action: string | undefined, raw: unknown, q: URLSearchParams) {
-  const view = (op: Operation) => ({ ...op, needs_compute: !S.colab.authed })
+  const view = (op: Operation) => structuredClone({ ...op, needs_compute: !S.colab.authed })
   if (method === 'GET' && !id) {
     const scope = q.get('scope_key')
     return ok({ operations: [...mockOperations.values()].reverse().filter(op => !scope || op.scope_key === scope).slice(0, 24).map(view) })
@@ -926,10 +926,10 @@ function agentRoute(method: string, route: string[], raw: unknown, q: URLSearchP
       { type: 'started', model: 'mock' },
       ...tools.map(row => ({ type: 'tool' as const, ...row, ok: null })),
       ...tools.map(row => ({ type: 'tool' as const, ...row,
-        ...(operation ? { operations: [operation] } : {}), ...(composerPatch ? { composer_patch: composerPatch } : {}) })),
+        ...(operation ? { operations: [structuredClone(operation)] } : {}), ...(composerPatch ? { composer_patch: composerPatch } : {}) })),
       { type: 'done', message: answer, editor: changed ? { topic, workflow } : null,
         run_request: changed && run && script ? { step_id: script.id, single_step: true } : null,
-        base_revision: run ? mockRevision(run) : null, proposals: cards, operations: operation ? [operation] : [], composer_patch: composerPatch },
+        base_revision: run ? mockRevision(run) : null, proposals: cards, operations: operation ? [structuredClone(operation)] : [], composer_patch: composerPatch },
     ] satisfies AgentEvent[])
   }
   return agentError(404, 'not_found')

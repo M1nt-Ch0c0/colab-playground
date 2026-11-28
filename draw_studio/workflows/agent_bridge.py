@@ -122,7 +122,7 @@ class ToolBridge:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 100_000:
+                    if not 0 < length <= 1_000_000:
                         raise ValueError("body length")
                     self.connection.settimeout(5)
                     payload = self.rfile.read(length)

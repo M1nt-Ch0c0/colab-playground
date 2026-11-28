@@ -99,6 +99,8 @@ interface Store {
   applyPreset: (p: StudioPreset) => void
   loadWf: () => Promise<void>
   setWfRun: (r: WfRun | null) => void
+  agentPluginRev: number
+  bumpAgentPluginRev: () => void
 }
 
 let toastSeq = 1
@@ -300,6 +302,8 @@ export const useStore = create<Store>((set, get) => ({
     } catch (e) { get().toast(e instanceof Error ? e.message : '加载工作流失败', 'err') }
   },
   setWfRun: r => set({ wfRun: r }),
+  agentPluginRev: 0,
+  bumpAgentPluginRev: () => set(s => ({ agentPluginRev: s.agentPluginRev + 1 })),
 }))
 
 export function selectPollInterval({ status }: Store) {
@@ -372,6 +376,9 @@ export async function applyAssistantComposerPatch({ workspace, base_revision, ch
     if (changes.has_image != null) patch.useRef = changes.has_image
     if (mask) Object.assign(patch, { editMask: { source_id: mask.source_id, strokes: mask.strokes },
       maskId: mask.mask_id, chain: false, useRef: false })
+    else if (('mask_id' in changes && changes.mask_id === null) || changes.chain === true || changes.has_image === false) {
+      Object.assign(patch, { editMask: null, maskId: null })
+    }
   } else {
     if (changes.workflow) patch.workflow = changes.workflow
     if (changes.num_frames) patch.frames = changes.num_frames

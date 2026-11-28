@@ -51,6 +51,11 @@ STEP_TYPES = {item["type"]: item for item in STEP_CATALOG}
 STEP_TYPES["video_gen"] = {**STEP_TYPES["video_gen"], "default_config": {
     **STEP_TYPES["video_gen"]["default_config"], "offload_mode": "auto",
 }}
+INFRA_CONFIG_FIELDS = frozenset({"gpu", "gpu_pool", "poll_rounds", "poll_all_proxies", "auto_fallback"})
+
+
+def _public_step_type(item: dict) -> dict:
+    return {**item, "default_config": {k: v for k, v in item["default_config"].items() if k not in INFRA_CONFIG_FIELDS}}
 OPERATIONS = {
     "set_topic": {"op", "text"}, "rename_workflow": {"op", "name"},
     "add_step": {"op", "step_id", "step_type", "after", "name", "config", "enabled", "pause_after", "position"},
@@ -303,7 +308,8 @@ def _apply(editor, op):
             step[key] = op[key]
     if "config" in op:
         cfg = op["config"]
-        allowed = step["config"] | STEP_TYPES[step["type"]]["default_config"]
+        allowed = {k: v for k, v in (step["config"] | STEP_TYPES[step["type"]]["default_config"]).items()
+                   if k not in INFRA_CONFIG_FIELDS}
         if not isinstance(cfg, dict) or cfg.keys() - allowed.keys() or "asset_files" in cfg:
             raise ValueError(f"{sid} 的 config 含不支持的参数，请先查看该类节点")
         step["config"].update({key: _config_value(key, value, allowed[key]) for key, value in cfg.items()})
@@ -372,8 +378,8 @@ CATALOG = {
               "defaults": DEFAULTS["video"]},
     "comfy": {"templates": COMFY_TEMPLATES, "samplers": COMFY_SAMPLERS, "schedulers": COMFY_SCHEDULERS,
               "clip_types": COMFY_CLIP_TYPES},
-    "limits": {key: value for key, value in LIMITS.items() if not key.startswith("idle_")},
-    "nodes": list(STEP_TYPES.values()),
+    "limits": {key: value for key, value in LIMITS.items() if not key.startswith(("idle_", "poll_rounds"))},
+    "nodes": [_public_step_type(item) for item in STEP_TYPES.values()],
 }
 
 
@@ -457,14 +463,18 @@ class EditorTools:
             if name not in ("studio_read_workflow", "studio_list_nodes", "studio_edit_workflow", "studio_request_run"):
                 return self._creative(name, args, run)
             if name == "studio_read_workflow":
+                if self.workspace != "workflow":
+                    raise HarnessError("invalid_argument")
                 return self._context(run)
             if name == "studio_list_nodes":
                 if "step_type" in args:
                     kind = args["step_type"]
                     if not isinstance(kind, str) or kind not in STEP_TYPES:
                         raise ValueError("节点类型不存在")
-                    return STEP_TYPES[kind]
+                    return _public_step_type(STEP_TYPES[kind])
                 return [{"type": s["type"], "name": s["label"]} for s in STEP_CATALOG]
+            if self.workspace != "workflow":
+                raise HarnessError("invalid_argument")
             if run and run["status"] == "running":
                 raise HarnessError("running_locked")
             if name == "studio_request_run":
@@ -590,6 +600,8 @@ class EditorTools:
             self.refresh_library = True
             return {"run_id": saved["id"], "name": saved["workflow"]["name"], "status": saved["status"]}
         if name == "studio_validate_workflow":
+            if self.workspace != "workflow":
+                raise HarnessError("invalid_argument")
             return self._validate(self._view(run)["workflow"])
         if name == "studio_manage_run_assets":
             return self._assets(args)
@@ -618,7 +630,7 @@ class EditorTools:
                 current = engine.cancel_run(rid)
                 self.refresh_run |= rid == self.run_id
                 self.refresh_library = True
-            summary = next((item for item in engine.list_runs() if item["id"] == rid), {})
+            summary = engine._run_summary(current)
             logs = current.get("logs", [])
             latest = current.get("log_count", len(logs))
             first = latest - len(logs)
@@ -645,13 +657,18 @@ class EditorTools:
         if name == "studio_prepare_mask":
             return creative.prepare_mask(self, args)
         if name == "studio_references":
-            return creative.references(runtime, creative.ReferencesAction.model_validate(args))
+            data = creative.ReferencesAction.model_validate(args)
+            result = creative.references(runtime, data)
+            self.refresh_library |= data.op != "read"
+            return result
         if name == "studio_library_actions":
             result = creative.library_action(runtime.store, creative.LibraryAction.model_validate(args))
             self.refresh_library |= args["op"] != "list_trash"
             return result
         if name == "studio_presets":
-            return creative.presets(runtime, args)
+            result = creative.presets(runtime, args)
+            self.refresh_library |= args.get("op") in ("save", "delete")
+            return result
         if name == "studio_generation":
             return creative.generation(self, args)
         if name == "studio_jobs":

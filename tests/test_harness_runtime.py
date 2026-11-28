@@ -153,7 +153,7 @@ class HarnessRuntimeTests(unittest.TestCase):
                 return res.json()
 
             self.assertEqual(post("/context", expected=403, authenticated=False, json={})["code"], "invalid_argument")
-            post("/context", expected=400, data=b"x" * 100001)
+            post("/context", expected=400, data=b"x" * 1_000_001)
             post("/context", expected=400, data=b'{"n":NaN}')
             post("/ready", json={"port": 12345, "pid": 1})
             post("/ready", expected=400, json={"port": 12345, "pid": 1})
@@ -901,3 +901,86 @@ class OperationTests(unittest.TestCase):
         self.assertIn("saved user", prompts[1])
         self.assertIn("saved reply", prompts[1])
         self.assertEqual(prompts[2], "steady turn")
+
+    def test_approve_inherits_held_gpu_and_cleans_frozen_binaries_on_done(self):
+        rid, _ = self.image_asset("navy")
+        self.studio.use_round(rid)
+        op = self.ops.create(self.scope, "held-gpu", self.ready_image(1, has_image=True))
+        oid = op["operation_id"]
+        with patch.object(self.runtime.colab, "status_report",
+                          return_value={"authed": True, "sessions": [{"gpu": "H100"}]}):
+            approved = self.ops.approve(oid)
+        jid = approved["items"][0]["job_id"]
+        queued = self.studio._queue[0]
+        self.assertEqual((queued["payload"]["gpu"], queued["payload"]["gpu_pool"]), ("H100", ["H100"]))
+        self.assertTrue((self.ops.inputs / oid / "image0.bin").is_file())
+        out_rid, _ = self.image_asset("gold")
+        self.finish(jid, "done", out_rid)
+        self.assertEqual(self.ops.get(oid)["state"], "done")
+        self.assertFalse((self.ops.inputs / oid / "image0.bin").exists())
+        self.assertTrue((self.ops.inputs / oid / "image0.jpg").is_file())
+
+    def test_mask_id_can_be_cleared_and_not_inherited_on_ref_or_t2i(self):
+        from draw_studio.workflows.operation_service import MaskInput
+
+        rid, _ = self.image_asset("navy")
+        mask = self.ops.create_mask(MaskInput(source_id=rid, strokes=[{"points": [[.2, .4], [.3, .5]], "size": .08}]))
+        composer = {"mode": "image", "prompt": "Night street", "has_image": True, "mask_id": mask["mask_id"], "revision": "a" * 32}
+        tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                            scope=self.scope, workspace="image", composer=composer)
+        # Explicit has_image=False must not inherit old mask_id.
+        prep = tools.call("studio_generation", {"op": "prepare", "spec": {"has_image": False, "prompt": "Pure t2i"}})
+        self.assertFalse(prep["references"]["mask"])
+        self.assertFalse(prep["parameters"]["has_image"])
+        # Explicit reference_round_ids must not fail due to inherited mask_id.
+        prep_ref = tools.call("studio_generation", {"op": "prepare", "spec": {"reference_round_ids": [rid], "prompt": "Ref edit"}})
+        self.assertFalse(prep_ref["references"]["mask"])
+        self.assertEqual(prep_ref["references"]["images"], 1)
+        # Explicit mask_id: None via edit_composer clears mask_id in composer_patch and subsequent prepare.
+        patched = tools.call("studio_generation", {"op": "edit_composer", "spec": {"mask_id": None}})
+        self.assertIsNone(patched["composer_patch"]["changes"]["mask_id"])
+        prep_after = tools.call("studio_generation", {"op": "prepare", "spec": {"has_image": False}})
+        self.assertFalse(prep_after["references"]["mask"])
+
+    def test_reconcile_recovers_restart_interrupted_job_from_gallery_and_explicit_forget_waits(self):
+        from tests.http_fixture import png
+
+        op = self.ops.create(self.scope, "restart-gallery", self.ready_image(1))
+        oid = op["operation_id"]
+        jid = self.ops.approve(oid)["items"][0]["job_id"]
+        source = self.root / "recovered.png"
+        source.write_bytes(png((32, 24), "navy"))
+        rid = self.runtime.store.save(source, "image", {"job_id": jid})
+        with self.studio._lock:
+            job = self.studio._queue.popleft()
+            job.update(status="error", error="服务重启，任务已中断", round_id=None)
+            self.studio._history.appendleft(job)
+            self.studio._save_state_locked()
+        reconciled = self.ops.get(oid)
+        self.assertEqual((reconciled["state"], reconciled["items"][0]["round_id"]), ("done", rid))
+
+        # Explicit forget(expired=None) racing with prune_drafts(expired=cutoff) must still dispose & delete.
+        sessions = copilot.HarnessSessions()
+        conv = copilot.Conversation(self.root, KEY, True)
+        conv.directory.mkdir(parents=True, exist_ok=True)
+        conv.dispose = Mock()
+        sessions.entries[KEY] = conv
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_saved(k):
+            entered.set()
+            release.wait(5)
+            return True
+
+        t_prune = threading.Thread(target=sessions.forget, args=(self.root, KEY), kwargs={"expired": time.time(), "saved": slow_saved})
+        t_delete = threading.Thread(target=sessions.forget, args=(self.root, KEY))
+        t_prune.start()
+        self.assertTrue(entered.wait(3))
+        t_delete.start()
+        time.sleep(0.05)
+        release.set()
+        t_prune.join(5)
+        t_delete.join(5)
+        self.assertNotIn(KEY, sessions.entries)
+        self.assertFalse(conv.directory.exists())
+        conv.dispose.assert_called_once()

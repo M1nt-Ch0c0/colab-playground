@@ -24,7 +24,7 @@ export interface AgentBinding {
   locked?: boolean
   beforeSend?: () => Promise<boolean>
   apply: (next: EditorSnapshot, revision: string | null) => Promise<EditorSnapshot>
-  refresh?: () => Promise<void>
+  refresh?: () => Promise<EditorSnapshot | void>
   onShotUpdate?: (update: RunShotUpdate, output?: Record<string, unknown>) => void
   openRun: (id: string) => void
   run: (request: AgentRunRequest) => void
@@ -40,6 +40,7 @@ interface Exchange extends Omit<SavedAgentExchange, 'state'> {
 }
 
 const chat = C.agent
+const syncedPluginRev = new Map<string, number>()
 const tabs = [{ id: 'chat', label: chat.tabs.chat }, { id: 'plugins', label: chat.tabs.plugins }] as const
 type Tab = typeof tabs[number]['id']
 type Dock = 'right' | 'float' | 'sheet'
@@ -183,12 +184,13 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
   const shown = useRef({ open, tab })
   shown.current = { open, tab }
   const request = useRef<{ controller: AbortController; id: string; started: boolean } | null>(null)
-  const reloadPlugins = useRef(false)
   const key = binding.runId || binding.composerScope || (binding.draftId ? 'wr_' + binding.draftId : '')
   const step = binding.editor.workflow.steps.find(item => item.id === selected)
   const titleId = useId()
   const settings = useStore(s => s.openSheet)
   const toast = useStore(s => s.toast)
+  const colabAuthed = useStore(s => s.status?.colab.authed)
+  const bumpPluginRev = useStore(s => s.bumpAgentPluginRev)
   const locked = !!binding.locked
 
   function rememberOperations(incoming: Operation[], polled = false) {
@@ -224,11 +226,11 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
         const result = await api.wf.operations(key)
         if (active && version === operationVersion.current) rememberOperations(result.operations, true)
       } catch { /* The next poll will reload the ledger. */ }
-      if (active && (open || operationRef.current.some(op => operationActive(op.state)))) timer = window.setTimeout(poll, 1200)
+      if (active && operationRef.current.some(op => operationActive(op.state))) timer = window.setTimeout(poll, 1200)
     }
     void poll()
     return () => { active = false; clearTimeout(timer) }
-  }, [key, open, watching]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, open, watching, colabAuthed]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open || !key) return
@@ -431,15 +433,17 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       const base = latest.current
       if (base.locked) throw new ApiError(409, '', 'busy')
       original = version(base.editor)
+      const pluginRev = useStore.getState().agentPluginRev
+      const needsPluginReload = restartWithPlugins || (key ? (syncedPluginRev.get(key) ?? 0) < pluginRev : pluginRev > 0)
       const done = await api.wf.agentTurn({
         ...base.editor, selected_step: selected, selected_shot: selectedShot?.id,
         run_id: base.runId, draft_id: base.draftId, turn_id: id, message,
         history: turnHistory(exchangeRef.current),
         workspace: base.workspace, composer_scope: base.composerScope, composer: base.workspace ? assistantComposerContext() : undefined,
-        reload_plugins: restartWithPlugins || reloadPlugins.current,
+        reload_plugins: needsPluginReload,
       }, controller.signal, event => {
         if (event.type === 'started') active.started = true
-        if (event.type === 'session') reloadPlugins.current = false
+        if (event.type === 'session' && key) syncedPluginRev.set(key, pluginRev)
         if (event.type === 'tool') {
           if (event.operations?.length) {
             rememberOperations(event.operations)
@@ -467,6 +471,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       if (done.refresh_library) {
         void useStore.getState().loadWf()
         void useStore.getState().loadRounds()
+        void useStore.getState().refresh()
       }
       const composerUpdated = done.composer_patch ? await applyAssistantComposerPatch(done.composer_patch) : false
       if (done.composer_patch && !composerUpdated) toast(C.conflict.changed, 'err')
@@ -475,7 +480,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
         await store.loadRounds()
         if (!useStore.getState().sheet) store.openSheet('mask', { id: done.mask_editor.source_id, maskId: done.mask_editor.mask_id })
       }
-      const refresh = async () => { if (done.refresh_run) await latest.current.refresh?.().catch(() => {}) }
+      const refresh = async () => done.refresh_run ? (await latest.current.refresh?.().catch(() => undefined)) : undefined
       let next = base.editor
       if (done.editor || done.run_request) {
         const current = latest.current
@@ -486,7 +491,10 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
         }
         if (done.editor) next = await current.apply(done.editor, done.base_revision)
       }
-      if (!done.editor) await refresh()
+      if (!done.editor) {
+        const refreshed = await refresh()
+        if (refreshed) next = refreshed
+      }
       const stepChanged = next.workflow.steps.find(item => item.type === 'llm_script' &&
         base.editor.workflow.steps.some(previous => previous.id === item.id && previous.config.scene_count !== item.config.scene_count))
       const previous = base.editor.workflow.steps.find(item => item.id === stepChanged?.id)
@@ -535,10 +543,12 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     if (action === 'openRun' && item.error?.runId) binding.openRun(item.error.runId)
   }
 
-  const suggestions = !step ? chat.suggestions.workflow
+  const suggestions = binding.workspace ? chat.suggestions[binding.workspace]
+    : !step ? chat.suggestions.workflow
     : step.type === 'llm_script' ? [chat.suggestions.sceneCount(step.config.scene_count === 5 ? 3 : 5), chat.suggestions.polish, chat.suggestions.step]
     : step.type === 'h3_prompt' ? [chat.suggestions.polish, chat.suggestions.step] : [chat.suggestions.step]
-  const choices = inventory?.plugin.enabled ? [...suggestions.slice(0, 2), chat.suggestions.timing] : suggestions
+  const choices = !binding.workspace && inventory?.plugin.enabled ? [...suggestions.slice(0, 2), chat.suggestions.timing] : suggestions
+  const emptyHeading = binding.workspace ? chat.empty[binding.workspace] : step ? chat.empty.step : chat.empty.workflow
   const activeVersion = version(binding.editor)
   const operationOwners = new Map(exchanges.flatMap(item => item.operation_id ? [[item.operation_id, item.id] as const] : []))
   const panelTransition = reduce ? instant : { ...spring, opacity: fade, scale: springSmall }
@@ -573,7 +583,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       <motion.div key={tab} className="agent-tab" initial={reduce ? false : { opacity: 0 }} animate={{ opacity: 1 }}
         transition={reduce ? instant : quick}>
         {tab === 'plugins' ? <AgentPlugins data={inventory} loadFailed={loadFailed} retry={() => setLoadAttempt(value => value + 1)}
-          disabled={busy || locked} changed={data => { setInventory(data); reloadPlugins.current = true }}
+          disabled={busy || locked} changed={data => { setInventory(data); bumpPluginRev() }}
           tryTiming={() => { selectTab('chat'); void send(chat.suggestions.timing.prompt, false, true) }} /> : <>
           <div className="agent-context" aria-label={chat.context.aria}>
             <Workflow size={14} /><span data-user-content>{binding.editor.workflow.name}</span>
@@ -590,7 +600,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                 setJump(!nearBottom.current)
               }}>
               {!exchanges.length && !operations.length && <div className="agent-empty">
-                <h3>{step ? chat.empty.step : chat.empty.workflow}</h3>
+                <h3>{emptyHeading}</h3>
                 {choices.map(item => <button key={item.label} disabled={locked} onClick={() => fill(item.prompt)}>
                   {item.label}<ChevronRight size={14} />
                 </button>)}

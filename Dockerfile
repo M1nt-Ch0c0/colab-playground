@@ -6,7 +6,7 @@ COPY web/ ./
 RUN npm run build
 RUN npm install --global --no-audit --no-fund pnpm@10.32.1
 
-FROM python:3.13-slim
+FROM python:3.13-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

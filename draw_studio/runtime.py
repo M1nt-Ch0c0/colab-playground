@@ -113,6 +113,7 @@ async def open_runtime(data: Path, services: Runtime | None = None) -> AsyncIter
                     s.log(f"助手草稿对话未能清理 ({type(exc).__name__})")
                 try:
                     s.harness_store.prune_telemetry()
+                    s.harness_store.prune_expired()
                 except sqlite3.Error as exc:
                     s.log(f"助手统计未能清理 ({type(exc).__name__})")
                 stop.wait(3600)

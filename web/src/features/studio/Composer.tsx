@@ -23,7 +23,7 @@ function ComposerAssistant({ workspace }: { workspace: 'image' | 'video' }) {
   const [open, setOpen] = useState(false)
   const [scope] = useState(assistantComposerScope)
   const locked = useStore(s => !!s.sheet)
-  const label = C.board.nodeTypes[workspace === 'image' ? 'image_gen' : 'video_gen']
+  const label = C.agent.workspace[workspace]
   return <WorkflowAgent binding={{
     editor: { topic: '', workflow: { id: '', name: label, description: '', steps: [] } },
     workspace, composerScope: scope, locked,

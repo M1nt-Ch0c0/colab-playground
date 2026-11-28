@@ -481,6 +481,7 @@ function RunCanvas({ run, openRun }: { run: WfRun; openRun: (id: string) => void
     if (useStore.getState().wfRun === latest && latest?.id === run.id && !pending.current.size) {
       setTopic(saved.topic)
       setRun(saved)
+      return { topic: saved.topic, workflow: saved.workflow }
     }
   }
   const runAgent: AgentBinding['run'] = action => act(() =>

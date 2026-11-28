@@ -859,6 +859,32 @@ class BrowserTest(unittest.TestCase):
                     {"role": "assistant", "text": "回复：第一句"},
                 ])
 
+    def test_composer_assistant_copy_and_colab_unauthed_unlock(self):
+        with signed_in_browser() as (rt, driver, url):
+            authed_state = {"ok": False}
+            status_base = rt.colab.status_report()
+            def status_report(force=False, blocking=True):
+                return {**status_base, "authed": authed_state["ok"], "ok": authed_state["ok"], "sessions": []}
+            scope = "cr_" + "b" * 32
+            op = rt.operations.create(scope, "unauthed-unlock", normalize_job({"mode": "image", "prompt": "Sunset", "count": 1, "seed": 5}))
+            with patch.object(rt.colab, "status_report", side_effect=status_report), \
+                 patch.object(rt.colab, "has_credentials", side_effect=lambda: authed_state["ok"]), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                driver.execute_script("localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]))", scope)
+                driver.get(url)
+                wait = WebDriverWait(driver, 10)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                # Context label in image composer says 生图 (not 关键帧).
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-context"), "生图"))
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                confirm = card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']")
+                self.assertFalse(confirm.is_enabled())
+                # Now simulate Colab OAuth completion without grabbing a card (sessions still empty).
+                authed_state["ok"] = True
+                wait.until(lambda _: card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']").is_enabled())
+                card.find_element(By.XPATH, ".//button[normalize-space(.)='开始生成']").click()
+                wait.until(lambda _: rt.operations.get(op["operation_id"])["state"] == "queued")
+
     def test_workflow_save_template_preserves_variables_and_positions(self):
         with signed_in_browser() as (rt, driver, url):
             engine = rt.workflows

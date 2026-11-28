@@ -155,8 +155,10 @@ def _close_harness(harness):
     finally:
         # The pinned SDK closes stdin and joins its readers, but leaves these pipes open.
         if process is not None:
-            process.stdout.close()
-            process.stderr.close()
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
 
 
 class Conversation:
@@ -470,8 +472,13 @@ class HarnessSessions:
             if self.closed:
                 return
             if key in self.forgetting:
-                self.changed.wait_for(lambda: key not in self.forgetting)
-                return
+                if expired is not None:
+                    self.changed.wait_for(lambda: key not in self.forgetting)
+                    return
+                while key in self.forgetting:
+                    self.changed.wait()
+                if self.closed:
+                    return
             slot = self.entries.get(key)
             if expired is not None and (key in self.disposing or (slot and slot.active)):
                 return
