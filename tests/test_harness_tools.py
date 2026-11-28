@@ -168,6 +168,11 @@ class HarnessToolTests(unittest.TestCase):
         self.assertEqual(self.config(tools, "image")["ref_sources"], [])
 
     def test_run_requests_are_rechecked_after_edits_and_before_delivery(self):
+        tools = editor(step("script", "llm_script"), step("asset", "asset_input"), run=True)
+        self.assertTrue(tools.call("studio_request_run", {"step_id": "script"})["requested"])
+        self.assertEqual(tools.final_run_request(), {"step_id": "script", "single_step": False})
+        self.assertTrue(tools.call("studio_request_run", {"step_id": "script", "single_step": True})["requested"])
+        self.assertEqual(tools.final_run_request(), {"step_id": "script", "single_step": True})
         for op in (operation("update_step", step_id="script", enabled=False),
                    operation("remove_step", step_id="script")):
             with self.subTest(op=op):
@@ -180,6 +185,7 @@ class HarnessToolTests(unittest.TestCase):
                 self.assert_code("invalid_argument", tools.call, "studio_request_run", {"step_id": "script"})
         tools = editor(step("script", "llm_script"))
         tools.call("studio_request_run", {})
+        self.assertEqual(tools.final_run_request(), {"step_id": "", "single_step": False})
         self.assertTrue(self.edit(tools, operation("update_step", step_id="script", enabled=False))["run_request_invalidated"])
         self.assertIsNone(tools.final_run_request())
         self.assert_code("invalid_argument", tools.call, "studio_request_run", {"step_id": "script"})

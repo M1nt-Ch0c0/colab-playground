@@ -97,7 +97,7 @@ TOOLS = {
                             "generation": {"type": "integer"}, "expected_version": {"type": "integer"}, "value": TEXT},
                            ["shot_id", "field", "generation", "expected_version", "value"]), 32, minimum=1)})),
     "studio_undo_change": ("撤销指定的镜头改动。", obj({"undo_id": TEXT}, ["undo_id"])),
-    "studio_request_run": ("用户要求执行时向编辑器提交运行操作。已有运行可指定 step_id 和 single_step。", obj({
+    "studio_request_run": ("用户要求执行时向编辑器提交运行操作。已有运行可指定 step_id；single_step 为 true 时仅运行该步，默认 false 从该步起跑完。", obj({
         "step_id": TEXT, "single_step": BOOL})),
     "studio_run_status": ("查看进度和日志，或停止一个明确指定的工作流运行。", obj({
         "op": enum("watch", "cancel"), "run_id": TEXT, "log_offset": integer(0, 2**31 - 1)}, ["op"])),
@@ -473,7 +473,7 @@ class EditorTools:
                     raise ValueError("指定步骤需要已保存的运行")
                 if "single_step" in args and (not sid or type(args["single_step"]) is not bool):
                     raise ValueError("single_step 需要指定步骤")
-                request = {"step_id": sid, "single_step": args.get("single_step", True)}
+                request = {"step_id": sid, "single_step": args.get("single_step", False)}
                 if not self._valid_run_request(request):
                     raise ValueError("没有可运行的目标步骤")
                 self.run_request = request

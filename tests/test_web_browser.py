@@ -794,6 +794,71 @@ class BrowserTest(unittest.TestCase):
             move.click()
             wait.until(lambda _: at_side("right", "382px"))
 
+    def test_operation_card_unknown_recovery_and_assistant_history_forwarding(self):
+        with signed_in_browser() as (rt, driver, url):
+            src = rt.root / "done.png"
+            src.write_bytes(png((32, 24), "navy"))
+            rid = rt.store.save(src, "image", {"prompt": "done frame"})
+            run = rt.workflows.create_run({"workflow": {"name": "Recovery", "steps": [{"id": "refs", "type": "asset_input"}]}})
+            scope = run["id"]
+            op = rt.operations.create(scope, "mix", normalize_job({"mode": "image", "prompt": "Evening", "count": 2, "seed": 7}))
+            oid = op["operation_id"]
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = rt.operations.approve(oid)
+            j1, _ = (item["job_id"] for item in approved["items"])
+            with rt.studio._lock:
+                first = next(j for j in rt.studio._queue if j["id"] == j1)
+                rt.studio._queue.clear()
+                first.update(status="done", round_id=rid)
+                rt.studio._remember_job(first)
+                rt.studio._history.clear()
+                rt.studio._save_state_locked()
+
+            seen_histories = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_histories.append(list(history))
+                yield {"type": "started", "model": model}
+                yield {"type": "done", "message": f"回复：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": None, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(f"{url}/?workflow={scope}")
+                wait = WebDriverWait(driver, 10)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                self.assertEqual(card.get_attribute("data-state"), "partial")
+                self.assertTrue(card.find_elements(By.XPATH, ".//button[normalize-space(.)='查看作品']"))
+                cancel_btn = card.find_element(By.XPATH, ".//button[normalize-space(.)='取消']")
+                cancel_btn.click()
+                wait.until(lambda _: not card.find_elements(By.XPATH, ".//button[normalize-space(.)='取消']"))
+                self.assertTrue(card.find_elements(By.XPATH, ".//button[normalize-space(.)='查看作品']"))
+                self.assertEqual([i["state"] for i in rt.operations.get(oid)["items"]], ["done", "canceled"])
+
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("第一句")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第一句"))
+
+                # Close and reopen without server recent.json persistence: local done turn must survive and be forwarded.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第一句"))
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("第二句")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "回复：第二句"))
+                self.assertEqual(seen_histories[0], [])
+                self.assertEqual(seen_histories[1], [
+                    {"role": "user", "text": "第一句"},
+                    {"role": "assistant", "text": "回复：第一句"},
+                ])
+
     def test_workflow_save_template_preserves_variables_and_positions(self):
         with signed_in_browser() as (rt, driver, url):
             engine = rt.workflows

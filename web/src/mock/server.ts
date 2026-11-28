@@ -585,8 +585,8 @@ function makeOperation(key: string, turn: AgentTurnBody) {
 function updateMockOperation(op: Operation) {
   const states = new Set(op.items.map(item => item.state))
   op.state = states.has('awaiting_approval') ? 'awaiting_approval' : states.has('running') ? 'running'
-    : states.has('queued') ? 'queued' : states.has('unknown') ? 'unknown' : states.size === 1 && states.has('done') ? 'done'
-      : states.has('done') ? 'partial' : states.has('failed') ? 'failed' : 'canceled'
+    : states.has('queued') ? 'queued' : states.size === 1 && states.has('done') ? 'done'
+      : states.has('done') ? 'partial' : states.has('unknown') ? 'unknown' : states.has('failed') ? 'failed' : 'canceled'
   op.done = op.items.filter(item => item.state === 'done').length
   op.updated_at = sec()
 }
@@ -639,7 +639,7 @@ function mockOperationRoute(method: string, id: string | undefined, action: stri
     return submitMockOperation(op, op.items.filter(i => i.state === 'failed' && (!keys || keys.includes(i.item_key))), true)
   }
   if (action === 'cancel') {
-    for (const item of op.items) if (['awaiting_approval', 'queued', 'running'].includes(item.state)) item.state = 'canceled'
+    for (const item of op.items) if (['awaiting_approval', 'queued', 'running', 'unknown'].includes(item.state)) item.state = 'canceled'
     updateMockOperation(op)
     return ok(view(op))
   }

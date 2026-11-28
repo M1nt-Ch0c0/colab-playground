@@ -516,7 +516,8 @@ class Studio:
                 prev_cur["finished_at"] = int(time.time())
                 prev_cur["progress"] = None
                 payload = prev_cur["payload"]
-                prev_cur["retryable"] = not payload.get("workflow_run_id") and (not payload.get("chain") or payload.get("chain_resolved", False))
+                prev_cur["retryable"] = (not payload.get("workflow_run_id") and not payload.get("operation_id")
+                                         and (not payload.get("chain") or payload.get("chain_resolved", False)))
                 self._remember_job(prev_cur)
                 interrupted_id = prev_cur["id"]
 
@@ -2023,7 +2024,7 @@ class Studio:
                 self.set_phase("ready" if canceled and self.active_gpu else ("idle" if canceled else "error"), "" if canceled else str(exc))
         finally:
             job["finished_at"] = int(time.time())
-            job["retryable"] = (job["status"] == "error" and not p.get("workflow_run_id")
+            job["retryable"] = (job["status"] == "error" and not p.get("workflow_run_id") and not p.get("operation_id")
                                 and (not p.get("chain") or p.get("chain_resolved", False)))
             job.pop("first_ref", None)
             job.pop("ref_blobs", None)

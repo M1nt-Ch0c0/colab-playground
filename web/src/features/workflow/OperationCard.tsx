@@ -11,7 +11,7 @@ const copy = C.operation
 const tones: Record<Operation['state'], string> = {
   awaiting_approval: 'run', queued: '', running: 'run', partial: 'warn', done: 'ok', failed: 'bad', canceled: '', unknown: '',
 }
-export const operationActive = (state: Operation['state']) => state === 'queued' || state === 'running' || state === 'unknown'
+export const operationActive = (state: Operation['state']) => state === 'queued' || state === 'running'
 
 export function OperationCard({ operation, update, disabled, animateEntry = true }: {
   operation: Operation; update: (op: Operation) => void; disabled?: boolean; animateEntry?: boolean
@@ -34,6 +34,13 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
     else if (item.state !== 'queued' && item.state !== 'running') seenFailed.current.delete(item.item_key)
   }
   const visibleFailures = items.filter(item => seenFailed.current.has(item.item_key))
+  const hasUnknown = items.some(item => item.state === 'unknown')
+  const canCancel = state === 'awaiting_approval' || state === 'queued' || state === 'running'
+    || (hasUnknown && !(failures.length > 0 && operation.results.length > 0))
+  const canConfirm = state === 'awaiting_approval'
+  const canRetry = (state === 'failed' || state === 'partial' || state === 'unknown') && failures.length > 0
+  const canView = (state === 'done' || state === 'partial') && operation.results.length > 0
+  const hasFooter = canCancel || canConfirm || canRetry || canView
   const Icon = kind === 'video' ? Film : ImageIcon
 
   async function act(action: 'approve' | 'cancel' | 'retry', item?: string) {
@@ -114,19 +121,19 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
       <button className="btn sm" onClick={() => useStore.getState().openSheet('settings')}>{copy.connect}</button>
     </div>}
     <AnimatePresence mode="wait" initial={false}>
-      {(state !== 'canceled' && state !== 'unknown') && <motion.footer className="op-f" key={state}
+      {hasFooter && <motion.footer className="op-f" key={state}
         initial={reduce ? false : { opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
         exit={reduce ? { opacity: 0 } : { opacity: 0, y: -4, transition: quick }} transition={reduce ? instant : fade}>
-        {(state === 'awaiting_approval' || state === 'queued' || state === 'running') && <button className="btn sm ghost"
+        {canCancel && <button className="btn sm ghost"
           disabled={locked} onClick={() => void act('cancel')}>{state === 'running' ? copy.stop : copy.cancel}</button>}
-        {state === 'awaiting_approval' && <button className="btn sm primary" disabled={locked || needsCompute}
+        {canConfirm && <button className="btn sm primary" disabled={locked || needsCompute}
           style={busy === 'approve' ? { minWidth: width } : undefined}
           onClick={event => { setWidth(event.currentTarget.offsetWidth); void act('approve') }}>
           <span className="proposal-spinner">{busy === 'approve' && <span className="spinner" />}</span>{copy.confirm}
         </button>}
-        {(state === 'failed' || state === 'partial') && failures.length > 0 && <button className="btn sm primary"
+        {canRetry && <button className="btn sm primary"
           disabled={locked} onClick={() => void act('retry')}>{busy === 'retry' && <span className="spinner" />}{copy.retryFailed(failures.length)}</button>}
-        {(state === 'done' || state === 'partial') && operation.results.length > 0 && <button className="btn sm" disabled={disabled}
+        {canView && <button className="btn sm" disabled={disabled}
           onClick={() => void view()}>{copy.view}</button>}
       </motion.footer>}
     </AnimatePresence>

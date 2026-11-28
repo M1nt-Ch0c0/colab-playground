@@ -117,13 +117,15 @@ def _image(path: Path):
 
 def _state(items):
     states = {item["state"] for item in items}
-    for state in ("awaiting_approval", "running", "queued", "unknown"):
+    for state in ("awaiting_approval", "running", "queued"):
         if state in states:
             return state
     if states == {"done"}:
         return "done"
     if "done" in states:
         return "partial"
+    if "unknown" in states:
+        return "unknown"
     return "failed" if "failed" in states else "canceled"
 
 
@@ -431,7 +433,7 @@ class Operations:
                     raise FileNotFoundError
             except OSError as exc:
                 raise HarnessError("media_invalid") from exc
-            jobs = [("j" + secrets.token_hex(12), json.loads(item["frozen_input_json"])) for item in targets]
+            jobs = [("j" + secrets.token_hex(12), dict(json.loads(item["frozen_input_json"]), operation_id=operation_id)) for item in targets]
             # Commit the reserved IDs before crossing into the durable queue. An ambiguous
             # restart reconciles those IDs and leaves unverified items unknown.
             with self.store.transaction() as db:
@@ -458,8 +460,13 @@ class Operations:
         with self.studio._lock:
             with self.store.transaction() as db:
                 op, items = self._reconcile(db, operation_id)
-                if op["state"] == "awaiting_approval":
-                    db.execute("UPDATE operation_items SET state='canceled',updated_at=? WHERE operation_id=?", (_now(), operation_id))
+                cancelable = [item["item_key"] for item in items if item["state"] in {"awaiting_approval", "unknown"}]
+                if cancelable:
+                    now = _now()
+                    db.executemany(
+                        "UPDATE operation_items SET state='canceled',updated_at=? WHERE operation_id=? AND item_key=?",
+                        ((now, operation_id, key) for key in cancelable),
+                    )
                     self._aggregate(db, *self._rows(db, operation_id))
             for item in items:
                 if item["state"] in {"queued", "running"} and item["job_id"]:

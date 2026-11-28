@@ -287,8 +287,15 @@ class Conversation:
         if self.persistent:
             os.utime(self.directory)
         emit({"type": "session", "state": state, "process_id": self.bridge.pid})
-        if state == "new" and history:
-            message = "本编辑器先前的对话记录：\n" + json.dumps(history, ensure_ascii=False) + "\n用户当前请求：\n" + message
+        if state == "new":
+            prior = list(history)
+            if not prior and self.persistent:
+                prior = [msg for row in recent_exchanges(self.root, self.key)[-6:]
+                         for msg in (({"role": "user", "text": row["user"][:3000]} if row["user"].strip() else None),
+                                     ({"role": "assistant", "text": row["answer"][:3000]} if row["answer"].strip() else None))
+                         if msg][-12:]
+            if prior:
+                message = "本编辑器先前的对话记录：\n" + json.dumps(prior, ensure_ascii=False) + "\n用户当前请求：\n" + message
         if cancel.is_set():
             raise HarnessError("turn_stopped")
         try:

@@ -57,19 +57,52 @@ function savedProposals(saved: Proposal[] | undefined, local: Proposal[] | undef
   })
 }
 
-function mergeHistory(saved: SavedAgentExchange[], current: Exchange[], completedBeforeFetch: Set<string>): Exchange[] {
+function turnHistory(rows: readonly Exchange[]) {
+  const items: { role: 'user' | 'assistant'; text: string }[] = []
+  for (const row of rows) {
+    if (row.state !== 'done') continue
+    const user = row.user.trim().slice(0, 3000)
+    if (user) items.push({ role: 'user', text: user })
+    const answer = row.answer.trim().slice(0, 3000)
+    if (answer) items.push({ role: 'assistant', text: answer })
+  }
+  return items.slice(-12)
+}
+
+function mergeHistory(saved: SavedAgentExchange[], current: Exchange[]): Exchange[] {
+  const savedIds = new Set(saved.map(row => row.id))
+  const firstSaved = current.findIndex(row => savedIds.has(row.id))
   const local = new Map(current.map(row => [row.id, row]))
-  const ordered = saved.map(row => {
-    const own = local.get(row.id)
-    local.delete(row.id)
-    const proposals = savedProposals(row.proposals, own?.proposals)
-    if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) return { ...own, proposals }
-    return {
-      id: row.id, user: row.user, answer: row.answer, state: row.state, tools: row.tools.filter(tool => typeof tool.name === 'string'),
-      applied: own?.applied, action: own?.action, version: own?.version, proposals, operation_id: row.operation_id ?? own?.operation_id,
+  const before = new Map<string, Exchange[]>()
+  const tail: Exchange[] = []
+  let pending: Exchange[] = []
+  for (const [index, row] of current.entries()) {
+    if (savedIds.has(row.id)) {
+      if (pending.length) {
+        before.set(row.id, pending)
+        pending = []
+      }
+    } else if (!(saved.length >= 24 && (firstSaved < 0 || index < firstSaved) && row.state === 'done')) {
+      pending.push(row)
     }
-  })
-  return [...ordered, ...[...local.values()].filter(row => row.state !== 'done' || !completedBeforeFetch.has(row.id))]
+  }
+  tail.push(...pending)
+  const ordered: Exchange[] = []
+  for (const row of saved) {
+    const prior = before.get(row.id)
+    if (prior) ordered.push(...prior)
+    const own = local.get(row.id)
+    const proposals = savedProposals(row.proposals, own?.proposals)
+    if (own && (own.state === 'stale' || own.state === 'error' || own.state === 'stopped')) {
+      ordered.push({ ...own, proposals })
+    } else {
+      ordered.push({
+        id: row.id, user: row.user, answer: row.answer, state: row.state, tools: row.tools.filter(tool => typeof tool.name === 'string'),
+        applied: own?.applied, action: own?.action, version: own?.version, proposals, operation_id: row.operation_id ?? own?.operation_id,
+      })
+    }
+  }
+  return [...ordered, ...tail]
 }
 
 function ToolBadges({ tools, fresh }: { tools: AgentTool[]; fresh: boolean }) {
@@ -200,9 +233,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
   useEffect(() => {
     if (!open || !key) return
     let active = true
-    const completed = new Set(exchangeRef.current.filter(row => row.state === 'done').map(row => row.id))
     api.wf.conversation(key).then(({ exchanges: saved }) => {
-      if (active) setExchanges(current => mergeHistory(saved, current, completed))
+      if (active) setExchanges(current => mergeHistory(saved, current))
     }).catch(() => { if (active) toast(C.toast.historyFailed, 'err') })
     return () => { active = false }
   }, [key, open, toast])
@@ -402,6 +434,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
       const done = await api.wf.agentTurn({
         ...base.editor, selected_step: selected, selected_shot: selectedShot?.id,
         run_id: base.runId, draft_id: base.draftId, turn_id: id, message,
+        history: turnHistory(exchangeRef.current),
         workspace: base.workspace, composer_scope: base.composerScope, composer: base.workspace ? assistantComposerContext() : undefined,
         reload_plugins: restartWithPlugins || reloadPlugins.current,
       }, controller.signal, event => {

@@ -32,8 +32,10 @@ function postToStudio(path, body, signal) {
 }
 
 export async function apply(ctx, config) {
-  // The SDK speaks JSON-RPC for prompts. The native agents service cancels one
-  // active turn while keeping the process, the session and its plugins alive.
+  // Loopback control server for ToolBridge.interrupt() (agent_bridge.py).
+  // POST /stop contract: 204 = running turn cancelled (keep process/session/plugins alive),
+  // 200 {"state":"idle"} = already idle, 409 = unconfirmed (bridge closes process),
+  // 403 = bad path/method/token.
   const token = Buffer.from('Bearer ' + process.env.STUDIO_TOOL_TOKEN)
   const control = createServer((req, res) => {
     const received = Buffer.from(req.headers.authorization ?? '')

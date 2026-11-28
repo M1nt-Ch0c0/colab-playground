@@ -593,10 +593,11 @@ motion.article.op-card[data-state]               样式同 .proposal
 | `awaiting_approval` | `ghost` `C.operation.cancel` · `primary` `C.operation.confirm`（`needsCompute` 时禁用主按钮） |
 | `queued` | `ghost` `C.operation.cancel` |
 | `running` | `ghost` `C.operation.stop` |
-| `partial` | `primary` `C.operation.retryFailed(n)` · `btn` `C.operation.view` |
+| `partial` | `primary` `C.operation.retryFailed(n)` · `btn` `C.operation.view`（无失败项且含 `unknown` 项时为 `ghost` `C.operation.cancel` · `btn` `C.operation.view`） |
 | `done` | `btn` `C.operation.view` |
 | `failed` | `primary` `C.operation.retryFailed(n)` |
-| `canceled`、`unknown` | 无 |
+| `unknown` | `ghost` `C.operation.cancel`（另有失败项时并列 `primary` `C.operation.retryFailed(n)`，合计 ≤2） |
+| `canceled` | 无 |
 
 反馈：入队 `toast(C.toast.queued, 'ok')`；全部完成且浮窗收起时 `toast(C.toast.operationDone(n, kind), 'ok')`；有失败项且浮窗收起时 `toast(C.toast.operationFailed(n), 'err')`。
 

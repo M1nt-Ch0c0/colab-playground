@@ -811,3 +811,93 @@ class OperationTests(unittest.TestCase):
             interrupted.assert_not_called()
             self.assertTrue(self.studio.cancel_job(target))
             interrupted.assert_called_once()
+
+    def test_operation_jobs_are_not_retryable_from_global_queue(self):
+        from draw_studio.errors import StateConflict
+
+        op = self.ops.create(self.scope, "no-global-retry", self.ready_image(2))
+        oid = op["operation_id"]
+        approved = self.ops.approve(oid)
+        first_jid, second_jid = (row["job_id"] for row in approved["items"])
+        with self.studio._lock:
+            first_job = self.studio._queue.popleft()
+            second_job = self.studio._queue.popleft()
+        self.assertEqual(first_job["payload"]["operation_id"], oid)
+        with patch.object(self.studio, "_acquire_session", side_effect=RuntimeError("boom")):
+            self.studio._run_job(first_job)
+        with self.studio._lock:
+            self.studio._remember_job(first_job)
+            self.studio._current = second_job
+            self.studio._save_state_locked()
+        self.assertFalse(self.studio.find_job(first_jid)["retryable"])
+        with self.assertRaises(StateConflict):
+            self.studio.retry_job(first_jid)
+
+        self.runtime.shutdown()
+        with local_runtime(self.root) as restarted, \
+             patch.object(restarted.colab, "has_credentials", return_value=True), \
+             patch.object(restarted.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+            restarted.studio.recover()
+            self.assertFalse(restarted.studio.find_job(second_jid)["retryable"])
+            with self.assertRaises(StateConflict):
+                restarted.studio.retry_job(second_jid)
+            retried = restarted.operations.retry(oid, ["1"])
+            self.assertEqual(retried["items"][0]["state"], "queued")
+            self.assertEqual(retried["items"][1]["state"], "failed")
+
+    def test_unknown_items_preserve_completed_state_and_support_cancel_and_failed_retry(self):
+        op = self.ops.create(self.scope, "partial-unknown", self.ready_image(3))
+        oid = op["operation_id"]
+        j1, j2, j3 = (row["job_id"] for row in self.ops.approve(oid)["items"])
+        rid, _ = self.image_asset("navy")
+        self.finish(j1, "done", rid)
+        self.finish(j2, "error")
+        with self.studio._lock:
+            self.studio._queue.clear()
+            self.studio._history.clear()
+            self.studio._save_state_locked()
+        reconciled = self.ops.get(oid)
+        self.assertEqual(reconciled["state"], "partial")
+        self.assertEqual([i["state"] for i in reconciled["items"]], ["done", "failed", "unknown"])
+        self.assertEqual([r["id"] for r in reconciled["results"]], [rid])
+        retried = self.ops.retry(oid)
+        self.assertEqual([i["state"] for i in retried["items"]], ["done", "queued", "unknown"])
+        self.assertEqual(retried["items"][2]["job_id"], j3)
+        canceled = self.ops.cancel(oid)
+        self.assertEqual(canceled["state"], "partial")
+        self.assertEqual([i["state"] for i in canceled["items"]], ["done", "canceled", "canceled"])
+        self.assertEqual([r["id"] for r in canceled["results"]], [rid])
+
+        only_unknown = self.ops.create(self.scope, "only-unknown", self.ready_image(1))["operation_id"]
+        self.ops.approve(only_unknown)
+        with self.studio._lock:
+            self.studio._queue.clear()
+            self.studio._history.clear()
+            self.studio._save_state_locked()
+        self.assertEqual(self.ops.get(only_unknown)["state"], "unknown")
+        self.assertEqual(self.ops.cancel(only_unknown)["state"], "canceled")
+
+    def test_new_session_falls_back_to_client_history_or_saved_exchanges(self):
+        conversation = copilot.Conversation(self.root, KEY, True)
+        prompts = []
+        fake_client = SimpleNamespace(
+            subscribe_session_notifications=lambda _: contextmanager(lambda: (yield SimpleNamespace()))(),
+            session_prompt=lambda _key, blocks: prompts.append(blocks[0]["text"]) or "receipt",
+        )
+        conversation.harness = SimpleNamespace(client=fake_client)
+        conversation.bridge = SimpleNamespace(pid=42, bind=lambda *_: contextmanager(lambda: (yield))())
+        conversation.directory.mkdir(parents=True, exist_ok=True)
+        conversation.remember({"id": "turn1", "user": "saved user", "answer": "saved reply", "tools": [], "state": "done"})
+        with patch.object(conversation, "prepare", return_value="new"), \
+             patch.object(conversation, "_wait_turn", return_value="ok"):
+            conversation.run(editor(), provider(), "demo", "follow up", [{"role": "user", "text": "client turn"}],
+                             lambda _: None, threading.Event())
+            conversation.run(editor(), provider(), "demo", "after reload", (), lambda _: None, threading.Event())
+        with patch.object(conversation, "prepare", return_value="reused"), \
+             patch.object(conversation, "_wait_turn", return_value="ok"):
+            conversation.run(editor(), provider(), "demo", "steady turn", [{"role": "user", "text": "client turn"}],
+                             lambda _: None, threading.Event())
+        self.assertIn("client turn", prompts[0])
+        self.assertIn("saved user", prompts[1])
+        self.assertIn("saved reply", prompts[1])
+        self.assertEqual(prompts[2], "steady turn")
