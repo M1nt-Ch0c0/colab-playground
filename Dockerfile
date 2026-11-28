@@ -32,6 +32,9 @@ RUN useradd -m -u 1000 studio \
 
 USER studio
 
+ARG BUILD_ID
+ENV QP_BUILD_ID=${BUILD_ID}
+
 VOLUME ["/data"]
 EXPOSE 8787
 

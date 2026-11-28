@@ -95,7 +95,8 @@ def create_app(*, root: Path | None = None, dist: Path | None = None, services: 
         active = s.workflows.active_summary()
         running = bool(active and active["status"] == "running")
         snap = s.studio.snapshot()
-        return {"ok": True, "backend": "colab", "version": __version__, "workflow_running": running,
+        return {"ok": True, "backend": "colab", "version": __version__, "build_id": os.getenv("QP_BUILD_ID") or None,
+                "workflow_running": running,
                 "queue_len": len(snap["queue"]), "busy": bool(snap["current"] or snap["queue"] or running
                                                                or snap["phase"] in {"starting", "stopping"})}
 

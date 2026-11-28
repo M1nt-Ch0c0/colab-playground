@@ -29,7 +29,7 @@ H="Authorization: Bearer $QP_TOKEN"
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/healthz` | `{"ok":true,"backend":"colab","version":"3.1","busy":false,"queue_len":0,"workflow_running":false}` |
+| GET | `/healthz` | `{"ok":true,"backend":"colab","version":"3.1","build_id":"12345-2","busy":false,"queue_len":0,"workflow_running":false}`。Actions 镜像的 `build_id` 由运行 ID 和尝试次数组成，本地构建默认返回 `null` |
 | GET | `/login` | 登录页 |
 | POST | `/login` | 表单 `password=...`。成功返回 `302`，并下发 `qp_auth` Cookie（30 天）。同一 IP 10 分钟内失败 8 次后返回 `429` |
 | GET | `/logout` | 清掉 Cookie，跳回登录页 |
