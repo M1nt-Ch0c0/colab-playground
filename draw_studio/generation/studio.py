@@ -419,11 +419,14 @@ class Studio:
         return out
 
     def _remember_job(self, job: dict) -> None:
-        if self.on_job_finished:
-            self.on_job_finished(job)
         if len(self._history) == self._history.maxlen:
             self._cleanup_job_refs(self._history[-1]["id"])
         self._history.appendleft(job)
+        if self.on_job_finished:
+            try:
+                self.on_job_finished(job)
+            except Exception as exc:
+                self.log(f"任务结束回调失败：{exc}")
 
     def _save_state_locked(self, *, strict=False) -> None:
         try:

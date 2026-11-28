@@ -411,10 +411,10 @@ class WorkflowEngine:
             d = self._run_dir(run_id)
             if not d.exists():
                 return False
-            shutil.rmtree(d)
-            self._paused.pop(run_id, None)
             if self.harness_store:
                 self.harness_store.clear_shots(run_id)
+            shutil.rmtree(d)
+            self._paused.pop(run_id, None)
             return True
 
     # ── run assets (human uploads & agent downloads) ──────────────────

@@ -78,7 +78,7 @@
 14. `studio_apply_shot_edits` — 按 `proposal_id` 或显式逐镜字段补丁写回镜头输出，支持 `atomicity: "all" | "per_shot"` 与字段级 CAS，返回 `applied`、`conflicts`、`undo_id`。
 15. `studio_undo_change` — 按 `undo_id` 撤销最近一次字段写回（校验目标字段当前版本未再被修改）。
 16. `studio_request_run` — 向界面提交启动/继续/单步重试运行请求（交付前按最终草稿复检目标步骤与启用状态，由用户在界面确认执行）。
-17. `studio_watch_run` / `studio_cancel_run` — 查询运行进度与增量日志；停止指定运行（归并为 `studio_run_status`：`op: "watch" | "cancel"`，使总工具数精确控制在 **24 个**）。
+17. `studio_run_status` — `op: "watch" | "cancel"`，查询运行进度与增量日志，或停止指定运行（由 `studio_watch_run` 与 `studio_cancel_run` 归并，总计 **26 个**静态创作工具）。
 
 ### D. 作品库、参考图与媒体编辑（5）
 18. `studio_find_assets` — 按 `query`、`kind`、`starred`、`offset`、`limit` 检索作品库，返回有界摘要。
@@ -87,7 +87,7 @@
 21. `studio_prepare_mask` — 校验并持久化局部重绘蒙版句柄 `mask_id`（`source_id` + 归一化笔迹），或返回打开画笔选区弹层的 UI 引导。
 22. `studio_references` — `op: "read" | "use_round" | "remove" | "clear"`，读取/绑定/移除/清空首帧、尾帧、视频参考与有序参考图（保持白模动作人设图顺序语义）。
 
-### E. 作品整理、预设、独立生成与任务队列（3，其中作品整理与预设合并为清晰域工具）
+### E. 作品整理、预设、独立生成与任务队列（4）
 23. `studio_library_actions` — `op: "star" | "trash" | "list_trash" | "restore"`，仅包含界面级收藏、移入回收站、查看回收站与恢复（**严禁永久清除**）。
 24. `studio_presets` — `op: "list" | "save" | "delete" | "parse_comfy_link"`，管理 `studio` 与 `comfy` 参数预设及解析 Comfy 模型链接。
 25. `studio_generation` — `op: "edit_composer" | "prepare" | "submit_image" | "submit_video"`：

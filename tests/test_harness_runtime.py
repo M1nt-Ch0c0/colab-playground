@@ -1144,3 +1144,72 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(len(ctx.loras), 4)
         self.assertEqual((ctx.loras[0].repo_id, ctx.loras[0].weight_name), ("alice/style", "film.safetensors"))
         self.assertEqual((ctx.loras[1].repo_id, ctx.loras[1].weight_name, ctx.loras[1].scale), ("bob/light", "glow.safetensors", 2.5))
+
+    def test_multi_gpu_preference_composer_prune_callback_isolation_undo_race_and_delete_order(self):
+        from draw_studio.workflows import agent_plugins
+        from draw_studio.workflows.shot_service import apply_shot_edits, read_shots, undo_change
+
+        # 1. Multi-GPU approve prioritizes requested gpu when it is already held.
+        op = self.ops.create(self.scope, "multi-gpu", self.ready_image(1))
+        with patch.object(self.runtime.colab, "status_report",
+                          return_value={"authed": True, "sessions": [{"gpu": "T4"}, {"gpu": "A100"}]}):
+            self.ops.approve(op["operation_id"])
+        queued = self.studio._queue[0]["payload"]
+        self.assertEqual((queued["gpu"], queued["gpu_pool"]), ("A100", ["A100", "T4"]))
+
+        # 2. Studio._remember_job records history first and isolates callback/cleanup OSError.
+        broken_job = {"id": "j" + "f" * 24, "status": "done", "payload": {}, "created_at": 1}
+        with patch.object(self.ops, "_gallery_result", side_effect=OSError("gallery")):
+            self.ops.record_terminal({"id": self.studio._queue[0]["id"], "status": "error", "error": "服务重启，任务已中断"})
+        with patch.object(self.studio, "on_job_finished", side_effect=OSError("callback boom")):
+            self.studio._remember_job(broken_job)
+        self.assertEqual(self.studio._history[0]["id"], broken_job["id"])
+
+        # 3. prune_drafts cleans expired cr_* composer conversations and preserves fresh ones.
+        conv_root = agent_plugins.profile_home(self.root) / "conversations"
+        old_cr = conv_root / ("cr_" + "1" * 32)
+        fresh_cr = conv_root / ("cr_" + "2" * 32)
+        for d in (old_cr, fresh_cr):
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "recent.json").write_text("[]", encoding="utf-8")
+        old_ts = time.time() - 10 * 86400
+        os.utime(old_cr / "recent.json", (old_ts, old_ts))
+        os.utime(old_cr, (old_ts, old_ts))
+        sessions = copilot.HarnessSessions()
+        sessions.prune_drafts(self.root, lambda _: False)
+        self.assertFalse(old_cr.exists())
+        self.assertTrue(fresh_cr.exists())
+
+        # 4. undo_change returns expired shot_conflict if undo row disappears between lookups.
+        run = self.runtime.workflows.create_run({"topic": "race", "workflow": {"name": "Race", "steps": [
+            {"id": "script", "type": "llm_script"},
+        ]}})
+        rid = run["id"]
+        self.runtime.workflows.update_step_output(rid, "script", {"scenes": [{"title": "S1", "keyframe_prompt": "old"}]})
+        shot = read_shots(self.runtime, rid, "script")[0]
+        applied = apply_shot_edits(self.runtime, run_id=rid, step_id="script", patches=[{
+            "shot_id": shot["shot_id"], "field": "keyframe_prompt",
+            "generation": shot["generation"], "expected_version": shot["field_versions"]["keyframe_prompt"], "value": "new",
+        }], scope=rid)
+        undo_id = applied["undo_id"]
+        orig_shot_run = self.runtime.workflows.shot_run
+
+        @contextmanager
+        def deleting_shot_run(*args, **kwargs):
+            with self.runtime.harness_store.transaction() as db:
+                db.execute("DELETE FROM undo_records WHERE undo_id=?", (undo_id,))
+            with orig_shot_run(*args, **kwargs) as value:
+                yield value
+
+        with patch.object(self.runtime.workflows, "shot_run", side_effect=deleting_shot_run):
+            with self.assertRaises(HarnessError) as ctx:
+                undo_change(self.runtime, undo_id, scope=rid)
+        self.assertEqual((ctx.exception.code, ctx.exception.details.get("status")), ("shot_conflict", "expired"))
+
+        # 5. delete_run clears shots before deleting run directory so a SQLite error remains retryable.
+        with patch.object(self.runtime.harness_store, "clear_shots", side_effect=sqlite3.OperationalError("locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.runtime.workflows.delete_run(rid)
+        self.assertIsNotNone(self.runtime.workflows.get_run(rid))
+        self.assertTrue(self.runtime.workflows.delete_run(rid))
+        self.assertIsNone(self.runtime.workflows.get_run(rid))

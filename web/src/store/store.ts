@@ -405,7 +405,7 @@ export function assistantComposerContext(): ComposerContext {
       num_frames: clampInt(d.frames, 1, 400, EMPTY_DRAFT.frames),
       offload_mode: d.offload, video_task: task, video_reference_id: videoRefId,
       has_image: d.workflow === 'fl2va' ? d.useFirstFrame && !!refs?.first.set
-        : d.workflow === 'ref2va' && (task === 'images' || task === 'motion' || d.videoUseImages),
+        : d.workflow === 'ref2va' && !!refs?.first.set && (task === 'images' || task === 'motion' || d.videoUseImages),
       has_last_image: d.workflow === 'fl2va' && !!refs?.last.set,
     }
   }

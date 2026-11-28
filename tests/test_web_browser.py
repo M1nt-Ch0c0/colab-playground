@@ -1023,6 +1023,67 @@ class BrowserTest(unittest.TestCase):
                 rt.store.save(done_img, "image", {"job_id": jid, "prompt": "Fog"})
                 wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, ".op-card").get_attribute("data-state") == "done")
 
+    def test_queued_progress_bar_ref2va_context_and_mask_patch_error_isolation(self):
+        with signed_in_browser() as (rt, driver, url):
+            scope = "cr_" + "d" * 32
+            op = rt.operations.create(scope, "queued-bar", normalize_job({"mode": "image", "prompt": "Cloud", "count": 2, "seed": 3}))
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                rt.operations.approve(op["operation_id"])
+
+            seen_composers = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_composers.append(dict(editor.composer or {}))
+                yield {"type": "started", "model": model}
+                patch_obj = (
+                    {"workspace": "image", "base_revision": revision, "changes": {"mask_id": "mk_" + "e" * 24}}
+                    if editor.workspace == "image" else None
+                )
+                yield {"type": "done", "message": f"完成：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": patch_obj, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(url)
+                driver.execute_script(
+                    "localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]));"
+                    "localStorage.setItem('colabreel.draft', JSON.stringify({workflow: 'ref2va', videoTask: 'images', videoUseImages: true, prompt: 'Video idea'}));",
+                    scope,
+                )
+                driver.get(url)
+                wait = WebDriverWait(driver, 12)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                # 1. Queued OperationCard uses indeterminate progressbar without inline 0% width or determinate ARIA.
+                bar = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card .bar.indet")))
+                self.assertIsNone(bar.get_attribute("aria-valuemin"))
+                self.assertIsNone(bar.get_attribute("aria-valuemax"))
+                self.assertIsNone(bar.get_attribute("aria-valuenow"))
+                self.assertEqual(bar.get_attribute("aria-valuetext"), "排队中")
+                self.assertEqual(bar.find_element(By.CSS_SELECTOR, "i").get_attribute("style") or "", "")
+
+                # 2. Expired mask_id fetch error in applyAssistantComposerPatch does not fail a completed turn.
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("应用过期选区")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "完成：应用过期选区"))
+                self.assertEqual(driver.find_elements(By.CSS_SELECTOR, ".agent-error"), [])
+
+                # 3. Video ref2va with no uploaded reference image sends has_image=False.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'视频')]"))).click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("检查视频参考")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "完成：检查视频参考"))
+                self.assertEqual(seen_composers[-1]["mode"], "video")
+                self.assertEqual(seen_composers[-1]["workflow"], "ref2va")
+                self.assertFalse(seen_composers[-1]["has_image"])
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

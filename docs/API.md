@@ -413,6 +413,6 @@ H="Authorization: Bearer $QP_TOKEN"
 
 `tool` 事件保留 `op` 并可带操作或创作台补丁。`done` 可返回 `proposals`、`run_updated`、`operations`、`composer_patch` 和 `mask_editor`。创作台用发起时的修订号校验参数补丁。
 
-`studio_generation` 的提交操作按会话范围、工具动作和 `idempotency_key` 去重。同键同参数返回已有候选，同键异参返回 400。批准前状态为 `awaiting_approval`。恢复时以预留任务编号向队列和作品核对，结果无法核实时显示 `unknown`，由账本保留记录。`studio_jobs` 的 `retry` 打开相应操作卡，用户可以确认重试单项或全部失败项。
+`studio_generation` 的提交操作按会话范围、工具动作和 `idempotency_key` 去重。同键同参数返回已有候选，同键异参返回工具错误 `invalid_argument`（进程内 ToolBridge 为 400，对外 `/agent/turn` 仍为 200 NDJSON 流中的失败 `tool` 事件）。批准前状态为 `awaiting_approval`。恢复时以预留任务编号向队列和作品核对，结果无法核实时显示 `unknown`，由账本保留记录。`studio_jobs` 的 `retry` 打开相应操作卡，用户可以确认重试单项或全部失败项。
 
 已有步骤输出接口 `POST /runs/{run_id}/steps/{step_id}/output` 接受 `shot_edits` 进行字段级版本校验。

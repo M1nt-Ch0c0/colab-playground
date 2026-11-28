@@ -668,6 +668,8 @@ def undo_change(runtime, undo_id, *, scope=None):
         rows = _rows(run, step_id)
         with store.transaction() as db:
             record = db.execute("SELECT * FROM undo_records WHERE undo_id=?", (undo_id,)).fetchone()
+            if not record:
+                raise _conflict(status="expired")
             conflicts = _diff(json.loads(record["expected_versions_json"]), rows)
             if record["consumed"] or record["created_at"] + UNDO_TTL <= time.time():
                 raise _conflict(conflicts, status="expired")

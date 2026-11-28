@@ -324,11 +324,14 @@ class Operations:
 
     def _cleanup_frozen_binaries(self, operation_id):
         folder = self.inputs / operation_id
-        if not folder.is_dir():
-            return
-        for path in folder.iterdir():
-            if path.suffix in (".bin", ".mp4"):
-                path.unlink(missing_ok=True)
+        try:
+            if not folder.is_dir():
+                return
+            for path in folder.iterdir():
+                if path.suffix in (".bin", ".mp4"):
+                    path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.studio.log(f"冻结素材清理失败 ({type(exc).__name__})")
 
     def _held_gpus(self):
         valid = {gpu["id"] for gpu in GPUS}
@@ -359,7 +362,7 @@ class Operations:
                 if row := self._item_update(db, jid, state, rid):
                     op, items = self._rows(db, row["operation_id"])
                     self._aggregate(db, op, items)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError) as exc:
             self.studio.log(f"操作状态写入失败 ({type(exc).__name__})")
 
     def _gallery_result(self, job_id):
@@ -459,10 +462,14 @@ class Operations:
             except OSError as exc:
                 raise HarnessError("media_invalid") from exc
             held = self._held_gpus()
-            gpu_override = {"gpu": held[0], "gpu_pool": held} if held else {}
-            jobs = [("j" + secrets.token_hex(12),
-                     dict(json.loads(item["frozen_input_json"]), operation_id=operation_id, **gpu_override))
-                    for item in targets]
+            jobs = []
+            for item in targets:
+                payload = dict(json.loads(item["frozen_input_json"]), operation_id=operation_id)
+                if held:
+                    preferred = payload.get("gpu")
+                    pool = [preferred, *(g for g in held if g != preferred)] if preferred in held else list(held)
+                    payload.update(gpu=pool[0], gpu_pool=pool)
+                jobs.append(("j" + secrets.token_hex(12), payload))
             # Commit the reserved IDs before crossing into the durable queue. An ambiguous
             # restart reconciles those IDs and leaves unverified items unknown.
             with self.store.transaction() as db:

@@ -194,11 +194,22 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
     try {
       if (!await ready()) return
       if (proposal.kind === 'composer') {
+        const before = proposal.before[0]?.text, after = proposal.after[0]?.text
         const current = assistantComposerPrompt()
-        if (!current) { toast(C.toast.undoBlocked, 'err'); return }
-        const result = await api.wf.undoComposer(id, current)
-        onChange(result.proposal)
-        if (!applyAssistantComposerPrompt(current, result.prompt)) toast(C.toast.undoBlocked, 'err')
+        if (!current || before == null || after == null
+          || current.workspace !== proposal.target.workspace || current.prompt !== after) {
+          toast(C.toast.undoBlocked, 'err')
+          return
+        }
+        if (!applyAssistantComposerPrompt(current, before)) { toast(C.toast.undoBlocked, 'err'); return }
+        try {
+          const result = await api.wf.undoComposer(id, current)
+          onChange(result.proposal)
+          setStatus(undefined)
+        } catch (err) {
+          applyAssistantComposerPrompt({ workspace: current.workspace, prompt: before }, after)
+          throw err
+        }
         return
       }
       const result = await api.wf.undoShots(id)
@@ -216,19 +227,32 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
     try {
       if (!await ready()) return
       if (proposal.kind === 'composer') {
+        const before = proposal.before[0]?.text, after = proposal.after[0]?.text
         const current = assistantComposerPrompt()
-        if (!current) { setStatus({ kind: 'changed' }); return }
-        const result = await api.wf.applyComposer(proposal.proposal_id, current)
-        onChange(result.proposal)
-        if (!applyAssistantComposerPrompt(current, result.prompt)) { toast(C.conflict.changed, 'err'); return }
-        const id = result.proposal.undo_id
-        toast(C.toast.applied, 'ok', id ? { label: C.toast.undo, fn: () => void undo(id) } : undefined)
+        if (!current || before == null || after == null
+          || current.workspace !== proposal.target.workspace
+          || (current.prompt !== before && !(proposal.status === 'applied' && current.prompt === after))) {
+          setStatus({ kind: 'changed' })
+          return
+        }
+        const wrote = current.prompt === before && applyAssistantComposerPrompt(current, after)
+        try {
+          const result = await api.wf.applyComposer(proposal.proposal_id, current)
+          onChange(result.proposal)
+          setStatus(undefined)
+          const id = result.proposal.undo_id
+          toast(C.toast.applied, 'ok', id ? { label: C.toast.undo, fn: () => void undo(id) } : undefined)
+        } catch (err) {
+          if (wrote) applyAssistantComposerPrompt({ workspace: current.workspace, prompt: after }, before)
+          throw err
+        }
         return
       }
       const result = await api.wf.applyProposal(proposal.proposal_id, {
         atomicity: proposal.before.length > 1 ? 'per_shot' : 'all',
       })
       if (result.proposal) onChange(result.proposal)
+      setStatus(undefined)
       onUpdate(result.run_updated, result.step_output)
       if (variant === 'panel' && result.applied.length) {
         const numbers = [...new Set(result.applied.map(item => item.n))]
@@ -248,6 +272,7 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
     setBusy('other')
     try {
       onChange(await api.wf.rejectProposal(proposal.proposal_id))
+      setStatus(undefined)
       if (variant === 'inline') onDismiss()
     } catch (err) {
       if (err instanceof ApiError && err.code === 'shot_conflict' && err.details?.status === 'expired') setStatus({ kind: 'expired' })
@@ -273,6 +298,7 @@ export function WorkflowProposal({ proposal, variant, changed, disabled, animate
         shot_ids: ids, field: target.field, instruction: target.instruction, reference_round_ids: target.reference_round_ids,
       })
       onChange(replacement)
+      setStatus(undefined)
     } catch (err) { report(err) }
     finally { setBusy(undefined) }
   }

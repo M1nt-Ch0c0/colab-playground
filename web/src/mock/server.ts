@@ -557,7 +557,7 @@ const proposals = new Map<string, Proposal>()
 const adoptedProposals = new Map<string, ShotWriteResult>()
 const mockOperations = new Map<string, Operation>()
 const masks = new Map<string, MaskRecord>()
-const composerUndo = new Map<string, string>()
+const composerUndo = new Map<string, { proposalId: string; expires: number; consumed: boolean }>()
 const shotUndo = new Map<string, { runId: string; stepId: string; edits: ShotEdit[]; consumed: boolean; expires: number; proposalId?: string }>()
 const agentUses: { name: string; at: number; latency: number; code?: AgentErrorCode; proposalId?: string }[] = []
 const mockRevision = (run: WfRun) => JSON.stringify([run.topic, run.workflow, run.status])
@@ -646,18 +646,33 @@ function mockOperationRoute(method: string, id: string | undefined, action: stri
   return agentError(404, 'not_found')
 }
 
-function mockComposerWrite(proposal: Proposal | undefined, raw: unknown, undo: boolean) {
-  if (!proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+function mockComposerWrite(proposal: Proposal | undefined, raw: unknown, undo: boolean, undoId?: string) {
   const current = body<ComposerPrompt>(raw)
-  const before = proposal.before[0].text, after = proposal.after[0].text
-  if (proposal.target.workspace !== current.workspace || (undo ? current.prompt !== after || proposal.status !== 'applied'
-    : current.prompt !== before || proposal.status !== 'pending')) return agentError(409, 'shot_conflict', { conflicts: [] })
-  if (!undo) {
-    proposal.undo_id = mockId('un_', 24)
-    composerUndo.set(proposal.undo_id, proposal.proposal_id)
+  if (undo) {
+    const record = undoId ? composerUndo.get(undoId) : undefined
+    if (!record || !proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+    if (record.consumed || record.expires <= sec()) return agentError(409, 'shot_conflict', { status: 'expired', conflicts: [] })
+    const before = proposal.before[0].text, after = proposal.after[0].text
+    if (proposal.target.workspace !== current.workspace || current.prompt !== after) {
+      return agentError(409, 'shot_conflict', { conflicts: [] })
+    }
+    record.consumed = true
+    proposal.status = 'undone'
+    return ok({ workspace: current.workspace, prompt: before, proposal: proposalView(proposal) })
   }
-  proposal.status = undo ? 'undone' : 'applied'
-  return ok({ workspace: current.workspace, prompt: undo ? before : after, proposal: proposalView(proposal) })
+  if (!proposal || proposal.kind !== 'composer') return agentError(404, 'not_found')
+  const before = proposal.before[0].text, after = proposal.after[0].text
+  if (proposal.target.workspace !== current.workspace) return agentError(409, 'shot_conflict', { conflicts: [] })
+  if (proposal.status === 'applied' && (current.prompt === before || current.prompt === after)) {
+    return ok({ workspace: current.workspace, prompt: after, proposal: proposalView(proposal) })
+  }
+  const { status } = proposalView(proposal)
+  if (status !== 'pending') return agentError(409, 'shot_conflict', { status, conflicts: [] })
+  if (current.prompt !== before) return agentError(409, 'shot_conflict', { conflicts: [] })
+  proposal.undo_id = mockId('un_', 24)
+  composerUndo.set(proposal.undo_id, { proposalId: proposal.proposal_id, expires: sec() + 1800, consumed: false })
+  proposal.status = 'applied'
+  return ok({ workspace: current.workspace, prompt: after, proposal: proposalView(proposal) })
 }
 
 function proposalView(proposal: Proposal): Proposal {
@@ -813,7 +828,7 @@ function agentRoute(method: string, route: string[], raw: unknown, q: URLSearchP
     }
   }
   if (section === 'undo' && method === 'POST') {
-    if (action === 'composer') return mockComposerWrite(proposals.get(composerUndo.get(id) ?? ''), raw, true)
+    if (action === 'composer') return mockComposerWrite(proposals.get(composerUndo.get(id)?.proposalId ?? ''), raw, true, id)
     const record = shotUndo.get(id)
     if (!record) return agentError(404, 'not_found')
     if (record.consumed || record.expires <= sec()) return agentError(409, 'shot_conflict', { status: 'expired', conflicts: [] })

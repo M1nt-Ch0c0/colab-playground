@@ -173,6 +173,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
   const [x, y] = [useMotionValue(0), useMotionValue(0)]
   const [originX, originY] = [useMotionValue(1), useMotionValue(1)]
   const moveAnimation = useRef<{ stop: () => void } | null>(null)
+  const pendingJump = useRef<Point | null>(null)
   const drag = useRef<{ start: Point; translation: Point; moved: boolean } | null>(null)
   const panel = useRef<HTMLElement>(null)
   const launcher = useRef<HTMLButtonElement>(null)
@@ -271,6 +272,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     function resize() {
       moveAnimation.current?.stop()
       moveAnimation.current = null
+      pendingJump.current = null
       drag.current = null
       x.jump(0)
       y.jump(0)
@@ -336,6 +338,14 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     }
   }
 
+  useLayoutEffect(() => {
+    const target = pendingJump.current
+    if (!target) return
+    pendingJump.current = null
+    x.jump(target.x)
+    y.jump(target.y)
+  }, [free, x, y])
+
   function movePanel(point: Point, targetDock: 'free' | Dock) {
     const element = panel.current
     if (!element) return
@@ -343,9 +353,17 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     moveAnimation.current = null
     const target = inside(element, point)
     const finish = () => {
-      x.jump(targetDock === 'free' ? target.x : 0)
-      y.jump(targetDock === 'free' ? target.y : 0)
-      setFree(targetDock === 'free')
+      const nextFree = targetDock === 'free'
+      const nextPoint = nextFree ? target : { x: 0, y: 0 }
+      const wasFree = panel.current?.dataset.dock === 'free'
+      if (nextFree === wasFree) {
+        pendingJump.current = null
+        x.jump(nextPoint.x)
+        y.jump(nextPoint.y)
+      } else {
+        pendingJump.current = nextPoint
+        setFree(nextFree)
+      }
     }
     if (reduce) { finish(); return }
     element.setAttribute('data-animating', '')
@@ -389,6 +407,7 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     if (screen === 'sheet' || event.button !== 0 || (event.target as Element).closest('button')) return
     moveAnimation.current?.stop()
     moveAnimation.current = null
+    pendingJump.current = null
     drag.current = { start: { x: event.clientX, y: event.clientY }, translation: { x: x.get(), y: y.get() }, moved: false }
     event.currentTarget.setPointerCapture(event.pointerId)
   }
@@ -490,8 +509,15 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
         void useStore.getState().loadRounds()
         void useStore.getState().refresh()
       }
-      const composerUpdated = done.composer_patch ? await applyAssistantComposerPatch(done.composer_patch) : false
-      if (done.composer_patch && !composerUpdated) toast(C.conflict.changed, 'err')
+      let composerUpdated = false
+      if (done.composer_patch) {
+        try {
+          composerUpdated = await applyAssistantComposerPatch(done.composer_patch)
+          if (!composerUpdated) toast(C.conflict.changed, 'err')
+        } catch (err) {
+          toast(errorCopy(err instanceof ApiError ? err.code : undefined).text, 'err')
+        }
+      }
       if (done.mask_editor && !useStore.getState().sheet) {
         const store = useStore.getState()
         await store.loadRounds()

@@ -186,7 +186,7 @@ useLayoutEffect(() => {              // 面板挂载后、首帧绘制前
 
 | 元素 | initial | animate | exit | transition |
 |---|---|---|---|---|
-| 面板（桌面三种停靠） | `{ opacity: 0, scale: 0.94 }` | `{ opacity: 1, scale: 1 }` | `{ opacity: 0, scale: 0.96 }` | `spring`；`style={{ originX, originY }}` |
+| 面板（桌面三种停靠） | `{ opacity: 0, scale: 0.94 }` | `{ opacity: 1, scale: 1 }` | `{ opacity: 0, scale: 0.96 }` | `{ ...spring, opacity: fade, scale: springSmall }`；`style={{ originX, originY }}` |
 | 面板（`sheet`） | `{ opacity: 0, y: 24 }` | `{ opacity: 1, y: 0 }` | `{ opacity: 0, y: 16 }` | `spring` |
 | 启动按钮 | `{ opacity: 0, scale: 0.9 }` | `{ opacity: 1, scale: 1 }` | `{ opacity: 0, scale: 0.9 }` | 入场 `{ ...springSmall, delay: 0.06 }`；退场 `quick` |
 

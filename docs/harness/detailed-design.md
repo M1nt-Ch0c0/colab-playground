@@ -112,7 +112,7 @@ stateDiagram-v2
 | 整理、预设、生成与队列（4） | `studio_library_actions`、`studio_presets`、`studio_generation`、`studio_jobs` | 收藏/软删回收站恢复（不含永久清除）、预设、独立创作台参数与审批制生成提交、队列查看/按 ID 取消/重试。 |
 | 明确排除（不进 Harness） | Colab 抢/释/OAuth/HF Token、空闲超时、服务商/代理管理、永久删除/批量空间清理 | 归属设置页与作品库运维弹层，模型不持有相关工具。 |
 
-- **模型窗口与输出预算（`copilot.py` 三处参数联动）。** 当前原型在 [copilot.py](../../draw_studio/workflows/copilot.py) 硬编码了三处数值：模型声明 `contextWindow=32768`、模型输出上限 `maxTokens=4096`、Harness 初始化 `max_tokens=2048`。多注入静态工具表和固定范例后，前两项应改为读取具体 provider/模型/部署配置（允许本机部署覆盖），第三项受前两项约束。由于 `deepseek-harness-sdk 0.2.2rc2` 仅在 `initialize` 时传入 `maxTokens`、`session_prompt()` 尚无逐轮覆盖参数，首版应为常驻会话一次性选足输出预算（部署允许时可起测 **4K–8K**），大批量操作按镜头分批，避免为切换预算重启进程而丢失插件内存。
+- **模型窗口与输出预算（`copilot.py` 三处参数联动）。** [copilot.py](../../draw_studio/workflows/copilot.py) 的 `_budgets()` 支持按 provider 属性或环境变量覆盖三处参数，默认放宽为 `contextWindow=128000`（`QP_HARNESS_CONTEXT_WINDOW`）、`maxTokens=8192`（`QP_HARNESS_MODEL_MAX_TOKENS`）与 `max_tokens=4096`（`QP_HARNESS_MAX_TOKENS`），且三者依次互相约束。由于 `deepseek-harness-sdk 0.2.2rc2` 仅在 `initialize` 时传入 `maxTokens`、`session_prompt()` 尚无逐轮覆盖参数，常驻会话在初始化时一次性选足输出预算，大批量操作按镜头分批，避免为切换预算重启进程而丢失插件内存。
 - **本地 Telemetry 与对照评测驱动拆分。** 25–30 是起测规模，不设硬上限。定版前应在同一目标 DeepSeek 部署、同一授权能力集上对照评测「两跳发现 / 77 项平铺 / ~28 项静态归并」三组（20–50 条真实导演话术），评估最终正确写回率、错误声称做不到率、选错对象或副作用率、轮数、首字延迟和 `prompt_cache_hit_tokens`。上线后依靠 `tool_telemetry` 聚合各 `tool/op` 的校验失败率、同轮失败后重试修正率与提案拒绝/撤销率：若某个 `op` 持续错选或填参困难，则将该高频意图提升为独立顶层工具。
 - **多服务商能力探测。** OpenAI 兼容、Anthropic、Gemini 的普通聊天探测不能证明具体模型能正确调用工具。用一个只读工具做启动探测并按 provider/model/能力版本缓存；模型仅支持文本时保留原有一键改写。现有测试覆盖 OpenAI 兼容本机模型，另外两种原生工具回合须在目标服务商上验证。
 
@@ -126,7 +126,7 @@ stateDiagram-v2
 | `POST …/agent/conversations/{key}/stop` | `{turn_id} → {stopped}`。重复请求及过期 ID 不会停止新一轮。 | 在操作页单独显示已提交任务及其是否仍可取消。 |
 | 工具调用结果 | 分支五个工具返回 JSON 可渲染文本。 | 成功返回 data、resource_handles、revision、operation_id。失败返回 code、retryable、可见范围内的详情。 |
 
-建议错误码为 `invalid_argument`、`out_of_scope`、`not_found`、`revision_conflict`、`approval_required`、`busy`、`upstream_unavailable` 和 `operation_unknown`。例如版本冲突对应 HTTP 409，返回冲突字段、当前版本和重新建议的入口。敏感目标不可见时统一最小错误信息。断流只表明传输中断，客户端按 operation_id 查询真实结果。
+结构化错误码统一定义在 [harness_errors.py](../../draw_studio/workflows/harness_errors.py) 与 [agentCopy.ts](../../web/src/features/workflow/agentCopy.ts) 的 18 个码中（`invalid_argument`、`not_found`、`revision_conflict`、`shot_conflict`、`busy`、`running_locked`、`draft_already_saved`、`model_unconfigured`、`model_error`、`turn_stopped`、`turn_timeout`、`plugin_unavailable`、`approval_required`、`queue_full`、`colab_unauthed`、`media_invalid`、`tool_limit_reached`、`internal_error`）。例如版本冲突对应 HTTP 409，返回冲突字段、当前版本和重新建议的入口；敏感目标不可见时统一最小错误信息；断流只表明传输中断，客户端按 `operation_id` 查询真实结果。
 
 ## 5. 引擎执行、幂等与故障恢复
 

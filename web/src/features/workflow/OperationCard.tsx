@@ -97,8 +97,12 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
     </div>}
     {(state === 'queued' || state === 'running' || state === 'partial') && <div className="op-progress">
       <div className={`bar thin${state === 'queued' ? ' indet' : ''}`} role="progressbar" aria-labelledby={titleId}
-        aria-valuemin={0} aria-valuemax={total} aria-valuenow={state === 'queued' ? undefined : done}
-        aria-valuetext={copy.progress(done, total)}><i style={{ width: `${done / total * 100}%` }} /></div>
+        aria-valuemin={state === 'queued' ? undefined : 0}
+        aria-valuemax={state === 'queued' ? undefined : total}
+        aria-valuenow={state === 'queued' ? undefined : done}
+        aria-valuetext={state === 'queued' ? copy.state.queued : copy.progress(done, total)}>
+        <i style={state === 'queued' ? undefined : { width: `${done / total * 100}%` }} />
+      </div>
       <span className="tabular">{copy.progress(done, total)}</span>
     </div>}
     <ul className="op-items">

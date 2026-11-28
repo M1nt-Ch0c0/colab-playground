@@ -60,6 +60,7 @@ SYSTEM = """你是 ColabReel 视频工作流的创作搭档。
 API_TYPES = {"openai": "openai-completions", "anthropic": "anthropic-messages", "gemini": "google-generative-ai"}
 PROXY_KEYS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy")
 DRAFT_KEY = re.compile(r"wr_[a-f0-9]{32}")
+COMPOSER_KEY = re.compile(r"cr_[a-f0-9]{32}")
 DRAFT_TTL_SECONDS = 7 * 86400
 TURN_SECONDS = 180
 STOP_SECONDS = 5
@@ -511,9 +512,10 @@ class HarnessSessions:
     def prune_drafts(self, root, saved, *, ttl=DRAFT_TTL_SECONDS):
         folder = agent_plugins.profile_home(root) / "conversations"
         cutoff = time.time() - ttl
-        for draft in folder.glob("wr_*"):
-            if DRAFT_KEY.fullmatch(draft.name) and draft.is_dir():
-                self.forget(root, draft.name, expired=cutoff, saved=saved)
+        for pattern, regex in (("wr_*", DRAFT_KEY), ("cr_*", COMPOSER_KEY)):
+            for draft in folder.glob(pattern):
+                if regex.fullmatch(draft.name) and draft.is_dir():
+                    self.forget(root, draft.name, expired=cutoff, saved=saved)
 
     def shutdown(self):
         with self.changed:
