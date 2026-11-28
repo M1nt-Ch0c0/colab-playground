@@ -196,12 +196,15 @@ jobs:
         run: |
           deadline=$((SECONDS + 300))
           while (( SECONDS < deadline )); do
-            if live_build=$(curl -fsS --max-time 8 -H 'Cache-Control: no-cache' "$APP_HEALTH_URL" |
-                jq -er 'select(.ok == true) | .build_id // empty') && [[ "$live_build" == "$BUILD_ID" ]]; then
+            live_build=$(curl -fsS --max-time 8 -H 'Cache-Control: no-cache' "$APP_HEALTH_URL" |
+              jq -er 'if .ok != true then "unhealthy"
+                      elif .build_id == null then "missing build ID"
+                      else .build_id | strings | select(test("^[0-9]+-[0-9]+$")) end') || live_build="unavailable or invalid response"
+            if [[ "$live_build" == "$BUILD_ID" ]]; then
               echo "Build $BUILD_ID is healthy at the application endpoint."
               exit 0
             fi
             sleep 5
           done
-          echo "::error::Build $BUILD_ID did not become healthy within 5 minutes. Check the Dokploy rollout and Swarm task history."
+          echo "::error::Build $BUILD_ID did not become healthy within 5 minutes. Last observed ${live_build:-empty response}. Check the Dokploy rollout and Swarm task history."
           exit 1
