@@ -55,6 +55,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    env:
+      BUILD_ID: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
 
@@ -117,6 +119,7 @@ jobs:
         with:
           context: .
           push: true
+          build-args: BUILD_ID=${{ env.BUILD_ID }}
           tags: |
             ${{ steps.meta.outputs.full_image }}
             ${{ env.IMAGE_REPO }}:latest
@@ -183,4 +186,25 @@ jobs:
 
           call_dokploy "application.update" "{\"applicationId\":\"${DOKPLOY_APP_ID}\",\"dockerImage\":\"${FULL_IMAGE}\"}"
           call_dokploy "application.deploy" "{\"applicationId\":\"${DOKPLOY_APP_ID}\"}"
-          echo "Deployed ${FULL_IMAGE} via Dokploy."
+          echo "Dokploy accepted the deployment of ${FULL_IMAGE}."
+
+      - name: Verify the published build is serving traffic
+        if: steps.check_secrets.outputs.dokploy_ready == 'true' && vars.APP_HEALTH_URL != ''
+        shell: bash
+        env:
+          APP_HEALTH_URL: ${{ vars.APP_HEALTH_URL }}
+        run: |
+          deadline=$((SECONDS + 300))
+          while (( SECONDS < deadline )); do
+            live_build=$(curl -fsS --max-time 8 -H 'Cache-Control: no-cache' "$APP_HEALTH_URL" |
+              jq -er 'if .ok != true then "unhealthy"
+                      elif .build_id == null then "missing build ID"
+                      else .build_id | strings | select(test("^[0-9]+-[0-9]+$")) end') || live_build="unavailable or invalid response"
+            if [[ "$live_build" == "$BUILD_ID" ]]; then
+              echo "Build $BUILD_ID is healthy at the application endpoint."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Build $BUILD_ID did not become healthy within 5 minutes. Last observed ${live_build:-empty response}. Check the Dokploy rollout and Swarm task history."
+          exit 1

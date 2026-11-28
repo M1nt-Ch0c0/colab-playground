@@ -48,11 +48,13 @@ Windows PowerShell 的虚拟环境激活命令是 `.venv\Scripts\Activate.ps1`�
 | Variable | `IMAGE_REPO` | 完整 Artifact Registry 镜像路径，格式为 `LOCATION-docker.pkg.dev/PROJECT/REPOSITORY/IMAGE`，省略标签 |
 | Secret | `GCP_AR_SA_KEY` | 有镜像推送权限的服务账号凭据 |
 | Variable | `DOKPLOY_URL` | 可选部署的 Dokploy HTTPS 根地址 |
-| Variable | `APP_HEALTH_URL` | 目标应用完整的 `/healthz` 地址，部署前用于等待空闲 |
+| Variable | `APP_HEALTH_URL` | 目标应用完整的 `/healthz` 地址，部署前检查空闲，部署后确认实际运行的构建 |
 | Secrets | `DOKPLOY_API_KEY`、`DOKPLOY_APP_ID` | 目标 Dokploy 应用的部署凭据和 ID |
 | Secrets | `CF_ACCESS_CLIENT_ID`、`CF_ACCESS_CLIENT_SECRET` | 可选，仅用于受 Cloudflare Access 保护的 Dokploy 入口 |
 
-配置前两项即会自动推送带版本标签和 `:latest` 的镜像。补齐部署配置后，工作流会在镜像推送成功、目标服务空闲时调用 Dokploy。Dokploy 接收请求后异步部署，流水线成功不等于新版本已在提供服务。手动触发的 `force_deploy` 会跳过空闲等待，可能打断正在运行的任务。
+配置前两项即会自动推送带版本标签和 `:latest` 的镜像。补齐部署配置后，工作流会在镜像推送成功、目标服务空闲时调用 Dokploy，再等待健康接口返回本次运行的 `build_id`。五分钟后仍读到旧构建或无法访问时，发布检查会失败。手动触发的 `force_deploy` 会跳过空闲等待，可能打断正在运行的任务。强制部署时若省略 `APP_HEALTH_URL`，工作流只能确认 Dokploy 已接受请求。
+
+在 Dokploy 的 Swarm 设置中，将副本数设为 1，更新和回滚的 `Order` 都设为 `stop-first`。进程会独占数据卷上的 SQLite 锁，需要先停止旧容器再启动新容器。切换期间服务会短暂不可用。
 
 ## 安全与访问
 

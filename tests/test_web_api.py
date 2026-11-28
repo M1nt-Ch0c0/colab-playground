@@ -110,6 +110,13 @@ class WebTests(unittest.TestCase):
         self.req("GET", "/api/rounds/" + original)
         self.req("GET", "/api/trash/" + replacement)
 
+    def test_health_identifies_the_running_build(self):
+        for configured, expected in (("", None), ("12345-2", "12345-2")):
+            with self.subTest(configured=configured), patch.dict(os.environ, {"QP_BUILD_ID": configured}):
+                health = self.req("GET", "/healthz", auth=False).json()
+                self.assertTrue(health["ok"])
+                self.assertEqual(health["build_id"], expected)
+
     def test_existing_clients_and_media_contract(self):
         preset = self.req("POST", "/api/presets", json={"mode": "image", "name": "我的预设", "model": "qwen-2.1-bf16"}).json()
         self.assertEqual(preset["custom"], [preset["preset"]])
