@@ -1,4 +1,4 @@
-import { CircleAlert, Film, ImageIcon, RotateCcw } from 'lucide-react'
+import { CircleAlert, Film, ImageIcon, RefreshCw, RotateCcw } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { api, ApiError } from '../../api/client'
@@ -12,9 +12,11 @@ const tones: Record<Operation['state'], string> = {
   awaiting_approval: 'run', queued: '', running: 'run', partial: 'warn', done: 'ok', failed: 'bad', canceled: '', unknown: '',
 }
 export const operationActive = (state: Operation['state']) => state === 'queued' || state === 'running'
+export const operationReconciling = (op: Operation) => op.state === 'unknown' || op.items.some(item => item.state === 'unknown')
 
-export function OperationCard({ operation, update, disabled, animateEntry = true }: {
+export function OperationCard({ operation, update, disabled, animateEntry = true, reconciling = true, onRefresh }: {
   operation: Operation; update: (op: Operation) => void; disabled?: boolean; animateEntry?: boolean
+  reconciling?: boolean; onRefresh?: () => void
 }) {
   const reduce = useReducedMotion()
   const { operation_id: id, state, kind, done, total, items } = operation
@@ -79,9 +81,11 @@ export function OperationCard({ operation, update, disabled, animateEntry = true
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.span className={`tag ${tones[state]}`} key={state} initial={reduce ? false : { opacity: 0, y: 3 }}
           animate={{ opacity: 1, y: 0 }} exit={reduce ? { opacity: 0 } : { opacity: 0, y: -3 }} transition={reduce ? instant : quick}>
-          {state === 'unknown' && <span className="spinner" />}{copy.state[state]}
+          {state === 'unknown' && reconciling && <span className="spinner" />}{copy.state[state]}
         </motion.span>
       </AnimatePresence>
+      {hasUnknown && !reconciling && onRefresh && <button className="iconbtn sm" aria-label={copy.refresh}
+        disabled={locked} onClick={onRefresh}><RefreshCw size={13} /></button>}
     </header>
     <p className="op-meta"><span data-user-content>{operation.model}</span>{' · '}{sizeLabel(operation.width, operation.height)}
       {operation.num_frames ? ` · ${framesLabel(operation.num_frames)}` : ''}</p>

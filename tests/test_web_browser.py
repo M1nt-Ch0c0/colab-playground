@@ -918,6 +918,111 @@ class BrowserTest(unittest.TestCase):
             self.assertEqual(legacy_saved["variables"], variables)
             self.assertEqual(legacy_saved["steps"][0]["position"], {"x": 120, "y": 240})
 
+    def test_composer_sanitization_mask_replacement_and_unknown_reconciliation(self):
+        with signed_in_browser() as (rt, driver, url):
+            src1 = rt.root / "base.png"
+            src1.write_bytes(png((64, 64), "navy"))
+            base_rid = rt.store.save(src1, "image", {"prompt": "base"})
+            src2 = rt.root / "edited.png"
+            src2.write_bytes(png((64, 64), "gold"))
+            rt.store.save(src2, "image", {
+                "prompt": "masked edit",
+                "model": "qwen-2.1-bf16",
+                "edit_source_id": base_rid,
+                "edit_mask": {"source_id": base_rid, "strokes": [{"size": 0.08, "points": [[0.2, 0.2], [0.5, 0.5]]}]},
+                "sampling_width": 768, "sampling_height": 1152,
+            })
+
+            scope = "cr_" + "c" * 32
+            stale_mask_id = "mk_" + "a" * 24
+            op = rt.operations.create(scope, "unknown-reconcile", normalize_job({"mode": "image", "prompt": "Fog", "count": 1, "seed": 9}))
+            oid = op["operation_id"]
+            with patch.object(rt.colab, "has_credentials", return_value=True), \
+                 patch.object(rt.studio, "_runner", SimpleNamespace(is_alive=lambda: True)):
+                approved = rt.operations.approve(oid)
+            jid = approved["items"][0]["job_id"]
+            with rt.studio._lock:
+                rt.studio._queue.clear()
+                rt.studio._history.clear()
+                rt.studio._save_state_locked()
+
+            seen_composers = []
+
+            async def fake_turn(editor, provider, model, prompt, revision, key, turn_id, history, *, reload_plugins=False):
+                seen_composers.append(dict(editor.composer or {}))
+                yield {"type": "started", "model": model}
+                yield {"type": "done", "message": f"收到：{prompt}", "proposals": [], "operations": [],
+                       "composer_patch": None, "mask_editor": None, "run_updated": [], "refresh_run": False,
+                       "refresh_library": False, "editor": None, "run_request": None, "base_revision": revision}
+
+            dirty_draft = {
+                "engine": "diffusers", "model": "  qwen-2.1-q5  ",
+                "ggufRepo": "  unsloth/Qwen-Image-2.1-GGUF  ", "ggufFile": "  qwen.gguf  ",
+                "idea": "i" * 750, "prompt": "Night street", "negative": "",
+                "width": 768, "height": 1152, "steps": 28, "cfg": 4.5, "seed": "-1", "count": 1,
+                "useRef": False, "chain": False,
+                "editMask": {"source_id": base_rid, "strokes": [{"size": 0.1, "points": [[0.1, 0.1], [0.2, 0.2]]}]},
+                "maskId": stale_mask_id,
+                "loras": [
+                    {"repo_id": "https://huggingface.co/alice/style/resolve/main/film.safetensors", "weight_name": "", "scale": 1.2},
+                    {"repo_id": "  bob/light  ", "weight_name": "  glow.safetensors  ", "scale": 3.5},
+                    {"repo_id": "typing-in-progress", "weight_name": "", "scale": 1},
+                    {"repo_id": "c/one", "weight_name": "1.safetensors", "scale": 0.5},
+                    {"repo_id": "d/two", "weight_name": "2.safetensors", "scale": 0.5},
+                    {"repo_id": "e/three", "weight_name": "3.safetensors", "scale": 0.5},
+                ],
+                "gpu": "A100",
+            }
+            fake_provider = SimpleNamespace(id="llm_1", kind="openai", base="https://example.invalid/v1", key="k")
+            with patch.object(rt.studio.llm, "resolve", return_value=(fake_provider, "demo")), \
+                 patch.object(workflow_api, "turn_events", side_effect=fake_turn):
+                driver.get(url)
+                driver.execute_script(
+                    "localStorage.setItem('colabreel.libopen', 'true');"
+                    "localStorage.setItem('colabreel.composerScope', JSON.stringify(arguments[0]));"
+                    "localStorage.setItem('colabreel.draft', JSON.stringify(arguments[1]));",
+                    scope, dirty_draft,
+                )
+                driver.get(url)
+                wait = WebDriverWait(driver, 12)
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+
+                # 1. Open composer assistant: 'unknown' operation renders with spinner, and dirty draft is sanitized (no 400).
+                card = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".op-card")))
+                self.assertEqual(card.get_attribute("data-state"), "unknown")
+                self.assertTrue(card.find_elements(By.CSS_SELECTOR, ".spinner"))
+                box = driver.find_element(By.CSS_SELECTOR, ".agent-compose textarea")
+                box.send_keys("帮我看看参数")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "收到：帮我看看参数"))
+                first = seen_composers[0]
+                self.assertEqual(len(first["idea"]), 600)
+                self.assertEqual(first["custom_transformer_repo"], "unsloth/Qwen-Image-2.1-GGUF")
+                self.assertEqual(first["custom_transformer_file"], "qwen.gguf")
+                self.assertEqual(len(first["loras"]), 4)
+                self.assertEqual(first["loras"][0], {"repo_id": "alice/style", "weight_name": "film.safetensors", "scale": 1.2})
+                self.assertEqual(first["loras"][1], {"repo_id": "bob/light", "weight_name": "glow.safetensors", "scale": 2.5})
+                self.assertEqual(first["mask_id"], stale_mask_id)
+
+                # 2. Reusing parameters from masked round replaces editMask without maskId -> clears stale maskId.
+                driver.find_element(By.CSS_SELECTOR, '.agent-head button[aria-label="收起"]').click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, '.tile[title="masked edit"]'))).click()
+                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='复用参数']"))).click()
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".agent-launch"))).click()
+                box = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".agent-compose textarea")))
+                box.send_keys("复用后再看")
+                driver.find_element(By.CSS_SELECTOR, ".agent-send").click()
+                wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, ".agent-log"), "收到：复用后再看"))
+                self.assertIsNone(seen_composers[1].get("mask_id"))
+                self.assertTrue(seen_composers[1]["has_image"])
+
+                # 3. Transient 'unknown' operation reconciles automatically via backoff polling while panel stays open.
+                self.assertEqual(driver.find_element(By.CSS_SELECTOR, ".op-card").get_attribute("data-state"), "unknown")
+                done_img = rt.root / "recovered-op.png"
+                done_img.write_bytes(png((64, 64), "teal"))
+                rt.store.save(done_img, "image", {"job_id": jid, "prompt": "Fog"})
+                wait.until(lambda _: driver.find_element(By.CSS_SELECTOR, ".op-card").get_attribute("data-state") == "done")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]], verbosity=2)

@@ -12,7 +12,7 @@ import { AgentPlugins } from './AgentPlugins'
 import { AGENT_COPY as C, ERROR_ACTION_LABELS, errorCopy, toolLabel, type ErrorAction, type HarnessErrorCode } from './agentCopy'
 import { ConflictBar } from './ConflictBar'
 import { WorkflowProposal } from './ProposalCard'
-import { OperationCard, operationActive } from './OperationCard'
+import { OperationCard, operationActive, operationReconciling } from './OperationCard'
 
 export interface AgentBinding {
   editor: EditorSnapshot
@@ -41,6 +41,7 @@ interface Exchange extends Omit<SavedAgentExchange, 'state'> {
 
 const chat = C.agent
 const syncedPluginRev = new Map<string, number>()
+const RECONCILE_BACKOFF = [1500, 3000, 6000, 12000] as const
 const tabs = [{ id: 'chat', label: chat.tabs.chat }, { id: 'plugins', label: chat.tabs.plugins }] as const
 type Tab = typeof tabs[number]['id']
 type Dock = 'right' | 'float' | 'sheet'
@@ -215,22 +216,38 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
     setOperations(next)
   }
 
+  const [syncStalled, setSyncStalled] = useState(false)
+  const [syncNonce, setSyncNonce] = useState(0)
   const watching = operations.some(op => operationActive(op.state))
+  const reconciling = open && !watching && operations.some(operationReconciling)
   useEffect(() => {
     if (!key) return
     let active = true
     let timer = 0
+    let reconcileAttempt = 0
+    setSyncStalled(false)
     async function poll() {
       const version = operationVersion.current
       try {
         const result = await api.wf.operations(key)
         if (active && version === operationVersion.current) rememberOperations(result.operations, true)
       } catch { /* The next poll will reload the ledger. */ }
-      if (active && operationRef.current.some(op => operationActive(op.state))) timer = window.setTimeout(poll, 1200)
+      if (!active) return
+      if (operationRef.current.some(op => operationActive(op.state))) {
+        reconcileAttempt = 0
+        setSyncStalled(false)
+        timer = window.setTimeout(poll, 1200)
+      } else if (open && operationRef.current.some(operationReconciling)) {
+        const delay = RECONCILE_BACKOFF[reconcileAttempt++]
+        if (delay !== undefined) timer = window.setTimeout(poll, delay)
+        else setSyncStalled(true)
+      } else {
+        setSyncStalled(false)
+      }
     }
     void poll()
     return () => { active = false; clearTimeout(timer) }
-  }, [key, open, watching, colabAuthed]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, open, watching, reconciling, colabAuthed, syncNonce]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open || !key) return
@@ -633,7 +650,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
                     onRegenerateComposer={() => void send(proposal.target.instruction)}
                     onDismiss={() => updateProposal(item.id, proposal.proposal_id)} />)}
                   {operation && <OperationCard key={operation.operation_id} operation={operation}
-                    update={next => rememberOperations([next])} animateEntry={!!item.fresh} disabled={locked} />}
+                    update={next => rememberOperations([next])} animateEntry={!!item.fresh} disabled={locked}
+                    reconciling={!syncStalled} onRefresh={() => setSyncNonce(n => n + 1)} />}
                   <AnimatePresence initial={false}>
                     {item.state === 'stale' && <ConflictBar key="stale" conflict={{ kind: 'stale' }} disabled={locked || busy}
                       onRegenerate={() => { amend(item.id, { state: 'done' }); void send(item.user) }}
@@ -663,7 +681,8 @@ export function WorkflowAgent({ binding, selected, selectedShot, clearSelection,
               })}
               {operations.filter(op => !operationOwners.has(op.operation_id)).slice().reverse().map(op =>
                 <div className="agent-exchange" key={op.operation_id}>
-                  <OperationCard operation={op} update={next => rememberOperations([next])} animateEntry={false} disabled={locked} />
+                  <OperationCard operation={op} update={next => rememberOperations([next])} animateEntry={false} disabled={locked}
+                    reconciling={!syncStalled} onRefresh={() => setSyncNonce(n => n + 1)} />
                 </div>)}
             </div>
             <AnimatePresence>

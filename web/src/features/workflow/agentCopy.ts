@@ -477,6 +477,7 @@ export const AGENT_COPY = {
     stop: '停止',
     retryFailed: (n: number) => `重试 ${n} 项`,
     retryItem: '重试这一项',
+    refresh: '重新同步',
     view: '查看作品',
     item: (n: number) => `第 ${n} 项`,
     moreItems: (n: number) => `还有 ${n} 项`,

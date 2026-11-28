@@ -1081,3 +1081,66 @@ class OperationTests(unittest.TestCase):
         ])
         self.assertTrue(writer.call_args.kwargs["has_last_image"])
         self.assertFalse(writer.call_args.kwargs["has_image"])
+
+    def test_edit_composer_chain_or_no_image_clears_inherited_mask_in_same_turn(self):
+        from draw_studio.workflows.creative_service import ComposerContext
+        from draw_studio.workflows.operation_service import MaskInput
+
+        rid, _ = self.image_asset("navy")
+        mask = self.ops.create_mask(MaskInput(source_id=rid, strokes=[{"points": [[.2, .4], [.3, .5]], "size": .08}]))
+        composer = {"mode": "image", "prompt": "Night street", "has_image": True, "mask_id": mask["mask_id"], "revision": "a" * 32}
+
+        # 1. edit_composer(chain=True) clears inherited mask_id for subsequent prepare/submit in same turn.
+        chain_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                                  scope=self.scope, workspace="image", composer=composer)
+        patched = chain_tools.call("studio_generation", {"op": "edit_composer", "spec": {"chain": True}})
+        self.assertIsNone(patched["composer_patch"]["changes"]["mask_id"])
+        prep = chain_tools.call("studio_generation", {"op": "prepare", "spec": {"prompt": "Next chained frame"}})
+        self.assertFalse(prep["references"]["mask"])
+        self.assertTrue(prep["parameters"]["chain"])
+
+        # 2. edit_composer(has_image=False) clears inherited mask_id for subsequent prepare/submit_image.
+        t2i_tools = EditorTools(self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+                                scope=self.scope, workspace="image", composer=composer)
+        patched2 = t2i_tools.call("studio_generation", {"op": "edit_composer", "spec": {"has_image": False}})
+        self.assertIsNone(patched2["composer_patch"]["changes"]["mask_id"])
+        prep2 = t2i_tools.call("studio_generation", {"op": "prepare", "spec": {"prompt": "Pure text image"}})
+        self.assertFalse(prep2["references"]["mask"])
+        self.assertFalse(prep2["parameters"]["has_image"])
+        op = t2i_tools.call("studio_generation", {"op": "submit_image", "idempotency_key": "clear-mask-t2i",
+                                                  "spec": {"prompt": "Pure text image"}})["operation"]
+        self.assertEqual(op["references"], [])
+
+        # 3. Reverse: edit_composer(mask_id=...) clears inherited chain=True.
+        reverse_tools = EditorTools(
+            self.runtime, {"topic": "", "workflow": {"steps": [], "name": "生图"}},
+            scope=self.scope, workspace="image",
+            composer={"mode": "image", "prompt": "Start", "chain": True, "has_image": False, "revision": "a" * 32},
+        )
+        patched3 = reverse_tools.call("studio_generation", {"op": "edit_composer", "spec": {"mask_id": mask["mask_id"]}})
+        self.assertIs(patched3["composer_patch"]["changes"]["chain"], False)
+        prep3 = reverse_tools.call("studio_generation", {"op": "prepare", "spec": {"prompt": "Masked edit"}})
+        self.assertTrue(prep3["references"]["mask"])
+        self.assertFalse(prep3["parameters"]["chain"])
+
+        # 4. ComposerContext backend sanitizer normalizes HF URLs, spaces, excess loras, and long idea.
+        ctx = ComposerContext.model_validate({
+            "mode": "image",
+            "idea": "z" * 900,
+            "custom_transformer_repo": "  unsloth/Qwen-Image-2.1-GGUF  ",
+            "custom_transformer_file": "  qwen.gguf  ",
+            "loras": [
+                {"repo_id": "https://huggingface.co/alice/style/resolve/main/film.safetensors", "weight_name": "", "scale": 1.2},
+                {"repo_id": "  bob/light  ", "weight_name": "  glow.safetensors  ", "scale": 3.5},
+                {"repo_id": "not-a-valid-repo", "weight_name": "", "scale": 1.0},
+                {"repo_id": "c/one", "weight_name": "1.safetensors", "scale": 0.5},
+                {"repo_id": "d/two", "weight_name": "2.safetensors", "scale": 0.5},
+                {"repo_id": "e/three", "weight_name": "3.safetensors", "scale": 0.5},
+            ],
+        })
+        self.assertEqual(len(ctx.idea), 600)
+        self.assertEqual(ctx.custom_transformer_repo, "unsloth/Qwen-Image-2.1-GGUF")
+        self.assertEqual(ctx.custom_transformer_file, "qwen.gguf")
+        self.assertEqual(len(ctx.loras), 4)
+        self.assertEqual((ctx.loras[0].repo_id, ctx.loras[0].weight_name), ("alice/style", "film.safetensors"))
+        self.assertEqual((ctx.loras[1].repo_id, ctx.loras[1].weight_name, ctx.loras[1].scale), ("bob/light", "glow.safetensors", 2.5))

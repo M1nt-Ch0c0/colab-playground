@@ -5,7 +5,7 @@ import type {
   ComfyConfig, ComposerContext, ComposerPatch, ComposerPrompt, Config, EditMask, GeneratePayload,
   LlmState, Lora, References, Round, SavedModelLink, Status, Storage, StudioPreset, VideoTask, WfRun, WorkflowsResponse,
 } from '../api/types'
-import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, requestId, setClockSkew } from '../lib/util'
+import { LS_KEYS, lsGet, lsSet, migrateLocalStorage, now, parseHfLink, requestId, setClockSkew } from '../lib/util'
 
 export interface ToastItem { id: number; text: string; kind: 'ok' | 'err' | ''; undo?: { label: string; fn: () => void } }
 export type Workspace = 'image' | 'video' | 'workflow'
@@ -193,7 +193,7 @@ export const useStore = create<Store>((set, get) => ({
   patchDraft: p => {
     const draft = { ...get().draft, ...p }
     if (p.useRef || p.chain) { draft.editMask = null; draft.maskId = null }
-    if (Object.hasOwn(p, 'editMask') && !p.editMask) draft.maskId = null
+    if (Object.hasOwn(p, 'editMask') && !Object.hasOwn(p, 'maskId')) draft.maskId = null
     set({ draft, draftRevision: requestId() })
     clearTimeout(saveTimer); saveTimer = window.setTimeout(() => lsSet(LS_KEYS.draft, draft), 300)
   },
@@ -323,27 +323,112 @@ export function assistantComposerScope() {
   return key
 }
 
+const HF_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+const MASK_ID_RE = /^mk_[a-f0-9]{24}$/
+const VIDEO_REF_ID_RE = /^v[a-f0-9]{32}$/
+
+function clampInt(value: number, low: number, high: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(high, Math.max(low, Math.round(value))) : fallback
+}
+
+function clampFloat(value: number, low: number, high: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(high, Math.max(low, value)) : fallback
+}
+
+function safeDecode(text: string): string {
+  try { return decodeURIComponent(text) } catch { return text }
+}
+
+function sanitizeContextLora(row: Lora, maxScale: number): Lora | null {
+  const rawRepo = row.repo_id.trim()
+  if (!rawRepo) return null
+  let repo = rawRepo.replace(/^\/+|\/+$/g, '')
+  let weight = row.weight_name.trim()
+  const hf = rawRepo.match(/^(?:https?:\/\/)?(?:www\.)?(?:huggingface\.co|hf-mirror\.com|hf\.co)\/(?:models\/)?([^/]+\/[^/]+)\/(?:blob|resolve|raw)\/[^/]+\/(.+?)(?:[?#].*)?$/i)
+  if (hf) {
+    repo = hf[1]
+    weight = weight || safeDecode(hf[2]).trim()
+  } else {
+    const parsed = parseHfLink(rawRepo)
+    if (parsed && parsed.repo !== '直链') {
+      repo = parsed.repo.trim()
+      weight = weight || parsed.file.trim()
+    } else if (rawRepo.includes(':') && !rawRepo.startsWith('/') && !/^https?:\/\//i.test(rawRepo)) {
+      const idx = rawRepo.indexOf(':')
+      const left = rawRepo.slice(0, idx).trim().replace(/^\/+|\/+$/g, '')
+      const right = rawRepo.slice(idx + 1).replace(/^:+/, '').trim()
+      if (HF_REPO_RE.test(left)) {
+        repo = left
+        weight = weight || right
+      }
+    } else {
+      const segs = repo.split('/').filter(Boolean)
+      if (segs.length >= 3 && HF_REPO_RE.test(`${segs[0]}/${segs[1]}`)) {
+        repo = `${segs[0]}/${segs[1]}`
+        weight = weight || segs.slice(2).join('/')
+      }
+    }
+  }
+  if (!HF_REPO_RE.test(repo) || repo.length > 160) return null
+  return { repo_id: repo, weight_name: weight.slice(0, 360), scale: clampFloat(row.scale, 0, maxScale, 1) }
+}
+
 export function assistantComposerContext(): ComposerContext {
-  const { draft: d, workspace, status, draftRevision } = useStore.getState()
+  const { draft: d, workspace, status, draftRevision, cfg } = useStore.getState()
   const refs = status?.references
+  const lim = cfg?.limits
   const seed = d.seed.trim() ? Number(d.seed) : -1
-  const common = { revision: draftRevision, prompt: d.prompt, idea: d.idea, negative: d.negative,
-    width: d.width, height: d.height, steps: d.steps, count: d.count, cfg: d.cfg,
+  const maxLoras = lim?.loras_max ?? 4
+  const maxScale = lim?.lora_scale_max ?? 2.5
+  const loras = d.loras
+    .map(row => sanitizeContextLora(row, maxScale))
+    .filter((row): row is Lora => row !== null)
+    .slice(0, maxLoras)
+  const common = {
+    revision: draftRevision,
+    prompt: d.prompt.slice(0, lim?.prompt_max ?? 12000),
+    idea: d.idea.slice(0, 600),
+    negative: d.negative.slice(0, lim?.negative_max ?? 1200),
+    width: clampInt(d.width, 1, 4096, EMPTY_DRAFT.width),
+    height: clampInt(d.height, 1, 4096, EMPTY_DRAFT.height),
+    steps: clampInt(d.steps, 1, 200, EMPTY_DRAFT.steps),
+    count: clampInt(d.count, 1, lim?.count_max ?? 4, 1),
+    cfg: clampFloat(d.cfg, 0, 100, EMPTY_DRAFT.cfg),
     seed: Number.isInteger(seed) && seed >= 0 && seed <= 2 ** 31 - 1 ? seed : -1,
-    loras: d.loras.filter(l => l.repo_id && l.weight_name).map(({ repo_id, weight_name, scale }) => ({ repo_id, weight_name, scale })) }
+    loras,
+  }
   if (workspace === 'video') {
     const task = d.workflow === 'ref2va' ? d.videoTask : 'images'
-    return { ...common, mode: 'video', workflow: d.workflow, num_frames: d.frames, offload_mode: d.offload,
-      video_task: task, video_reference_id: task !== 'images' ? refs?.video?.id : undefined,
+    const videoRefId = task !== 'images' && refs?.video?.id && VIDEO_REF_ID_RE.test(refs.video.id) ? refs.video.id : undefined
+    return {
+      ...common, mode: 'video', workflow: d.workflow,
+      num_frames: clampInt(d.frames, 1, 400, EMPTY_DRAFT.frames),
+      offload_mode: d.offload, video_task: task, video_reference_id: videoRefId,
       has_image: d.workflow === 'fl2va' ? d.useFirstFrame && !!refs?.first.set
         : d.workflow === 'ref2va' && (task === 'images' || task === 'motion' || d.videoUseImages),
       has_last_image: d.workflow === 'fl2va' && !!refs?.last.set,
     }
   }
-  return { ...common, mode: 'image', engine: d.engine, model: d.model, chain: d.chain,
-    has_image: d.useRef || !!d.editMask, mask_id: d.maskId,
-    comfy: d.engine === 'comfyui' ? comfyPayload(d) : undefined,
-    custom_transformer_repo: d.ggufRepo, custom_transformer_file: d.ggufFile,
+  const ggufRepo = d.ggufRepo.trim().replace(/^\/+|\/+$/g, '')
+  const comfyRaw = d.engine === 'comfyui' ? comfyPayload(d) : undefined
+  const comfy = comfyRaw ? {
+    template: comfyRaw.template.trim().slice(0, 80),
+    diffusion: comfyRaw.diffusion.slice(0, 500),
+    text_encoder: comfyRaw.text_encoder.slice(0, 500),
+    vae: comfyRaw.vae.slice(0, 500),
+    sampler: comfyRaw.sampler.trim().slice(0, 80),
+    scheduler: comfyRaw.scheduler.trim().slice(0, 80),
+    clip_type: comfyRaw.clip_type ? comfyRaw.clip_type.trim().slice(0, 80) : undefined,
+    denoise: typeof comfyRaw.denoise === 'number' && Number.isFinite(comfyRaw.denoise)
+      && comfyRaw.denoise >= 0.05 && comfyRaw.denoise <= 1 ? comfyRaw.denoise : undefined,
+  } : undefined
+  return {
+    ...common, mode: 'image', engine: d.engine, model: d.model.trim().slice(0, 160), chain: d.chain,
+    has_image: d.useRef || !!d.editMask,
+    mask_id: d.maskId && MASK_ID_RE.test(d.maskId) ? d.maskId : null,
+    comfy,
+    custom_transformer_repo: HF_REPO_RE.test(ggufRepo) && ggufRepo.length <= 160 ? ggufRepo : '',
+    custom_transformer_file: d.ggufFile.trim().slice(0, 200),
   }
 }
 

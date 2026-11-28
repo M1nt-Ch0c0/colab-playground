@@ -4,12 +4,12 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, model_validator
 
 from .. import media
 from ..errors import StateConflict
 from ..generation.catalog import COMFY_BUILTIN_PRESETS, LIMITS, STUDIO_BUILTIN_PRESETS
-from ..generation.parameters import normalize_job, parse_model_link
+from ..generation.parameters import normalize_job, normalize_loras, parse_model_link
 from .harness_errors import HarnessError
 from .operation_service import MaskId, MaskInput, round_media
 from .shot_service import RoundId
@@ -80,8 +80,48 @@ VIDEO_FIELDS = {"workflow", "video_task", "num_frames", "offload_mode", "has_las
 REFERENCE_FIELDS = {"reference_round_ids", "last_frame_round_id", "video_round_id", "video_reference_id", "has_last_image"}
 
 
+_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
 class ComposerContext(GenerationSpec):
     revision: Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_draft(cls, data):
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        if isinstance(out.get("idea"), str):
+            out["idea"] = out["idea"][:600]
+        if isinstance(out.get("prompt"), str):
+            out["prompt"] = out["prompt"][:LIMITS["prompt_max"]]
+        if isinstance(out.get("negative"), str):
+            out["negative"] = out["negative"][:LIMITS["negative_max"]]
+        if isinstance(out.get("model"), str):
+            out["model"] = out["model"].strip()[:160]
+        if isinstance(out.get("custom_transformer_repo"), str):
+            repo = out["custom_transformer_repo"].strip().strip("/")
+            out["custom_transformer_repo"] = repo if _REPO_RE.fullmatch(repo) and len(repo) <= 160 else ""
+        if isinstance(out.get("custom_transformer_file"), str):
+            out["custom_transformer_file"] = out["custom_transformer_file"].strip()[:200]
+        if isinstance(out.get("loras"), list):
+            cleaned = []
+            for item in out["loras"]:
+                if len(cleaned) >= LIMITS["loras_max"]:
+                    break
+                try:
+                    rows = normalize_loras([item])
+                except ValueError:
+                    continue
+                if rows and len(rows[0]["repo_id"]) <= 160:
+                    cleaned.append({
+                        "repo_id": rows[0]["repo_id"],
+                        "weight_name": rows[0]["weight_name"][:360],
+                        "scale": float(rows[0]["scale"]),
+                    })
+            out["loras"] = cleaned
+        return out
 
 
 class ComposerPatch(BaseModel):
@@ -296,15 +336,29 @@ def generation(editor, args):
             raise HarnessError("invalid_argument")
         if mask_id := changes.get("mask_id"):
             service.get_mask(mask_id)
+        prev_changes = (editor.composer_patch or {}).get("changes") or {}
+        if mode == "image" and "mask_id" not in changes and (changes.get("chain") is True or changes.get("has_image") is False):
+            if prev_changes.get("mask_id") or ("mask_id" not in prev_changes and base.get("mask_id")):
+                clear_mask = True
+        clear_chain = (
+            mode == "image" and bool(changes.get("mask_id")) and "chain" not in changes
+            and (prev_changes.get("chain") is True or ("chain" not in prev_changes and base.get("chain") is True))
+        )
         # Reuse the generation validator for supported enums/models. Preserve empty draft prompts.
-        view = merge_spec(base, (editor.composer_patch or {}).get("changes"), changes)
+        view = merge_spec(base, prev_changes, changes)
         if clear_mask:
             view.pop("mask_id", None)
+        if clear_chain:
+            view["chain"] = False
         normalized = _normalize(view | {"mode": mode, "prompt": view.get("prompt") or "Draft"}, transient=True)
         for key in ("width", "height", "steps", "cfg", "num_frames"):
             if key in changes and key in normalized:
                 changes[key] = normalized[key]
-        emitted = {**changes, **({"mask_id": None} if clear_mask else {})}
+        emitted = {
+            **changes,
+            **({"mask_id": None} if clear_mask else {}),
+            **({"chain": False} if clear_chain else {}),
+        }
         patch = {"workspace": mode, "base_revision": context.get("revision"), "changes": emitted}
         if editor.composer_patch:
             patch["changes"] = merge_spec(editor.composer_patch["changes"], emitted)
@@ -315,12 +369,14 @@ def generation(editor, args):
     draft = merge_spec(base, active) if editor.workspace == mode else {}
     raw = merge_spec(draft, changes, {"mode": mode})
     if (clear_mask or ("mask_id" not in changes and (
-            active.get("mask_id") is None and "mask_id" in active
+            ("mask_id" in active and active["mask_id"] is None)
             or changes.get("chain") is True
             or "reference_round_ids" in changes
-            or changes.get("has_image") is False))):
+            or changes.get("has_image") is False
+            or (not active.get("mask_id") and (active.get("chain") is True or active.get("has_image") is False))))):
         raw.pop("mask_id", None)
-    if "chain" not in changes and (changes.get("mask_id") or "reference_round_ids" in changes):
+    if "chain" not in changes and (changes.get("mask_id") or "reference_round_ids" in changes
+                                   or (active.get("mask_id") and active.get("chain") is not True)):
         raw.pop("chain", None)
     if "video_round_id" in changes and "video_reference_id" not in changes:
         raw.pop("video_reference_id", None)
