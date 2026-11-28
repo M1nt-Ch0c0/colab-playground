@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -14,6 +15,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
@@ -25,7 +27,7 @@ from app import create_app
 from draw_studio.llm import Providers
 from draw_studio.proxy import ProxyProfiles
 from draw_studio.workflows.engine import WorkflowEngine
-from http_fixture import gateway, png, serving
+from http_fixture import gateway, mp4, png, serving
 
 
 class WebTests(unittest.TestCase):
@@ -148,6 +150,221 @@ class WebTests(unittest.TestCase):
         self.req("GET", "/api/proxy")
         self.req("POST", "/api/settings", json={"idle_minutes": 0})
         self.assertEqual(self.req("GET", "/api/status").json()["idle_minutes"], 0)
+
+    def test_video_reference_validation_and_replacement(self):
+        api = "/api/video-reference"
+        raw = mp4(self.root / "silent.mp4").read_bytes()
+        clip = self.req("POST", api, data=raw).json()["references"]["video"]
+        self.assertEqual((clip["duration_s"], clip["source"]), (2, "upload"))
+        path = api + "?id=" + clip["id"]
+        self.assertEqual(self.req("GET", path, headers={"Range": "bytes=0-15"}, expected=206).content, raw[:16])
+        self.req("POST", api, data=png(), expected=400)
+        for seconds in (1, 16):
+            self.req("POST", api, data=mp4(self.root / "invalid.mp4", seconds).read_bytes(), expected=400)
+        self.assertEqual(self.req("GET", path).content, raw)
+        replacement = self.req("POST", api, data=raw).json()["references"]["video"]
+        self.req("DELETE", path, expected=409)
+        self.req("GET", path, expected=404)
+        self.assertIsNone(self.req("DELETE", api + "?id=" + replacement["id"]).json()["references"]["video"])
+
+    def test_import_trim_mute_and_extract_displayed_frames(self):
+        route = "/api/rounds"
+        src = mp4(self.root / "source.mp4", 3, audio=True)
+        rid = self.req("POST", route + "/import?kind=video&name=blocking.mp4", data=src.read_bytes()).json()["id"]
+        base = f"{route}/{rid}"
+        record = self.req("GET", base + "/meta").json()
+        self.assertEqual((record["prompt"], record["width"], record["height"], record["media_duration_s"]), ("blocking.mp4", 64, 48, 3))
+        self.assertNotIn("duration_s", record)
+        raw = subprocess.check_output(["ffmpeg", "-loglevel", "error", "-i", str(src), "-an", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        size = 64 * 48 * 3
+        for position, t, index in [("first", 0, 0), ("time", 1.228, 36), ("last", 0, 89), ("time", 3, 89)]:
+            result = self.req("POST", base + "/frame", json={"position": position, "time_s": t}).json()["id"]
+            with Image.open(io.BytesIO(self.req("GET", f"{route}/{result}").content)) as frame:
+                self.assertEqual(frame.convert("RGB").tobytes(), raw[size*index:size*(index+1)])
+            meta = self.req("GET", f"{route}/{result}/meta").json()
+            self.assertEqual((meta["kind"], meta["source_rounds"], meta["has_thumb"]), ("image", [rid], True))
+        for mute in [False, True]:
+            result = self.req("POST", base + "/clip", json={"start_s": .5, "end_s": 2.5, "mute": mute}).json()["id"]
+            meta = self.req("GET", f"{route}/{result}/meta").json()
+            self.assertEqual((meta["media_duration_s"], meta["source_rounds"], meta["muted"]), (2, [rid], mute))
+            found = self.s.store.media_path(result)[1]
+            streams = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(found)]).decode().splitlines()
+            self.assertEqual(streams, ["h264"] if mute else ["h264", "aac"])
+            self.req("POST", f"{route}/{result}/use", json={"slot": "video"})
+        short = self.req("POST", base + "/clip", json={"start_s": 2.7, "end_s": 3}).json()["id"]
+        self.req("POST", f"{route}/{short}/use", json={"slot": "video"}, expected=400)
+        self.req("POST", base + "/clip", json={"start_s": 2, "end_s": 1}, expected=400)
+        self.req("POST", base + "/frame", json={"time_s": 9, "position": "time"}, expected=400)
+        self.req("POST", route + "/import?kind=image", data=b"bad", expected=400)
+        self.req("POST", route + "/import?kind=video", data=png(), expected=400)
+
+    def test_crop_character_sheet_preserves_pixels_and_alpha(self):
+        picture = Image.new("RGBA", (60, 40), (10, 20, 60, 0))
+        picture.paste((130, 30, 90, 180), (19, 8, 48, 32))
+        buf = io.BytesIO()
+        picture.save(buf, "PNG")
+        rid = self.req("POST", "/api/rounds/import?kind=image", data=buf.getvalue()).json()["id"]
+        path = f"/api/rounds/{rid}/crop"
+        body = {"x": 17, "y": 5, "width": 18, "height": 24}
+        crop = self.req("POST", path, json=body).json()["id"]
+        meta = self.req("GET", f"/api/rounds/{crop}/meta").json()
+        self.assertEqual((meta["media_operation"], meta["source_rounds"], meta["meta"]["source_crop"]), ("crop", [rid], body))
+        self.assertEqual((meta["width"], meta["height"]), (18, 24))
+        with Image.open(io.BytesIO(self.req("GET", f"/api/rounds/{crop}").content)) as actual:
+            self.assertEqual(actual.mode, "RGBA")
+            self.assertEqual(actual.tobytes(), picture.crop((17, 5, 35, 29)).tobytes())
+        with Image.open(io.BytesIO(self.req("GET", f"/api/rounds/{rid}").content)) as original:
+            self.assertEqual(original.tobytes(), picture.tobytes())
+        self.req("POST", path, json={**body, "x": 50}, expected=400)
+        self.req("POST", path, json={**body, "width": 0}, expected=400)
+        self.assertEqual(self.s.store.list()["total"], 2)
+
+    def test_mask_and_retries_use_original_pixels_after_restart(self):
+        route = "/api/rounds"
+        src = png((321, 157), "navy")
+        rid = self.req("POST", route + "/import?kind=image&name=original.png", data=src).json()["id"]
+        self.req("POST", "/api/reference", data=png(color="green"))
+        mask = {"source_id": rid, "strokes": [{"size": .001, "points": [[.5, .5]]},
+                                              {"size": 2 / 157, "points": [[0, 0]]}]}
+        body = {"prompt": "red {dot|spot}", "seed": 0, "edit_mask": mask}
+        studio = self.s.studio
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
+            jid = self.req("POST", "/api/generate", json=body, expected=202).json()["jobs"][0]["id"]
+            self.req("POST", "/api/generate", json={**body, "edit_mask": {**mask, "strokes": []}}, expected=400)
+            self.req("POST", "/api/generate", json={**body, "reference_round_ids": [rid]}, expected=400)
+        self.req("DELETE", route + "/" + rid)
+        self.req("POST", "/api/reference", data=png(color="yellow"))
+        with patch.object(studio, "_acquire_session", side_effect=RuntimeError("temporary failure")):
+            studio._run_loop()
+        self.assertTrue(studio.find_job(jid)["retryable"])
+        studio.recover()
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
+            api = f"/api/queue/{jid}/retry"
+            with ThreadPoolExecutor(2) as pool:
+                retries = list(pool.map(lambda _: self.req("POST", api, json={}, expected=202).json()["id"], range(2)))
+            self.assertEqual(retries[0], retries[1])
+            self.assertEqual(len(studio.snapshot()["queue"]), 1)
+            self.req("POST", "/api/generate", json=body, expected=400)
+        with patch.object(self.s.colab, "has_credentials", return_value=False):
+            self.assertEqual(studio.recover()["queued"], 1)
+        uploads = {}
+        session = SimpleNamespace(accelerator="A100", machine_shape="test")
+        with patch.object(studio, "_acquire_session", return_value=session), \
+             patch.object(self.s.colab, "upload_file", side_effect=lambda s, p, dest: uploads.update({dest: p.read_bytes()})), \
+             patch.object(self.s.colab, "execute_code"), \
+             patch.object(self.s.colab, "download_file", side_effect=lambda s, r, p: p.write_bytes(png((700, 700), "red"))):
+            studio._run_loop()
+        self.assertEqual(studio.find_job(retries[0])["status"], "done")
+        self.assertEqual(json.loads(uploads["content/job.json"])["seed"], 0)
+        with Image.open(io.BytesIO(uploads["content/reference.bin"])) as crop:
+            self.assertLess(crop.width, 321)
+            self.assertEqual(crop.getpixel((0, 0)), (0, 0, 128))
+        out = self.s.store.latest("image")
+        self.assertEqual((out["width"], out["height"], out["source_rounds"], out["edit_source_id"]), (321, 157, [rid], rid))
+        self.assertEqual(self.s.store.get(out["id"])["meta"]["edit_mask"], mask)
+        expected = Image.open(io.BytesIO(src))
+        expected.putpixel((160, 78), (255, 0, 0))
+        expected.putpixel((0, 0), (255, 0, 0))
+        with Image.open(self.s.store.media_path(out["id"])[1]) as actual:
+            self.assertEqual(actual.tobytes(), expected.tobytes())
+        self.assertFalse(list(studio.queue_refs_dir.iterdir()))
+
+    def test_gallery_references_and_tail_frame_survive_a_failed_job(self):
+        studio = self.s.studio
+        images = [self.req("POST", "/api/rounds/import?kind=image", data=png(color=c)).json()["id"] for c in ("red", "blue")]
+        originals = [self.s.store.media_path(rid)[1].read_bytes() for rid in images]
+        video = mp4(self.root / "blocking.mp4").read_bytes()
+        rid = self.req("POST", "/api/rounds/import?kind=video", data=video).json()["id"]
+        base = {"mode": "video", "prompt": "follow", "seed": 17}
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
+            def submit(**fields):
+                return self.req("POST", "/api/generate", json={**base, **fields}, expected=202).json()["jobs"][0]["id"]
+            motion = submit(workflow="ref2va", video_round_id=rid, video_task="motion", reference_round_ids=images[::-1])
+            frame = submit(workflow="fl2va", reference_round_ids=[images[0]], last_frame_round_id=images[1])
+            self.req("POST", "/api/generate", json={**base, "workflow": "ref2va", "video_round_id": images[0]}, expected=400)
+        with patch.object(studio, "_acquire_session", side_effect=RuntimeError("fixture offline")):
+            studio._run_loop()
+        self.req("POST", "/api/rounds/delete", json={"ids": [rid, *images], "permanent": True})
+        studio.recover()
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
+            def retry(jid):
+                return self.req("POST", f"/api/queue/{jid}/retry", json={}, expected=202).json()["id"]
+            m, f = retry(motion), retry(frame)
+            self.assertEqual(studio._ref_snapshot_path(m, "video").read_bytes(), video)
+            self.assertEqual(studio._ref_snapshot_path(m, "first").read_bytes(), originals[1])
+            self.assertEqual(studio._ref_snapshot_path(m, "ref_1").read_bytes(), originals[0])
+            self.assertEqual(studio._ref_snapshot_path(f, "last").read_bytes(), originals[1])
+        # Losing an explicitly requested tail frame must never turn the job into a first-frame-only render.
+        studio._ref_snapshot_path(f, "last").unlink()
+        with patch.object(self.s.colab, "has_credentials", return_value=False):
+            self.assertEqual(studio.recover()["queued"], 1)
+        self.assertEqual(studio.find_job(f)["status"], "error")
+        self.assertFalse(studio.find_job(f)["retryable"])
+        self.assertEqual(studio.refs_report()["items"], [])
+
+    def test_last_frame_only_rewrite_and_generation(self):
+        raw = png(color="purple")
+        rid = self.req("POST", "/api/rounds/import?kind=image", data=raw).json()["id"]
+        self.req("POST", f"/api/rounds/{rid}/use", json={"slot": "last"})
+        self.req("POST", "/api/reference", data=png(color="green"))
+        with gateway() as (url, key, calls):
+            provider = self.s.studio.llm.save(kind="openai", name="fixture", base_url_value=url+"/open/v1",
+                                              api_key=key, models=["open-model"])
+            self.s.studio.llm.active(provider["providers"][0]["id"], "open-model")
+            rewrite = self.req("POST", "/api/prompt", json={"text": "arrive at the gate", "mode": "video",
+                               "workflow": "fl2va", "has_image": False, "has_last_image": True}).json()
+            self.assertIn("L2VA", rewrite["format"])
+            self.assertEqual(rewrite["images_used"], 1)
+            self.assertIn("Last Frame at end", str(calls[-1][2]))
+            self.assertNotIn("(First Frame at 0.00s)", str(calls[-1][2]))
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(self.s.studio, "_run_loop"):
+            data = {"mode": "video", "workflow": "fl2va", "last_frame_round_id": rid, "prompt": "approach"}
+            job = self.req("POST", "/api/generate", json=data, expected=202).json()["jobs"][0]
+            payload = self.s.studio._queue[0]["payload"]
+            self.assertFalse(payload["has_image"])
+            self.assertTrue(payload["has_last_image"])
+            self.assertTrue(self.s.studio._ref_snapshot_path(job["id"], "last").is_file())
+            self.assertFalse(self.s.studio._ref_snapshot_path(job["id"], "first").exists())
+
+    def test_video_edits_keep_the_submitted_clip_across_recovery(self):
+        source = mp4(self.root / "previous.mp4", 3, audio=True)
+        rid = self.s.store.save(source, "video", {"prompt": "previous", "duration_s": 240})
+        studio = self.s.studio
+        clip = self.req("POST", f"/api/rounds/{rid}/use", json={"slot": "video"}).json()["references"]["video"]
+        self.assertEqual((clip["source"], clip["duration_s"]), (f"round:{rid}", 3))
+        body = dict(mode="video", workflow="ref2va", video_reference_id=clip["id"], prompt="follow the turn")
+        with patch.object(self.s.colab, "has_credentials", return_value=True), patch.object(studio, "_run_loop"):
+            self.req("POST", "/api/generate", json={**body, "workflow": "fl2va"}, expected=400)
+            self.req("POST", "/api/generate", json={**body, "video_task": "continue", "num_frames": 360}, expected=202)
+            self.req("POST", "/api/generate", json={**body, "video_task": "motion"}, expected=400)
+            self.req("POST", "/api/reference", data=png())
+            self.req("POST", "/api/generate", json={**body, "video_task": "motion"}, expected=202)
+            self.req("POST", "/api/video-reference", data=mp4(self.root / "next.mp4").read_bytes())
+            self.req("POST", "/api/generate", json=body, expected=409)
+        self.req("DELETE", "/api/rounds/" + rid)
+        self.req("DELETE", "/api/reference")
+        with patch.object(self.s.colab, "has_credentials", return_value=False):
+            self.assertEqual(studio.recover()["queued"], 2)
+        uploads, configs = [], []
+        def capture(session, path, remote):
+            if remote == "content/job.json":
+                configs.append(json.loads(path.read_text()))
+            elif remote == "content/reference_video.mp4":
+                uploads.append(path.read_bytes())
+        session = SimpleNamespace(accelerator="A100", machine_shape="HIGH_RAM")
+        with patch.object(studio, "_acquire_session", return_value=session), \
+             patch.object(self.s.colab, "upload_file", side_effect=capture), patch.object(self.s.colab, "execute_code"), \
+             patch.object(self.s.colab, "download_file", side_effect=lambda s, r, p: p.write_bytes(source.read_bytes()) if r.endswith(".mp4") else None):
+            studio._run_loop()
+        self.assertEqual(uploads, [source.read_bytes()] * 2)
+        self.assertEqual([c["ref_count"] for c in configs], [0, 1])
+        self.assertEqual(configs[0]["num_frames"], 345)
+        self.assertIn("[video continuation]", configs[0]["prompt"])
+        self.assertIn("<Picture 1>", configs[1]["prompt"])
+        outputs = self.s.store.list(kind="video")["rounds"]
+        self.assertEqual([r["video_task"] for r in outputs], ["motion", "continue"])
+        self.assertTrue(all(r["chain_from"] == rid for r in outputs))
+        self.assertFalse(list(studio.queue_refs_dir.iterdir()))
 
     def test_proxy_crud_and_effective_network(self):
         base = "/api/proxy"

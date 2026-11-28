@@ -119,8 +119,10 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
 .ref-tile:hover .ref-x, .ref-x:focus-visible { opacity: 1; }
 .ref-add { aspect-ratio: 1; border-radius: 13px; border: 1.5px dashed var(--line-strong); background: transparent; color: var(--muted); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; padding: 6px; text-align: center; }
 .ref-add:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.last-frame { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.last-frame { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
 .last-frame .ref-tile { width: 72px; }
+@media (hover: none) { .ref-tile .ref-x { opacity: 1; } }
+.ref-video { display: block; width: 100%; max-height: 180px; border-radius: 12px; background: var(--shade-2); }
 
 .gpu-list, .px-list, .grab-list { display: flex; flex-direction: column; gap: 6px; }
 .gpu-item { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--shade); border-radius: 13px; padding: 9px 11px; text-align: left; width: 100%; }
@@ -318,15 +320,40 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
 .mark.lg { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; color: #fff; background: linear-gradient(160deg, var(--accent-2), var(--accent) 70%); box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 10px 24px -10px var(--accent); }
 
 /* ── 响应式 ── */
+.edit-surface { display: grid; place-items: center; background: var(--shade); border-radius: var(--r); overflow: hidden; }
+.mask-canvas { display: block; height: auto; max-height: 46dvh; touch-action: none; cursor: crosshair; color: var(--accent); }
+.crop-canvas { position: relative; overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
+.crop-canvas img { display: block; width: 100%; height: auto; pointer-events: none; }
+.crop-selection { position: absolute; cursor: move; border: 1px solid white; box-shadow: 0 0 0 100vmax rgb(0 0 0 / 60%); }
+.crop-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.crop-fields input { width: 100%; }
+.crop-controls .chip, .crop-controls .mini-link { min-height: 36px; }
+.crop-controls + .help { color: var(--fg-soft); }
+.edit-toolbar, .brush-width, .mask-source { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.edit-toolbar { justify-content: space-between; }
+.lib-import-row { display: flex; align-items: center; gap: 6px; }
+.lib-import-row .lib-search { flex: 1; min-width: 0; }
+.lib-head .dock-close { display: none; }
+.brush-width input { accent-color: var(--accent); max-width: 28vw; }
+.brush-width output { min-width: 3ch; font-variant-numeric: tabular-nums; }
+.mask-source img { width: 66px; height: 66px; border-radius: 9px; object-fit: contain; background: var(--shade); }
+.mask-source .row { margin-top: 6px; }
+.clip-preview { display: block; width: 100%; max-height: 44dvh; background: #171717; border-radius: var(--r); }
+.clip-times { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.clip-times input { width: 100%; }
+.failed-detail { flex: 1; min-width: 0; display: grid; overflow-wrap: anywhere; }
+
 @media (max-width: 1180px) {
+  .lib-head .dock-close { display: inline-flex; }
   .workspace, .workspace.lib-closed { grid-template-columns: 340px minmax(0, 1fr); }
   /* 窄屏下作品库浮在舞台上方，而不是挤占一栏 */
   .lib-dock { position: fixed; z-index: 30; top: calc(var(--top) + 18px + env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100vw - 32px)); box-shadow: var(--shadow-lg); }
 }
 @media (max-width: 760px) {
   .workspace, .workspace.lib-closed { grid-template-columns: 1fr; overflow-y: auto; }
+  .workspace:not(.is-wf) { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; }
   .composer { max-height: none; }
-  .composer-scroll { overflow: visible; padding-bottom: 12px; }
+  .composer-scroll { flex: none; overflow: visible; padding-bottom: 12px; }
   .go-bar { position: sticky; bottom: 8px; }
   .stage-frame { min-height: 300px; }
   .wf { grid-template-columns: 1fr; }
@@ -336,6 +363,9 @@ details.neg textarea, details.fold > * + * { margin-top: 8px; }
   .topbar .brand small { display: none; }
 }
 @media (max-width: 520px) {
+  .crop-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .crop-controls .chip, .crop-controls .mini-link { min-height: 44px; min-width: 44px; }
+  .topbar { overflow-x: auto; }
   .seg button { padding: 0 9px; }
   .ab-actions .btn span { display: none; }
 }

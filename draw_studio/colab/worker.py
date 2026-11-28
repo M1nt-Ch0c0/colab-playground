@@ -859,8 +859,9 @@ def _load_ref_paths(job: dict) -> list[Path]:
     if ref_count > 0:
         for idx in range(ref_count):
             p = Path(f"/content/reference_{idx}.bin")
-            if p.exists():
-                paths.append(p)
+            if not p.is_file():
+                raise RuntimeError(f"缺少任务指定的参考图 #{idx + 1}，请重新提交素材")
+            paths.append(p)
     if not paths:
         legacy = Path("/content/reference.bin")
         if legacy.exists():
@@ -918,16 +919,18 @@ def _run_image_job(job: dict, hf_token: str | None) -> None:
                 kwargs["guidance_scale"] = cfg
             if negative.strip() and ("negative_prompt" in params):
                 kwargs["negative_prompt"] = negative
-            if refs and ("image" in params or has_var_kw):
+            if refs and "image" not in params and not has_var_kw:
+                raise RuntimeError("所选 Diffusers 管线没有 image 输入，请选择支持改图的模型")
+            if refs:
                 kwargs["image"] = refs if len(refs) > 1 else refs[0]
 
         try:
             return pipe(**kwargs).images[0]
-        except TypeError:
+        except TypeError as exc:
+            if not is_qwen or "unexpected keyword" not in str(exc):
+                raise
             kwargs.pop("output_resolution", None)
             kwargs.pop("use_kv_cache", None)
-            if not is_qwen and isinstance(kwargs.get("image"), list) and refs:
-                kwargs["image"] = refs[0]
             return pipe(**kwargs).images[0]
 
     torch.cuda.reset_peak_memory_stats()
@@ -1010,21 +1013,22 @@ def _disable_hf_xet() -> None:
             pass
 
 
-def _missing_minimax_components(pipe: Any) -> list[str]:
+def _missing_minimax_components(pipe: Any, workflow: str) -> list[str]:
     """Return core MiniMax-H3 component names that failed to load (remained None).
 
     diffusers ModularPipeline.load_components() catches per-component ValueError (e.g. HF 429)
     and continues without raising, leaving the failed component as None.
     """
-    core = ("text_encoder", "transformer", "vae", "audio_vae", "scheduler", "tokenizer", "processor")
     comps = getattr(pipe, "components", None)
+    denoiser = "transformer_ref" if workflow == "ref2va" and "transformer_ref" in (comps or {}) else "transformer"
+    core = ("text_encoder", denoiser, "vae", "audio_vae", "scheduler", "audio_scheduler", "tokenizer", "processor")
     missing: list[str] = []
     if isinstance(comps, dict):
         for name in core:
             if name in comps and comps[name] is None:
                 missing.append(name)
     else:
-        for name in ("text_encoder", "transformer", "vae", "audio_vae", "scheduler"):
+        for name in core:
             if hasattr(pipe, name) and getattr(pipe, name) is None:
                 missing.append(name)
     return missing
@@ -1043,7 +1047,7 @@ def _load_minimax_h3(workflow: str, offload_mode: str, hf_token: str | None) -> 
 
     cache_id = f"video:minimax-h3:{workflow}:req={req_mode}"
     if _CACHE["key"] == cache_id and _CACHE["pipe"] is not None:
-        cached_missing = _missing_minimax_components(_CACHE["pipe"])
+        cached_missing = _missing_minimax_components(_CACHE["pipe"], workflow)
         if not cached_missing:
             plan = _CACHE.get("plan") or {"mode": "component", "placements": {}}
             print(f"命中常驻 MiniMax-H3（workflow={workflow}，offload={plan.get('mode')}）", flush=True)
@@ -1062,20 +1066,20 @@ def _load_minimax_h3(workflow: str, offload_mode: str, hf_token: str | None) -> 
     try:
         pipe = ModularPipeline.from_pretrained(
             "MiniMaxAI/MiniMax-H3",
-            token=hf_token or None,
-            components_manager=manager,
-        )
-        pipe.load_components(workflow=workflow, dtype=torch.bfloat16)
-    except TypeError:
-        pipe = ModularPipeline.from_pretrained(
-            "MiniMaxAI/MiniMax-H3",
             workflow=workflow,
             token=hf_token or None,
             components_manager=manager,
         )
         pipe.load_components(dtype=torch.bfloat16)
+    except TypeError:
+        pipe = ModularPipeline.from_pretrained(
+            "MiniMaxAI/MiniMax-H3",
+            token=hf_token or None,
+            components_manager=manager,
+        )
+        pipe.load_components(workflow=workflow, dtype=torch.bfloat16)
 
-    missing = _missing_minimax_components(pipe)
+    missing = _missing_minimax_components(pipe, workflow)
     if missing:
         # Disable Xet CAS CDN (prone to 429 on shared Colab GCP IPs) and retry missing components via standard HTTP
         _disable_hf_xet()
@@ -1092,7 +1096,7 @@ def _load_minimax_h3(workflow: str, offload_mode: str, hf_token: str | None) -> 
             elif "workflow" in load_sig:
                 retry_kwargs["workflow"] = workflow
             pipe.load_components(**retry_kwargs)
-            missing = _missing_minimax_components(pipe)
+            missing = _missing_minimax_components(pipe, workflow)
             if not missing:
                 print("MiniMax-H3 缺失组件补拉成功", flush=True)
                 break
@@ -1178,6 +1182,69 @@ def _save_video_with_audio(
         os.replace(silent_mp4, out_path)
 
 
+def _h3_video_reference(path: Path, continuation_frames: int, audio_rate: int):
+    import numpy as np
+    from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3VideoReference
+
+    clip = MiniMaxH3VideoReference.from_file(path)
+    if clip.audio is not None and (clip.sample_rate != audio_rate or clip.audio.shape[0] > 2):
+        import av
+        import torch
+
+        # The audio VAE accepts mono or stereo. Use the stream layout for a surround downmix.
+        with av.open(str(path)) as container:
+            layout = container.streams.audio[0].layout
+        frame = av.AudioFrame.from_ndarray(clip.audio.numpy(), format="fltp", layout=layout)
+        frame.sample_rate = clip.sample_rate
+        target_layout = "mono" if clip.audio.shape[0] == 1 else "stereo"
+        resampler = av.AudioResampler(format="fltp", layout=target_layout, rate=audio_rate)
+        blocks = resampler.resample(frame) + resampler.resample(None)
+        clip.audio = torch.cat([torch.from_numpy(block.to_ndarray()) for block in blocks], dim=-1) if blocks else None
+        clip.sample_rate = audio_rate if blocks else None
+
+    if continuation_frames:
+        aligned = continuation_frames + (5 - continuation_frames) % 17
+        # Use the same frame boundaries as Diffusers, even for fractional or low source rates.
+        slots = np.floor(np.arange(len(clip.frames) + 1) * (24 / clip.fps) + 0.5).astype(np.int64)
+        start = int(slots[-1]) - aligned
+        if start > 0:
+            indices = np.searchsorted(slots, np.arange(start, start + aligned), side="right") - 1
+            clip.frames = clip.frames[indices]
+            clip.fps = 24.0
+            if clip.audio is not None:
+                clip.audio = clip.audio[..., round(start * clip.sample_rate / 24):]
+                if not clip.audio.shape[-1]:
+                    clip.audio = None
+                    clip.sample_rate = None
+    return clip
+
+
+def _h3_reference_inputs(
+    images: list, video: Path | None, inputs: set[str], continuation_frames: int = 0, audio_rate: int = 32000
+) -> dict:
+    if not inputs or "references" in inputs:
+        try:
+            from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
+
+            references = [MiniMaxH3ImageReference(image=im) for im in images]
+            if video is not None:
+                references.append(_h3_video_reference(video, continuation_frames, audio_rate))
+            return {"references": references}
+        except (ImportError, AttributeError) as exc:
+            if video is not None:
+                raise RuntimeError("读取参考视频需要支持 MiniMaxH3VideoReference.from_file 的 Diffusers 和 PyAV") from exc
+            return {"references": images}
+    if video is not None:
+        raise RuntimeError("当前 MiniMax-H3 管线缺少 references 视频输入")
+    if "reference_images" in inputs:
+        return {"reference_images": images}
+    if "images" in inputs:
+        return {"images": images}
+    if len(images) != 1 or "image" not in inputs:
+        raise RuntimeError("当前 MiniMax-H3 管线不支持所选参考图输入")
+    return {"image": images[0]}
+
+
 def _run_video_job(job: dict, hf_token: str | None) -> None:
     import torch
     from PIL import Image
@@ -1187,16 +1254,20 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
         workflow = "t2va"
 
     ref_paths = _load_ref_paths(job)
+    video_path = Path("/content/reference_video.mp4") if job.get("video_reference_id") or job.get("video_round_id") else None
+    if video_path is not None:
+        if workflow != "ref2va" or not video_path.is_file():
+            raise RuntimeError("Ref2VA 任务缺少指定的参考视频")
+        if len(ref_paths) != int(job.get("ref_count") or 0):
+            raise RuntimeError("Ref2VA 任务缺少指定的参考图")
     last_path = Path("/content/last_frame.bin")
     has_first = bool(ref_paths)
     has_last = bool(job.get("has_last_image")) and last_path.exists()
 
-    if workflow == "fl2va" and not has_first:
-        print("未上传首帧图，自动切换为文生视频工作流 t2va", flush=True)
-        workflow = "t2va"
-    elif workflow == "ref2va" and not has_first:
-        print("未上传参考图，自动切换为文生视频工作流 t2va", flush=True)
-        workflow = "t2va"
+    if workflow == "fl2va" and ((not has_first and not has_last) or (job.get("has_last_image") and not has_last)):
+        raise RuntimeError("首尾帧任务缺少指定的输入图片")
+    if workflow == "ref2va" and not has_first and video_path is None:
+        raise RuntimeError("Ref2VA 任务缺少参考图或视频")
 
     auto_offload = bool(job.get("auto_offload", True))
     req_offload_mode = str(job.get("offload_mode") or ("auto" if auto_offload else "none")).strip().lower()
@@ -1206,21 +1277,24 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
     loras = _normalize_loras(job.get("loras"))
     lora_sig_before = _CACHE.get("loras")
     lora_will_change = [(x["repo_id"], x["weight_name"], x["scale"]) for x in loras] != lora_sig_before
-    if eff_offload_mode == "group" and lora_will_change and getattr(pipe, "transformer", None) is not None:
+    denoiser_name = "transformer_ref" if workflow == "ref2va" and getattr(pipe, "transformer_ref", None) is not None else "transformer"
+    denoiser = getattr(pipe, denoiser_name, None)
+    if eff_offload_mode == "group" and lora_will_change and denoiser is not None:
         try:
             from diffusers.hooks import remove_group_offloading
 
-            remove_group_offloading(pipe.transformer, recursive=True)
+            remove_group_offloading(denoiser, recursive=True)
         except Exception:
             pass
     _apply_loras(pipe, loras, hf_token)
-    if eff_offload_mode == "group" and lora_will_change and getattr(pipe, "transformer", None) is not None:
-        tr_place = (plan.get("placements") or {}).get("transformer", "group_cpu")
-        _apply_module_group_offload("transformer", pipe.transformer, tr_place)
+    if eff_offload_mode == "group" and lora_will_change and denoiser is not None:
+        tr_place = (plan.get("placements") or {}).get(denoiser_name, "group_cpu")
+        _apply_module_group_offload(denoiser_name, denoiser, tr_place)
 
     width = int(job.get("width") or 768)
     height = int(job.get("height") or 1280)
-    num_frames = int(job.get("num_frames") or 121)
+    # Older queued jobs could request 360, which aligns to 362 and exceeds H3's 15-second limit.
+    num_frames = min(345, int(job.get("num_frames") or 121))
     steps = int(job.get("steps") or 30)
     cfg = float(job.get("cfg") or 5.0)
     seed = int(job["seed"]) if job.get("seed") is not None else 42
@@ -1256,32 +1330,22 @@ def _run_video_job(job: dict, hf_token: str | None) -> None:
     if negative and (not input_names or "negative_prompt" in input_names):
         kwargs["negative_prompt"] = negative
 
-    if workflow in {"fl2va", "ref2va"} and has_first:
+    if workflow == "ref2va":
         ref_imgs = [Image.open(p).convert("RGB") for p in ref_paths]
-        first_img = ref_imgs[0]
-        sizes = ", ".join(str(im.size) for im in ref_imgs)
-        print(f"加载首帧/参考图（{len(ref_imgs)} 张）：{sizes}", flush=True)
-        if workflow == "ref2va":
-            if not input_names or "references" in input_names:
-                try:
-                    from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
-
-                    kwargs["references"] = [MiniMaxH3ImageReference(image=im) for im in ref_imgs]
-                except ImportError:
-                    kwargs["references"] = ref_imgs
-            elif "reference_images" in input_names:
-                kwargs["reference_images"] = ref_imgs
-            elif "images" in input_names:
-                kwargs["images"] = ref_imgs
-            else:
-                kwargs["image"] = first_img
-        else:
-            kwargs["image"] = first_img
-        if workflow == "fl2va" and has_last:
+        continuation_frames = num_frames if job.get("video_task") == "continue" else 0
+        kwargs.update(_h3_reference_inputs(
+            ref_imgs, video_path, input_names, continuation_frames, getattr(pipe, "audio_sampling_rate", 32000)
+        ))
+        print(f"已加载 {len(ref_imgs)} 张参考图、{int(video_path is not None)} 段参考视频", flush=True)
+    elif workflow == "fl2va":
+        if has_first:
+            kwargs["image"] = Image.open(ref_paths[0]).convert("RGB")
+        if has_last:
             last_img = Image.open(last_path).convert("RGB")
             print(f"加载尾帧图：{last_img.size}", flush=True)
-            if not input_names or "last_image" in input_names:
-                kwargs["last_image"] = last_img
+            if input_names and "last_image" not in input_names:
+                raise RuntimeError("当前 MiniMax-H3 管线缺少尾帧输入")
+            kwargs["last_image"] = last_img
 
     gc.collect()
     if torch.cuda.is_available():

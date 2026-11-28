@@ -1,7 +1,7 @@
 // 唯一的网络出口。组件只调用 api.xxx()，不直接 fetch。
 // mock 模式下请求交给 src/mock/server.ts，真实模式走同源 /api/*。
 import type {
-  AssetUpload, CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, GeneratePayload, LinkSpec, ProxyProfileBody, ProxyState, ProxyTest,
+  AssetUpload, CleanupBody, CleanupResult, ColabStatus, ComfyPreset, Config, CropBox, GeneratePayload, LinkSpec, ProxyProfileBody, ProxyState, ProxyTest,
   References, RewriteBody, RoundsResponse, Round, Status, Storage, StudioPreset, TrashResponse, WfDef, WfRun, WorkflowsResponse,
   LlmProviderBody, LlmState, ProbeResult, RewriteResult, SessionResult,
 } from './types'
@@ -52,6 +52,7 @@ export const media = {
   download: (id: string) => (__MOCK__ ? mockMedia.round(id) : `api/rounds/${id}?download=1`),
   trashThumb: (r: Round) => (__MOCK__ ? mockMedia.thumb(r.id) : r.has_thumb ? `api/trash/${r.id}/thumb` : `api/trash/${r.id}`),
   ref: (id: string, t: number) => (__MOCK__ ? mockMedia.ref(id) : `api/reference?id=${enc(id)}&t=${t}`),
+  videoRef: (id: string) => (__MOCK__ ? mockMedia.ref(id) : `api/video-reference?id=${enc(id)}`),
   slot: (slot: 'first' | 'last', t: number) => (__MOCK__ ? mockMedia.ref(slot) : `api/reference?slot=${slot}&t=${t}`),
   assetThumb: (runId: string, f: string) => (__MOCK__ ? mockMedia.ref(f) : `api/workflows/runs/${enc(runId)}/assets/${enc(f)}?thumb=1`),
 }
@@ -71,10 +72,15 @@ export const api = {
   stop: (clear_queue = false) => post('api/stop', { clear_queue }),
   release: () => post('api/release'),
   unqueue: (id: string) => del(`api/queue/${enc(id)}`),
+  retry: (id: string) => post<{ id: string }>(`api/queue/${enc(id)}/retry`),
   clearQueue: () => post<{ ok: true; removed: number }>('api/queue/clear'),
   setIdle: (idle_minutes: number) => post<{ ok: true; idle_minutes: number }>('api/settings', { idle_minutes }),
 
   rounds: () => get<RoundsResponse>('api/rounds?limit=0'),
+  importMedia: (file: File, kind: Round['kind']) => post<{ id: string }>(`api/rounds/import?kind=${kind}&name=${enc(file.name)}`, file),
+  crop: (id: string, box: CropBox) => post<{ id: string }>(`api/rounds/${enc(id)}/crop`, box),
+  frame: (id: string, position: 'first' | 'time' | 'last', time_s = 0) => post<{ id: string }>(`api/rounds/${enc(id)}/frame`, { position, time_s }),
+  clip: (id: string, start_s: number, end_s: number, mute: boolean) => post<{ id: string }>(`api/rounds/${enc(id)}/clip`, { start_s, end_s, mute }),
   roundMeta: (id: string) => get<Round & { meta: Record<string, unknown> }>(`api/rounds/${id}/meta`),
   star: (ids: string[], starred: boolean) => post<{ ok: true; updated: string[] }>('api/rounds/star', { ids, starred }),
   deleteRounds: (ids: string[], permanent = false) => post<{ deleted: string[] }>('api/rounds/delete', { ids, permanent }),
@@ -87,7 +93,9 @@ export const api = {
     request<{ references: References }>('POST', `api/reference?slot=${slot}${append && slot === 'first' ? '&append=1' : ''}`, file),
   removeRef: (id: string) => del<{ references: References }>(`api/reference?id=${enc(id)}`),
   clearSlot: (slot: 'first' | 'last') => del<{ references: References }>(`api/reference?slot=${slot}`),
-  useRound: (id: string, slot: 'first' | 'last', append = false) =>
+  uploadVideoRef: (file: Blob) => request<{ references: References }>('POST', 'api/video-reference', file),
+  clearVideoRef: (id: string) => del<{ references: References }>(`api/video-reference?id=${enc(id)}`),
+  useRound: (id: string, slot: 'first' | 'last' | 'video', append = false) =>
     post<{ references: References }>(`api/rounds/${id}/use`, { slot, append }),
 
   recentModels: { add: (model: string) => post<{ recent_models: string[] }>('api/models/recent', { model }), remove: (model: string) => del<{ recent_models: string[] }>('api/models/recent', { model }) },
